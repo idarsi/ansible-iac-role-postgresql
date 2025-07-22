@@ -71,8 +71,6 @@ Top-level structure:
 iac_blueprint:
   postgresql:
     - version: <major version number>          # e.g. 17
-      extensions:                              # (optional) extensions installed at package level
-        - name: <extension_name>
       instances:
         - name: <instance name>                # must be unique on host
           port: <custom port>                  # default: version-specific PostgreSQL default
@@ -84,7 +82,7 @@ iac_blueprint:
           databases:
             - name: <dbname>
               owner: <username>
-              extensions:                      # optional per-database extensions (CREATE EXTENSION)
+              extensions:                      # Installs required OS package and runs CREATE EXTENSION in the database
                 - name: <extension>
               access:                          # optional pg_hba.conf entries for this database
                 - name: <username>
@@ -95,10 +93,10 @@ iac_blueprint:
             - name: <username>
               password: <cleartext password>   # optional
               encrypted_password: <SCRAM hash> # optional
-              createdb: true|false              # optional
-              createuser: true|false            # optional
-              superuser: true|false             # optional
-              login: true|false                 # optional
+              createdb: true|false             # optional
+              createuser: true|false           # optional
+              superuser: true|false            # optional
+              login: true|false                # optional
 ```
 
 A minimal working iac_blueprint that installs PostgreSQL 17 with one instance and allows user app to 
