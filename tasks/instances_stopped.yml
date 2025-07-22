@@ -1,0 +1,60 @@
+---
+###############################################################################
+#
+# instances_stopped.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+###############################################################################
+# SETTING VARIABLES
+###############################################################################
+
+- name: "Setting what variables are configured"
+  ansible.builtin.set_fact:
+    pg_instance: "{{ pg_instance_record.1.name }}"
+    pg_version: "{{ pg_instance_record.0.version }}"
+  when: pg_instance_record is defined
+
+- name: "Checking if required variables are defined"
+  ansible.builtin.assert:
+    that:
+      - pg_encoding is defined
+      - pg_lc_collate is defined
+      - pg_lc_ctype is defined
+      - pg_bind_dir is defined
+      - pg_version is defined
+      - pg_instance is defined
+    fail_msg: "All tests did not pass"
+
+###############################################################################
+# ENSURING SYSTEMD SERVICE IS STOPPED
+###############################################################################
+
+- name: "Checking status for service"
+  ansible.builtin.command: "systemctl is-active postgresql-{{ pg_version }}-{{ pg_instance }}.service"
+  register: service_active
+  changed_when: false
+  failed_when: false
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    pg_log_write: "Checked service {{ pg_version }}/{{ pg_instance }} was {{ service_active.stdout }}"
+
+- name: "Setting log variables"
+  ansible.builtin.set_fact:
+    pg_cli_command: "systemctl stop postgresql-{{ pg_version }}-{{ pg_instance }}.service"
+  when: service_active.stdout == 'active'
+
+- name: "Ensuring instance is stopped"
+  ansible.builtin.command: "{{ pg_cli_command }}"
+  failed_when: false
+  when: service_active.stdout == 'active'
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    pg_log_write: "Stopped service {{ pg_version }}/{{ pg_instance }}"
+  when: service_active.stdout == 'active'

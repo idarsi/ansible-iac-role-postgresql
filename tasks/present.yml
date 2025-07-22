@@ -1,0 +1,69 @@
+---
+###############################################################################
+#
+# present.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+###############################################################################
+# SETTING VARIABLES
+###############################################################################
+
+- name: "Checking if required variables are defined"
+  ansible.builtin.assert:
+    that:
+      - dnf_sslverify is defined
+      - dnf_validate_certs is defined
+      - dnf_disable_gpg_check is defined
+      - http_proxy is defined
+      - https_proxy is defined
+      - no_proxy is defined
+      - pg_lang is defined
+      - pg_versions is defined
+    fail_msg: "All tests did not pass"
+
+###############################################################################
+# INSTALLING LANGUAGEPACKS IF NEEDED
+###############################################################################
+
+- name: "Ensuring langpack is installed"
+  ansible.builtin.include_tasks: package_present.yml
+  vars:
+    pg_package: "glibc-langpack-{{ pg_lang }}"
+  when: pg_lang is defined
+
+- name: "Ensuring dnf plugins core is installed"
+  ansible.builtin.include_tasks: package_present.yml
+  vars:
+    pg_package: "dnf-plugins-core"
+
+- name: "Ensuring epel-release is installed"
+  ansible.builtin.include_tasks: package_present.yml
+  vars:
+    pg_package: "epel-release"
+  when:
+    - ansible_distribution in ['RedHat', 'Rocky']
+    - ansible_distribution_major_version in ['8','9','10']
+
+- name: "Ensuring openssl is installed"
+  ansible.builtin.include_tasks: package_present.yml
+  vars:
+    pg_package: "openssl"
+
+- name: "Ensuring gpg2 is installed"
+  ansible.builtin.include_tasks: package_present.yml
+  vars:
+    pg_package: "gnupg2"
+  when: ansible_distribution in ['RedHat', 'Rocky'] and ansible_distribution_major_version == '10'
+
+###############################################################################
+# LOOPING THROUGH POSTGRESQL VERSIONS TO BE INSTALLED
+###############################################################################
+
+- name: "Looping through versions"
+  ansible.builtin.include_tasks: "version_present.yml"
+  loop: "{{ pg_versions }}"
+  loop_control:
+    loop_var: pg_version

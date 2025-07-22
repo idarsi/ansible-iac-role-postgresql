@@ -1,0 +1,45 @@
+[Unit]
+Description=PostgreSQL {{ pg_version }} server, {{ pg_instance }} instance
+Documentation=https://www.postgresql.org/docs/{{ pg_version }}/static/
+After=syslog.target
+After=network.target
+
+[Service]
+Type=notify
+
+User={{ pg_os_user }}
+Group={{ pg_os_user }}
+
+# Note: avoid inserting whitespace in these Environment= lines, or you may
+# break postgresql-setup.
+
+# Location of database directory
+Environment=PGDATA={{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/
+
+# Where to send early-startup messages from the server (before the logging
+# options of postgresql.conf take effect)
+# This is normally controlled by the global default set by systemd
+# StandardOutput=syslog
+
+# Disable OOM kill on the postmaster
+OOMScoreAdjust=-1000
+Environment=PG_OOM_ADJUST_FILE=/proc/self/oom_score_adj
+Environment=PG_OOM_ADJUST_VALUE=0
+
+ExecStartPre=/usr/pgsql-{{ pg_version }}/bin/postgresql-{{ pg_version }}-check-db-dir ${PGDATA}
+ExecStart=/usr/pgsql-{{ pg_version }}/bin/postmaster -D ${PGDATA}
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=mixed
+KillSignal=SIGINT
+
+# Do not set any timeout value, so that systemd will not kill postmaster
+# during crash recovery.
+TimeoutSec=0
+
+# 0 is the same as infinity, but "infinity" needs systemd 229
+TimeoutStartSec=0
+
+TimeoutStopSec=1h
+
+[Install]
+WantedBy=multi-user.target

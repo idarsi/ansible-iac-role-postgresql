@@ -1,0 +1,88 @@
+---
+###############################################################################
+#
+# certification_present.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+###############################################################################
+# SETTING VARIABLES
+###############################################################################
+
+- name: "Checking if required variables are defined"
+  ansible.builtin.assert:
+    that:
+      - pg_certificate_private_key_bits is defined
+      - pg_certificate_private_key_fullpath is defined
+      - pg_certificate_public_key_fullpath is defined
+      - pg_default_dir is defined
+      - pg_instance is defined
+      - pg_os_user is defined
+      - pg_os_group is defined
+      - pg_version is defined
+    fail_msg: "All tests did not pass"
+
+###############################################################################
+# ENSURING SSL CERTIFICATE EXISTS IF NEEDED
+###############################################################################
+
+- name: "Setting variables"
+  ansible.builtin.set_fact:
+    pg_cli_command: "openssl genrsa -out {{ pg_certificate_private_key_fullpath }} {{ pg_certificate_private_key_bits }}"
+
+- name: "Ensuring directory ssl is present"
+  ansible.builtin.file:
+    path: "{{ pg_default_dir}}/{{ pg_version }}/{{ pg_instance }}/ssl/"
+    state: directory
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0750"
+
+- name: "Ensuring certificate private key exists if needed"
+  ansible.builtin.command: "{{ pg_cli_command }}"
+  register: my_output
+  failed_when: my_output.rc != 0
+  changed_when: my_output.rc == 0
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    pg_log_write: "Created private key to {{ pg_certificate_private_key_fullpath }}"
+
+- name: "Setting variables"
+  ansible.builtin.set_fact:
+    pg_cli_command: >-
+      openssl req -new -x509 -nodes
+      -key {{ pg_certificate_private_key_fullpath }}
+      -out {{ pg_certificate_public_key_fullpath }}
+      -days {{ pg_certificate_public_key_days }}
+      -subj "/CN=localhost"
+
+- name: "Ensuring certificate public key exists if needed"
+  ansible.builtin.command: "{{ pg_cli_command }}"
+  register: my_output
+  failed_when: my_output.rc != 0
+  changed_when: my_output.rc == 0
+
+- name: "Ensuring files are set to 0600"
+  ansible.builtin.file:
+    path: "{{ pg_default_dir}}/{{ pg_version }}/{{ pg_instance }}/ssl/"
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0600"
+    recurse: true
+
+- name: "Ensuring directory is set 0700"
+  ansible.builtin.file:
+    path: "{{ pg_default_dir}}/{{ pg_version }}/{{ pg_instance }}/ssl/"
+    state: directory
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0700"
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    pg_log_write: "Created public key to {{ pg_certificate_public_key_fullpath }}"

@@ -1,0 +1,40 @@
+---
+###############################################################################
+#
+# version_state.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+###############################################################################
+# SETTING VARIABLES
+###############################################################################
+
+- name: "Checking if required variables are defined"
+  ansible.builtin.assert:
+    that:
+      - dnf_disable_gpg_check is defined
+      - dnf_sslverify is defined
+      - dnf_validate_certs is defined
+      - http_proxy is defined
+      - https_proxy is defined
+      - no_proxy is defined
+      - pg_version is defined
+    fail_msg: "All tests did not pass"
+
+###############################################################################
+# ENSURING REPOSITORIES ARE PRESENT
+###############################################################################
+
+- name: "Ensuring PostgreSQL repositories are present"
+  ansible.builtin.include_tasks: repo_present.yml
+
+###############################################################################
+# ENSURING PACKAGES ARE INSTALLED
+###############################################################################
+
+- name: "Ensuring PostgreSQL packages are installed"
+  ansible.builtin.include_tasks: package_present.yml
+  vars:
+    pg_package: "postgresql{{ pg_version }}-server,postgresql{{ pg_version }}-contrib"

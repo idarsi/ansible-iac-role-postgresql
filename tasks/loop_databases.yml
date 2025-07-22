@@ -1,0 +1,37 @@
+---
+###############################################################################
+#
+# loop_databases.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+###############################################################################
+# SETTING VARIABLES
+###############################################################################
+
+- name: "Setting variables"
+  ansible.builtin.set_fact:
+    pg_databases: "{{ pg_instance_record.1.databases | default([]) }}"
+
+- name: "Checking if required variables are defined"
+  ansible.builtin.assert:
+    that:
+      - pg_databases is defined
+      - pg_bind_dir is defined
+      - pg_encoding is defined
+      - pg_instances is defined
+      - pg_lc_collate is defined
+      - pg_lc_ctype is defined
+    fail_msg: "All tests did not pass"
+
+###############################################################################
+# LOOPING THROUGH INSTANCES
+###############################################################################
+
+- name: "Looping through databases"
+  ansible.builtin.include_tasks: "extension_packages_present.yml"
+  loop: "{{ pg_databases }}"
+  loop_control:
+    loop_var: pg_database_record

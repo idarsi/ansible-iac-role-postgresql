@@ -1,0 +1,100 @@
+---
+###############################################################################
+#
+# user_present.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+###############################################################################
+# SETTING VARIABLES
+###############################################################################
+
+- name: "Setting what variables are configured"
+  ansible.builtin.set_fact:
+    pg_db_user: "{{ pg_user_record.name }}"
+  when: pg_user_record is defined
+
+- name: "Checking if required variables are defined"
+  ansible.builtin.assert:
+    that:
+      - pg_db_user is defined
+      - pg_instance is defined
+      - pg_port is defined
+      - pg_version is defined
+    fail_msg: "All tests did not pass"
+
+###############################################################################
+# ENSURING USER IS ADDED IF IT DOESN'T EXIST
+###############################################################################
+
+- name: "Setting variables"
+  ansible.builtin.set_fact:
+    pg_cli_command: "/usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }} -tXAc \"SELECT 1 FROM pg_roles WHERE rolname='{{ pg_db_user }}'\""
+
+- name: "Checking if user already exists"
+  become: true
+  become_user: "{{ pg_os_user }}"
+  ansible.builtin.command: "{{ pg_cli_command }}"
+  changed_when: false
+  register: user_exists
+
+- name: "Preparing CREATE USER command if user does not exist"
+  block:
+    - name: "Setting optional attributes for CREATE USER"
+      ansible.builtin.set_fact:
+        pg_db_user_password_str: >-
+          {{ "PASSWORD '{{ pg_user_record.password }}'" if (pg_user_record.password is defined) else '' }}
+        pg_db_user_encrypted_password_str: >-
+          {{ "ENCRYPTED PASSWORD '{{ pg_user_record.encrypted_password }}'" if (pg_user_record.encrypted_password is defined) else '' }}
+        pg_db_user_createdb_str: >-
+          {{ 'CREATEDB' if (pg_user_record.createdb is defined and pg_user_record.createdb | bool) else 'NOCREATEDB' if pg_user_record.createdb is defined else '' }}
+        pg_db_user_createrole_str: >-
+          {{ 'CREATEROLE' if (pg_user_record.createrole is defined and pg_user_record.createrole | bool) else 'NOCREATEROLE' if pg_user_record.createrole is defined else '' }}
+        pg_db_user_superuser_str: >-
+          {{ 'SUPERUSER' if (pg_user_record.superuser is defined and pg_user_record.superuser | bool) else 'NOSUPERUSER' if pg_user_record.superuser is defined else '' }}
+        pg_db_user_login_str: >-
+          {{ 'LOGIN' if (pg_user_record.login is defined and pg_user_record.login | bool) else 'NOLOGIN' if pg_user_record.login is defined else '' }}
+    - name: "Assembling full CREATE USER psql command"
+      ansible.builtin.set_fact:
+        pg_cli_command: >-
+          /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }} -c "CREATE USER \"{{ pg_db_user }}\" {{ pg_db_user_password_str }} {{ pg_db_user_encrypted_password_str }} {{ pg_db_user_createdb_str }} {{ pg_db_user_createrole_str }} {{ pg_db_user_superuser_str }} {{ pg_db_user_login_str }}"
+  when:
+    - user_exists.stdout != '1'
+
+- name: "Preparing ALTER ROLE command if user does exist"
+  block:
+    - name: "Setting optional attributes for ALTER ROLE"
+      ansible.builtin.set_fact:
+        pg_db_user_password_str: >-
+          {{ "PASSWORD '{{ pg_user_record.password }}'" if (pg_user_record.password is defined) else '' }}
+        pg_db_user_encrypted_password_str: >-
+          {{ "ENCRYPTED PASSWORD '{{ pg_user_record.encrypted_password }}'" if (pg_user_record.encrypted_password is defined) else '' }}
+        pg_db_user_createdb_str: >-
+          {{ 'CREATEDB' if (pg_user_record.createdb is defined and pg_user_record.createdb | bool) else 'NOCREATEDB' if pg_user_record.createdb is defined else '' }}
+        pg_db_user_createrole_str: >-
+          {{ 'CREATEROLE' if (pg_user_record.createrole is defined and pg_user_record.createrole | bool) else 'NOCREATEROLE' if pg_user_record.createrole is defined else '' }}
+        pg_db_user_superuser_str: >-
+          {{ 'SUPERUSER' if (pg_user_record.superuser is defined and pg_user_record.superuser | bool) else 'NOSUPERUSER' if pg_user_record.superuser is defined else '' }}
+        pg_db_user_login_str: >-
+          {{ 'LOGIN' if (pg_user_record.login is defined and pg_user_record.login | bool) else 'NOLOGIN' if pg_user_record.login is defined else '' }}
+    - name: "Assembling full CREATE USER psql command"
+      ansible.builtin.set_fact:
+        pg_cli_command: >-
+          /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }} -c "ALTER ROLE \"{{ pg_db_user }}\" {{ pg_db_user_password_str }} {{ pg_db_user_encrypted_password_str }} {{ pg_db_user_createdb_str }} {{ pg_db_user_createrole_str }} {{ pg_db_user_superuser_str }} {{ pg_db_user_login_str }}"
+  when:
+    - user_exists.stdout == '1'
+
+
+- name: "Ensuring user is present"
+  become: true
+  become_user: "{{ pg_os_user }}"
+  ansible.builtin.command: "{{ pg_cli_command }}"
+  register: user_changed
+  changed_when: "user_changed.rc == 0"
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    pg_log_write: "Created user {{ pg_version }}/{{ pg_instance }}/{{ pg_db_user }}"

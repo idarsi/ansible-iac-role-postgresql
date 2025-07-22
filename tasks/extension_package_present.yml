@@ -1,0 +1,51 @@
+---
+###############################################################################
+#
+# extension_package_present.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+###############################################################################
+# SETTING VARIABLES
+###############################################################################
+
+- name: "Setting what variables are configured"
+  ansible.builtin.set_fact:
+    pg_extension: "{{ pg_extension_record.name | default(omit) }}"
+    pg_instance: "{{ pg_instance_record.1.name }}"
+    pg_version: "{{ pg_instance_record.0.version }}"
+    pg_port: "{{ pg_instance_record.1.configuration.port | default(pg_default_port) }}"
+
+- name: "Checking if required variables are defined"
+  ansible.builtin.assert:
+    that:
+      - pg_version is defined
+    fail_msg: "All tests did not pass"
+
+###############################################################################
+# ENSURING EXTENSIONS ARE PRESENT
+###############################################################################
+
+- name: "Ensuring required PostgreSQL extension packages are installed"
+  ansible.builtin.include_tasks: package_present.yml
+  loop:
+    - { name: citus,        package: "citus_{{ pg_version }}" }
+    - { name: pg_cron,      package: "pg_cron_{{ pg_version }}" }
+    - { name: pgaudit,      package: "pgaudit_{{ pg_version }}" }
+    - { name: postgis33,    package: "postgis33_{{ pg_version }}" }
+    - { name: postgis34,    package: "postgis34_{{ pg_version }}" }
+    - { name: postgis35,    package: "postgis35_{{ pg_version }}" }
+    - { name: set_user,     package: "set_user_{{ pg_version }}" }
+    - { name: timescaledb,  package: "timescaledb_{{ pg_version }}" }
+  loop_control:
+    loop_var: ext
+  vars:
+    pg_package: "{{ ext.package }}"
+  when:
+    - pg_extension is defined
+    - pg_extension == ext.name
+    - pg_version in ['17', '16']
+    - (ansible_distribution in ['RedHat', 'Rocky'] and ansible_distribution_major_version in ['10', '9', '8']) or 
+      (ansible_distribution in ['Fedora'] and ansible_distribution_major_version in ['41','42'])

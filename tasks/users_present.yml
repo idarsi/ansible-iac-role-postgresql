@@ -1,0 +1,39 @@
+---
+###############################################################################
+#
+# users_present.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+###############################################################################
+# SETTING VARIABLES
+###############################################################################
+
+- name: "Setting what variables are configured"
+  ansible.builtin.set_fact:
+    pg_users: "{{ pg_instance_record.1.users | default([]) }}"
+    pg_instance: "{{ pg_instance_record.1.name }}"
+    pg_version: "{{ pg_instance_record.0.version }}"
+    pg_port: "{{ pg_instance_record.1.configuration.port | default(pg_default_port) }}"
+  when: pg_instance_record is defined
+
+- name: "Checking if required variables are defined"
+  ansible.builtin.assert:
+    that:
+      - pg_users is defined
+      - pg_instance is defined
+      - pg_version is defined
+      - pg_port is defined
+    fail_msg: "All tests did not pass"
+
+###############################################################################
+# LOOPING THROUGH USERS TO BE ADDED
+###############################################################################
+
+- name: "Looping through users"
+  ansible.builtin.include_tasks: "user_present.yml"
+  loop: "{{ pg_users }}"
+  loop_control:
+    loop_var: pg_user_record

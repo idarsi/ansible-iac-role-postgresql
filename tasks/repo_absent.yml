@@ -1,0 +1,60 @@
+---
+###############################################################################
+#
+# repo_absent.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+###############################################################################
+# SETTING VARIABLES
+###############################################################################
+
+- name: "Checking if required variables are defined"
+  ansible.builtin.assert:
+    that:
+      - pg_dnf_repo_path is defined
+    fail_msg: "All tests did not pass"
+
+###############################################################################
+# REMOVING REPOSITORY
+###############################################################################
+
+- name: "Ensuring PostgreSQL repository is present if distribution is Fedora and packages were not available"
+  ansible.builtin.dnf:
+    name: "https://download.postgresql.org/pub/repos/yum/reporpms/F-{{ ansible_distribution_major_version }}-x86_64/pgdg-fedora-repo-latest.noarch.rpm"
+    sslverify: "{{ dnf_sslverify }}"
+    validate_certs: "{{ dnf_validate_certs }}"
+    disable_gpg_check: "{{ dnf_disable_gpg_check }}"
+    update_cache: "{{ dnf_update_cache }}"
+    state: absent
+  environment:
+    http_proxy: "{{ http_proxy }}"
+    https_proxy: "{{ https_proxy }}"
+    no_proxy: "{{ no_proxy }}"
+  when: "'postgresql' + pg_version|string + '-server' not in sw_packages.stdout_lines and ansible_distribution == 'Fedora'"
+
+- name: "Ensuring PostgreSQL repository is present if distribution is RedHat and packages were not available"
+  ansible.builtin.dnf:
+    name: "https://download.postgresql.org/pub/repos/yum/reporpms/EL-{{ ansible_distribution_major_version }}-x86_64/pgdg-redhat-repo-latest.noarch.rpm"
+    sslverify: "{{ dnf_sslverify }}"
+    validate_certs: "{{ dnf_validate_certs }}"
+    disable_gpg_check: "{{ dnf_disable_gpg_check }}"
+    update_cache: "{{ dnf_update_cache }}"
+    state: absent
+  environment:
+    http_proxy: "{{ http_proxy }}"
+    https_proxy: "{{ https_proxy }}"
+    no_proxy: "{{ no_proxy }}"
+  when: "'postgresql' + pg_version|string + '-server' not in sw_packages.stdout_lines and (ansible_distribution == 'RedHat' or ansible_distribution == 'Rocky')"
+
+- name: "Removing repository file"
+  ansible.builtin.file:
+    path: "{{ pg_dnf_repo_path }}"
+    state: absent
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    pg_log_write: "Removed file {{ pg_dnf_repo_path }}"

@@ -1,0 +1,67 @@
+---
+###############################################################################
+#
+# extension_present.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+###############################################################################
+# SETTING VARIABLES
+###############################################################################
+
+- name: "Setting what variables are configured"
+  ansible.builtin.set_fact:
+    pg_extension: "{{ pg_extension_record.name }}"
+  when: pg_extension_record is defined
+
+- name: "Checking if required variables are defined"
+  ansible.builtin.assert:
+    that:
+      - pg_database is defined
+      - pg_extension is defined
+      - pg_instance is defined
+      - pg_port is defined
+      - pg_version is defined
+    fail_msg: "All tests did not pass"
+
+###############################################################################
+# ENSURING DATABASE ARE PRESENT
+###############################################################################
+
+- name: "Setting variables"
+  ansible.builtin.set_fact:
+    pg_extension: "postgis"
+  when: pg_extension in ['postgis33', 'postgis34', 'postgis35']
+
+- name: "Setting variables"
+  ansible.builtin.set_fact:
+    pg_cli_command: "/usr/pgsql-{{ pg_version }}/bin/psql {{ pg_database }} -p {{ pg_port }} -tXAc \"SELECT 1 FROM pg_extension WHERE extname = '{{ pg_extension }}'\""
+
+- name: "Checking if extension already exists"
+  become: true
+  become_user: "{{ pg_os_user }}"
+  ansible.builtin.command: "{{ pg_cli_command }}"
+  register: extension_exists
+  changed_when: false
+  failed_when: extension_exists.rc != 0
+
+- name: "Preparing CREATE EXTENSION command if extension does not exist"
+  ansible.builtin.set_fact:
+    pg_cli_command: >-
+      /usr/pgsql-{{ pg_version }}/bin/psql {{ pg_database }} -p {{ pg_port }} -c "CREATE EXTENSION \"{{ pg_extension }}\""
+  when: extension_exists.stdout != '1'
+
+- name: "Ensuring database is present with correct parameters"
+  become: true
+  become_user: "{{ pg_os_user }}"
+  ansible.builtin.command: "{{ pg_cli_command }}"
+  register: my_output
+  changed_when: my_output.rc == 0
+  failed_when: my_output.rc != 0
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    pg_log_write: "Created extension {{ pg_version }}/{{ pg_instance }}/{{ pg_database }}/{{ pg_extension }}"

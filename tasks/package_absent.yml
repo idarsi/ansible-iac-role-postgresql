@@ -1,0 +1,47 @@
+---
+###############################################################################
+#
+# package_absent.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+###############################################################################
+# SETTING VARIABLES
+###############################################################################
+
+- name: "Checking if required variables are defined"
+  ansible.builtin.assert:
+    that:
+      - dnf_disable_gpg_check is defined
+      - dnf_sslverify is defined
+      - dnf_validate_certs is defined
+      - http_proxy is defined
+      - https_proxy is defined
+      - no_proxy is defined
+      - pg_package is defined
+    fail_msg: "All tests did not pass"
+
+###############################################################################
+# ENSURING PACKAGE IS PRESENT
+###############################################################################
+
+- name: "Ensuring packages are absent"
+  ansible.builtin.dnf:
+    name: "{{ pg_package }}"
+    sslverify: "{{ dnf_sslverify }}"
+    validate_certs: "{{ dnf_validate_certs }}"
+    disable_gpg_check: "{{ dnf_disable_gpg_check }}"
+    state: "absent"
+  environment:
+    http_proxy: "{{ http_proxy }}"
+    https_proxy: "{{ https_proxy }}"
+    no_proxy: "{{ no_proxy }}"
+  when: pg_package is defined
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    pg_log_write: "Ensured {{ pg_package }} was removed"
+  when: pg_package is defined

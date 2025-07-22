@@ -1,0 +1,293 @@
+---
+###############################################################################
+#
+# instances_present.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+###############################################################################
+# SETTING VARIABLES
+###############################################################################
+
+- name: "Setting what variables are configured"
+  ansible.builtin.set_fact:
+    pg_autotuning: "{{ pg_instance_record.1.autotuning_profile | default('off') }}"
+    pg_configuration: "{{ pg_instance_record.1.configuration | default(omit) }}"
+    pg_databases: "{{ pg_instance_record.1.databases | default([]) }}"
+    pg_instance: "{{ pg_instance_record.1.name }}"
+    pg_max_connections: "{{ pg_instance_record.1.configuration.max_connections | default(pg_default_max_connections) }}"
+    pg_port: "{{ pg_instance_record.1.configuration.port | default(pg_default_port) }}"
+    pg_profile: "{{ pg_instance_record.1.configuration_profile | default(omit) }}"
+    pg_security: "{{ pg_instance_record.1.security_profile | default('off') }}"
+    pg_version: "{{ pg_instance_record.0.version }}"
+  when: pg_instance_record is defined
+
+- name: "Setting tuning profile if tuning is defined"
+  ansible.builtin.set_fact:
+    pg_autotuning_cpu: "{{ pg_instance_record.1.autotuning_cpu | default(pg_autotuning) }}"
+    pg_autotuning_memory: "{{ pg_instance_record.1.autotuning_memory | default(pg_autotuning) }}"
+  when: pg_autotuning is defined
+
+- name: "Setting security profile if defined"
+  ansible.builtin.set_fact:
+    pg_security_log: "{{ pg_instance_record.1.security_log | default(pg_security) }}"
+    pg_security_ssl: "{{ pg_instance_record.1.security_ssl | default(pg_security) }}"
+    pg_security_syslog: "{{ pg_instance_record.1.security_syslog | default(pg_security) }}"
+  when: pg_security is defined
+
+- name: "Setting certificate variables if security_ssl is not off"
+  ansible.builtin.set_fact:
+    pg_certificate_private_key_fullpath: "{{ pg_default_dir}}/{{ pg_version }}/{{ pg_instance }}/ssl/{{ pg_certificate_private_key_path }}"
+    pg_certificate_public_key_fullpath: "{{ pg_default_dir}}/{{ pg_version }}/{{ pg_instance }}/ssl/{{ pg_certificate_public_key_path }}"
+  when: pg_security_ssl != 'off'
+
+- name: "Checking if required variables are defined"
+  ansible.builtin.assert:
+    that:
+      - pg_autotuning is defined
+      - pg_bind_dir is defined
+      - pg_encoding is defined
+      - pg_instance is defined
+      - pg_lc_collate is defined
+      - pg_lc_ctype is defined
+      - pg_os_user is defined
+      - pg_security is defined
+      - pg_systemd_service_dir is defined
+      - pg_version is defined
+    fail_msg: "All tests did not pass"
+
+###############################################################################
+# ENSURING INSTANCE IS PRESENT
+###############################################################################
+
+- name: "Checking if PostgreSQL has instance initialized"
+  ansible.builtin.stat:
+    path: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/pg_hba.conf"
+  register: postgres_data
+
+- name: "Setting log variables"
+  ansible.builtin.set_fact:
+    pg_cli_command: >
+      /usr/pgsql-{{ pg_version }}/bin/initdb
+      -D {{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}
+      -E {{ pg_encoding }}
+      --lc-collate={{ pg_lc_collate }}
+      --lc-ctype={{ pg_lc_ctype }}
+      -k
+  when: not postgres_data.stat.exists
+
+- name: "Ensuring instance is present"
+  become: true
+  become_user: "{{ pg_os_user }}"
+  ansible.builtin.command: "{{ pg_cli_command }}"
+  register: my_output
+  changed_when: my_output.rc == 0
+  failed_when: my_output.rc != 0
+  when: not postgres_data.stat.exists
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    pg_log_write: "Installed instance {{ pg_version }}/{{ pg_instance }}"
+  when: not postgres_data.stat.exists
+
+###############################################################################
+# ENSURING CONFIGURATION DIRECTORY EXISTS IF NEEDED
+###############################################################################
+
+- name: "Ensuring directory conf.d is present"
+  ansible.builtin.file:
+    path: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/conf.d"
+    state: directory
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0750"
+
+- name: "Ensuring PostgreSQL configuration has include_dir to conf.d"
+  ansible.builtin.lineinfile:
+    path: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/postgresql.conf"
+    line: include_dir = 'conf.d'
+    create: true
+
+###############################################################################
+# ENSURING PROFILE CONFIGURATION EXISTS IF NEEDED
+###############################################################################
+
+- name: "Rendering profile configuration from selected template"
+  ansible.builtin.template:
+    src: "profile-{{ pg_profile }}.conf.j2"
+    dest: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/conf.d/40-profile.conf"
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0640"
+  when: pg_profile is defined
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    pg_log_write: "Created {{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/conf.d/40-profile.conf"
+  when: pg_profile is defined
+
+###############################################################################
+# ENSURING SECURITY PROFILE EXISTS IF NEEDED
+###############################################################################
+
+- name: "Rendering security configuration from selected template"
+  ansible.builtin.template:
+    src: "security-profile-{{ pg_security }}.conf.j2"
+    dest: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/conf.d/41-security.conf"
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0640"
+  when: pg_security is defined
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    pg_log_write: "Created {{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/conf.d/41-security.conf"
+  when: pg_security is defined
+
+###############################################################################
+# ENSURING SSL CERTIFICATE EXISTS IF NEEDED
+###############################################################################
+
+- name: "Ensure certification is present"
+  ansible.builtin.include_tasks: "certification_present.yml"
+  when: pg_security_ssl != 'off'
+
+###############################################################################
+# OTHER SECURITY MEASURES
+###############################################################################
+
+- name: "Ensuring umask=077 exists in postgres users .bash_profile"
+  ansible.builtin.lineinfile:
+    path: "{{ pg_bind_dir }}/.bash_profile"
+    line: "umask 077"
+    state: present
+    insertafter: EOF
+    create: true
+    mode: "0600"
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+  when: pg_security != 'off'
+
+###############################################################################
+# ENSURING INVENTORY CONFIGURATION EXISTS IF NEEDED
+###############################################################################
+
+- name: "Rendering configuration lines"
+  ansible.builtin.set_fact:
+    rendered_lines: |
+      {% for item in pg_configuration | dict2items if item.value is not none %}
+      {% if item.value is string %}
+      {{ item.key }} = '{{ item.value }}'
+      {% else %}
+      {{ item.key }} = {{ item.value }}
+      {% endif %}
+      {% endfor %}
+  when: pg_configuration is defined
+
+- name: "Ensuring PostgreSQL configuration in changes.conf matches template"
+  ansible.builtin.copy:
+    content: "{{ rendered_lines }}"
+    dest: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/conf.d/42-inventory.conf"
+    mode: "0640"
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+  when: rendered_lines is defined
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    pg_log_write: "Created {{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/conf.d/42-inventory.conf"
+  when: rendered_lines is defined
+
+###############################################################################
+# ENSURING AUTOTUNING CONFIGURATION EXISTS IF NEEDED
+###############################################################################
+
+- name: "Rendering autotuning configuration from selected template"
+  ansible.builtin.template:
+    src: "autotuning-profile-{{ pg_autotuning }}.conf.j2"
+    dest: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/conf.d/43-autotuning.conf"
+    mode: "0640"
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+  when: pg_autotuning is defined
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    pg_log_write: "Created {{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/conf.d/43-autotuned.conf"
+  when: pg_autotuning is defined
+
+###############################################################################
+# ENSURING DEFAULT PG_HBA.CONF IS DELETED AND NEW WRITTEN
+###############################################################################
+
+- name: "Removing old pg_hba.conf"
+  ansible.builtin.file:
+    path: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/pg_hba.conf"
+    state: absent
+
+- name: "Ensure pg_hba.conf access rules are present"
+  ansible.builtin.lineinfile:
+    path: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/pg_hba.conf"
+    line: "local all postgres peer"
+    state: present
+    create: true
+    insertafter: EOF
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0600"
+
+###############################################################################
+# ENSURING LOG DIRECTORY EXISTS
+###############################################################################
+
+- name: "Ensuring log directory exists"
+  ansible.builtin.file:
+    path: "{{ pg_log_directory }}/{{ pg_version }}/{{ pg_instance }}/"
+    state: directory
+    mode: "0700"
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+
+###############################################################################
+# ENSURING SYSTEMD SERVICE EXISTS
+###############################################################################
+
+- name: "Ensuring systemd service file is present"
+  ansible.builtin.file:
+    path: "{{ pg_systemd_service_dir }}/postgresql-{{ pg_version }}-{{ pg_instance }}.service"
+    mode: "0644"
+    owner: "root"
+    group: "root"
+    state: touch
+
+- name: "Ensuring systemd service file matches template"
+  ansible.builtin.template:
+    src: "systemd-service-{{ pg_version }}.j2"
+    dest: "{{ pg_systemd_service_dir }}/postgresql-{{ pg_version }}-{{ pg_instance }}.service"
+    mode: "0644"
+    owner: "root"
+    group: "root"
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    pg_log_write: "Ensured {{ pg_systemd_service_dir }}/postgresql-{{ pg_version }}-{{ pg_instance }}.service"
+
+- name: "Executing systemd daemon-reload"
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+###############################################################################
+# ENSURING EXTENSION PACKAGES ARE INSTALLED
+###############################################################################
+
+- name: "Looping through databases"
+  ansible.builtin.include_tasks: "loop_databases.yml"
+  when: pg_databases is defined

@@ -1,0 +1,32 @@
+---
+###############################################################################
+#
+# absent.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+###############################################################################
+# SETTING VARIABLES
+###############################################################################
+
+- name: "Checking if required variables are defined"
+  ansible.builtin.assert:
+    that:
+      - dnf_sslverify is defined
+      - dnf_validate_certs is defined
+      - dnf_disable_gpg_check is defined
+      - pg_lang is defined
+      - pg_versions is defined
+    fail_msg: "All tests did not pass"
+
+###############################################################################
+# LOOPING THROUGH VERSIONS TO BE REMOVED
+###############################################################################
+
+- name: "Looping through versions"
+  ansible.builtin.include_tasks: "version_absent.yml"
+  loop: "{{ pg_versions }}"
+  loop_control:
+    loop_var: pg_version

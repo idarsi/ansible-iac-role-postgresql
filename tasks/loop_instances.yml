@@ -1,0 +1,32 @@
+---
+###############################################################################
+#
+# loop_instances.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+###############################################################################
+# SETTING VARIABLES
+###############################################################################
+
+- name: "Checking if required variables are defined"
+  ansible.builtin.assert:
+    that:
+      - pg_bind_dir is defined
+      - pg_encoding is defined
+      - pg_instances is defined
+      - pg_lc_collate is defined
+      - pg_lc_ctype is defined
+    fail_msg: "All tests did not pass"
+
+###############################################################################
+# LOOPING THROUGH INSTANCES
+###############################################################################
+
+- name: "Looping through instances"
+  ansible.builtin.include_tasks: "{{ state }}.yml"
+  loop: "{{ pg_instances }}"
+  loop_control:
+    loop_var: pg_instance_record

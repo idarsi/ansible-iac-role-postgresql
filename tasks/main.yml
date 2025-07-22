@@ -1,0 +1,99 @@
+---
+###############################################################################
+#
+# main.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+###############################################################################
+# CHECKING REQUIREMENTS
+###############################################################################
+
+- name: "Checking if operating system is supported"
+  ansible.builtin.fail:
+    msg: "Unsupported operating system: {{ ansible_distribution }} {{ ansible_distribution_major_version }}"
+  when:
+    - ansible_distribution not in ['Rocky', 'RedHat'] and ansible_distribution_major_version not in ['8', '9', '10']
+    - ansible_distribution != 'Fedora' and ansible_distribution_major_version not in ['41', '42']
+
+- name: "Checking if PostgreSQL inventory configuration is found"
+  ansible.builtin.fail:
+    msg: "iac_blueprint.postgresql is not defined"
+  when:
+   - iac_blueprint is not defined
+   - iac_blueprint.postgresql is not defined
+
+###############################################################################
+# SETTING VARIABLES
+###############################################################################
+
+- name: "Setting variables"
+  ansible.builtin.set_fact:
+    pg_versions: "{{ iac_blueprint.postgresql | map(attribute='version') | list }}"
+
+- name: "Setting what instances are to be configured"
+  ansible.builtin.set_fact:
+    pg_instances: "{{ iac_blueprint.postgresql | subelements('instances', skip_missing=True) }}"
+  when: iac_blueprint.postgresql | selectattr('instances', 'defined') | list | length > 0
+
+- name: "Checking proxy address if it's defined"
+  ansible.builtin.set_fact:
+    proxy_host: "{{ (http_proxy | regex_replace('^https?://', '')).split(':')[0] }}"
+    proxy_port: "{{ (http_proxy | regex_replace('^https?://', '')).split(':')[1] | int }}"
+  when: >
+    (
+      (http_proxy is defined and http_proxy != "")
+      or (https_proxy is defined and https_proxy != "")
+    )
+    and (inventory_hostname not in (no_proxy | default("") | split(",")))
+
+- name: "Checking that proxy connection is working if it's defined"
+  ansible.builtin.wait_for:
+    host: "{{ proxy_host }}"
+    port: "{{ proxy_port }}"
+    state: "started"
+    timeout: 3
+  when: >
+    (
+      (http_proxy is defined and http_proxy != "")
+      or (https_proxy is defined and https_proxy != "")
+    )
+    and (inventory_hostname not in (no_proxy | default("") | split(",")))
+
+###############################################################################
+# CHECKING STATES
+###############################################################################
+
+- name: "STATE: Ensure PostgreSQL installations are present"
+  ansible.builtin.include_tasks: present.yml
+  when: state == 'present'
+
+- name: "STATE: Ensure PostgreSQL installations are absent"
+  ansible.builtin.include_tasks: absent.yml
+  when: state == 'absent'
+
+- name: "STATE: Ensure PostgreSQL instances are present"
+  ansible.builtin.include_tasks: loop_instances.yml
+  when: state == 'instances_present'
+
+- name: "STATE: Ensure PostgreSQL instances are absent"
+  ansible.builtin.include_tasks: loop_instances.yml
+  when: state == 'instances_absent'
+
+- name: "STATE: Ensure PostgreSQL instances are started"
+  ansible.builtin.include_tasks: loop_instances.yml
+  when: state == 'instances_started'
+
+- name: "STATE: Ensure PostgreSQL instances are stopped"
+  ansible.builtin.include_tasks: loop_instances.yml
+  when: state == 'instances_stopped'
+
+- name: "STATE: Ensure PostgreSQL database users are present"
+  ansible.builtin.include_tasks: loop_instances.yml
+  when: state == 'users_present'
+
+- name: "STATE: Ensure PostgreSQL databases are present"
+  ansible.builtin.include_tasks: loop_instances.yml
+  when: state == 'databases_present'

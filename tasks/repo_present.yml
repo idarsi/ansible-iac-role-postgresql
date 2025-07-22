@@ -1,0 +1,161 @@
+---
+###############################################################################
+#
+# repo_present.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+###############################################################################
+# SETTING VARIABLES
+###############################################################################
+
+- name: "Checking if required variables are defined"
+  ansible.builtin.assert:
+    that:
+      - dnf_disable_gpg_check is defined
+      - dnf_validate_certs is defined
+      - dnf_sslverify is defined
+      - dnf_update_cache is defined
+      - http_proxy is defined
+      - https_proxy is defined
+      - no_proxy is defined
+      - pg_dnf_repo_path is defined
+      - pg_version is defined
+    fail_msg: "All tests did not pass"
+
+###############################################################################
+# ENSURING REPOSITORY IS PRESENT
+###############################################################################
+
+- name: "Checking if server packages are available already"
+  ansible.builtin.shell: >
+    set -o pipefail &&
+    dnf list postgresql{{ pg_version | string }}-server |
+    grep postgresql{{ pg_version | string }}-server |
+    awk '{print $1}' |
+    awk '{split($0,a,\".\"); print a[1]}'
+  environment:
+    http_proxy: "{{ http_proxy }}"
+    https_proxy: "{{ https_proxy }}"
+    no_proxy: "{{ no_proxy }}"
+  register: sw_packages
+  changed_when: false
+  failed_when: false
+
+- name: "Ensuring repository RPM key for EL is present if distribution is RedHat and packages were not available"
+  ansible.builtin.rpm_key:
+    key: "https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-RHEL"
+    state: present
+  environment:
+    http_proxy: "{{ http_proxy }}"
+    https_proxy: "{{ https_proxy }}"
+    no_proxy: "{{ no_proxy }}"
+  when: "'postgresql' + pg_version|string + '-server' not in sw_packages.stdout_lines and (ansible_distribution == 'RedHat' or ansible_distribution == 'Rocky')"
+
+- name: "Ensuring repository RPM key for Fedora is present if distribution is Fedora and packages were not available"
+  ansible.builtin.rpm_key:
+    key: "https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-Fedora"
+    state: present
+  environment:
+    http_proxy: "{{ http_proxy }}"
+    https_proxy: "{{ https_proxy }}"
+    no_proxy: "{{ no_proxy }}"
+  when: "'postgresql' + pg_version|string + '-server' not in sw_packages.stdout_lines and ansible_distribution == 'Fedora'"
+
+- name: "Ensuring PostgreSQL repository is present if distribution is Fedora and packages were not available"
+  ansible.builtin.include_tasks: package_present.yml
+  vars:
+    pg_package: "https://download.postgresql.org/pub/repos/yum/reporpms/F-{{ ansible_distribution_major_version }}-x86_64/pgdg-fedora-repo-latest.noarch.rpm"
+  when: "'postgresql' + pg_version|string + '-server' not in sw_packages.stdout_lines and ansible_distribution == 'Fedora'"
+
+- name: "Ensuring PostgreSQL repository is present if distribution is RedHat and packages were not available"
+  ansible.builtin.include_tasks: package_present.yml
+  vars:
+    pg_package: "https://download.postgresql.org/pub/repos/yum/reporpms/EL-{{ ansible_distribution_major_version }}-x86_64/pgdg-redhat-repo-latest.noarch.rpm"
+  when: "'postgresql' + pg_version|string + '-server' not in sw_packages.stdout_lines and ansible_distribution in ['RedHat', 'Rocky']"
+
+###############################################################################
+# ENSURING PROXY IS CONFIGURED TO REPOSITORY IF NEEDED
+###############################################################################
+
+- name: "Checking if postgresql.org repository file exists"
+  ansible.builtin.stat:
+    path: "{{ pg_dnf_repo_path }}"
+  register: repo_file
+
+- name: "Adding proxy settings to PostgreSQL repo file if it exists and proxy settings are missing but proxy setting is defined"
+  ansible.builtin.command: >
+    sed -i '/^\[.*\]$/a proxy={{ http_proxy }}' {{ pg_dnf_repo_path }}
+  register: my_output
+  failed_when: false
+  changed_when: false
+  when: repo_file.stat.exists and http_proxy is defined
+
+###############################################################################
+# ENABLING REPOSITORY
+###############################################################################
+
+- name: "Setting variables"
+  ansible.builtin.set_fact:
+    pg_cli_command: "dnf config-manager --set-enabled pgdg{{ pg_version }}"
+  when: ansible_distribution in ['RedHat', 'Rocky'] and ansible_distribution_major_version in ['8', '9', '10']
+
+- name: "Setting variables"
+  ansible.builtin.set_fact:
+    pg_cli_command: "dnf config-manager --set-enabled powertools"
+  when: ansible_distribution in ['Rocky'] and ansible_distribution_major_version in ['8']
+
+- name: "Setting variables"
+  ansible.builtin.set_fact:
+    pg_cli_command: "dnf config-manager --set-enabled crb"
+  when: ansible_distribution in ['Rocky'] and ansible_distribution_major_version in ['9', '10']
+
+- name: "Setting variables"
+  ansible.builtin.set_fact:
+    pg_cli_command: "dnf config-manager setopt pgdg{{ pg_version }}.enabled=1"
+  when: ansible_distribution == 'Fedora' and ansible_distribution_major_version in ['41', '42']
+
+- name: "Ensuring repositories are present"
+  ansible.builtin.command: >
+    {{ pg_cli_command }}
+  register: my_output
+  changed_when: my_output.rc == 0
+  failed_when: my_output.rc != 0
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    pg_log_write: "Enabled repository {{ pg_version }}"
+
+###############################################################################
+# EXCLUDING FROM OTHER REPOSITORIES
+###############################################################################
+
+- name: "Setting variables"
+  ansible.builtin.set_fact:
+    pg_cli_command: "dnf config-manager setopt fedora.exclude=postgresql* updates.exclude=postgresql*"
+  when: ansible_distribution == 'Fedora'
+
+- name: "Setting variables"
+  ansible.builtin.set_fact:
+    pg_cli_command: "dnf -qy module disable postgresql"
+  when: ansible_distribution in ['RedHat','Rocky'] and ansible_distribution_major_version in ['8','9']
+
+- name: "Setting variables"
+  ansible.builtin.set_fact:
+    pg_cli_command: "dnf config-manager --setopt='appstream.exclude=postgresql*' --save"
+  when: ansible_distribution in ['RedHat','Rocky'] and ansible_distribution_major_version == '10'
+
+- name: "Ensuring other postgresql packages are excluded"
+  ansible.builtin.command: >
+    {{ pg_cli_command }}
+  register: my_output
+  changed_when: my_output.rc == 0
+  failed_when: my_output.rc != 0
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    pg_log_write: "Enabled repository {{ pg_version }}"

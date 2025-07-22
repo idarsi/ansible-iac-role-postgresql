@@ -1,0 +1,5 @@
+{% if pg_autotuning_cpu|lower != 'off' %}
+max_worker_processes = {{ ansible_processor_vcpus }}
+max_parallel_workers = {{ ansible_processor_vcpus }}
+max_parallel_workers_per_gather = {{ ansible_processor_vcpus }}
+{% endif %}

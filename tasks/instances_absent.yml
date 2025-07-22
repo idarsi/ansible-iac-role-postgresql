@@ -1,0 +1,73 @@
+---
+###############################################################################
+#
+# instances_absent.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+###############################################################################
+# SETTING VARIABLES
+###############################################################################
+
+- name: "Setting what variables are configured"
+  ansible.builtin.set_fact:
+    pg_instance: "{{ pg_instance_record.1.name }}"
+    pg_version: "{{ pg_instance_record.0.version }}"
+  when: pg_instance_record is defined
+
+- name: "Checking if required variables are defined"
+  ansible.builtin.assert:
+    that:
+      - pg_bind_dir is defined
+      - pg_encoding is defined
+      - pg_instance is defined
+      - pg_lc_collate is defined
+      - pg_lc_ctype is defined
+      - pg_os_user is defined
+      - pg_systemd_service_dir is defined
+      - pg_version is defined
+    fail_msg: "All tests did not pass"
+
+###############################################################################
+# ENSURING INSTANCE IS STOPPED
+###############################################################################
+
+- name: "Ensuring instance is stopped"
+  ansible.builtin.include_tasks: instances_stopped.yml
+
+###############################################################################
+# ENSURING INSTANCE IS ABSENT
+###############################################################################
+
+- name: "Setting variables"
+  ansible.builtin.set_fact:
+    pg_cli_command: "rm -rf {{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}"
+
+- name: "Ensuring instance is absent"
+  become: true
+  become_user: "{{ pg_os_user }}"
+  ansible.builtin.command: "{{ pg_cli_command }}"
+  register: my_output
+  failed_when: my_output.rc != 0
+  changed_when: my_output.rc == 0
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    pg_log_write: "Removed directory {{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}"
+
+- name: "Ensuring systemd service file is absent"
+  ansible.builtin.file:
+    path: "{{ pg_systemd_service_dir }}/postgresql-{{ pg_version }}-{{ pg_instance }}.service"
+    state: absent
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    pg_log_write: "Removed file {{ pg_systemd_service_dir }}/postgresql-{{ pg_version }}-{{ pg_instance }}.service"
+
+- name: "Executing systemd daemon-reload"
+  ansible.builtin.systemd:
+    daemon_reload: true
