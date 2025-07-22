@@ -1,7 +1,7 @@
 ANSIBLE-ROLE-POSTGRESQL
 =======================
 **COPYRIGHT** 2025 ^(ida|arsi)$ collective  
-**LICENSE** MIT License [LICENSE]()  
+**LICENSE** MIT License [LICENSE](LICENSE)  
 **AUTHORS**
 - Arsi Atomi <arsi@atomi.sh>  
 
