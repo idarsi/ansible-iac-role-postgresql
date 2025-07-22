@@ -120,3 +120,13 @@ iac_blueprint:
                 - name: app
                   address: 192.168.1.0/24
 ```
+
+Minimal example: just install PostgreSQL with one instance
+
+```yaml
+iac_blueprint:
+  postgresql:
+    - version: 17
+      instances:
+        - name: main
+```
