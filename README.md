@@ -1,7 +1,7 @@
 ANSIBLE-ROLE-POSTGRESQL
 =======================
 **COPYRIGHT** 2025 ^(ida|arsi)$ collective  
-**LICENSE** MIT License [LICENSE]
+**LICENSE** MIT License [LICENSE]()  
 **AUTHORS**
 - Arsi Atomi <arsi@atomi.sh>  
 
@@ -61,6 +61,61 @@ Usage
 iac_blueprint inventory structure
 ---------------------------------
 
-Global variables
-----------------
+This role uses iac_blueprint.postgresql as the top-level inventory key. Each entry under it represents 
+a specific PostgreSQL major version and includes one or more instances configured independently on the 
+same or different hosts.
 
+Top-level structure:
+'''yaml
+iac_blueprint:
+  postgresql:
+    - version: <major version number>          # e.g. 17
+      extensions:                              # (optional) extensions installed at package level
+        - name: <extension_name>
+      instances:
+        - name: <instance name>                # must be unique on host
+          port: <custom port>                  # default: version-specific PostgreSQL default
+          configuration_profile: <name>        # e.g. "balanced"
+          autotuning_profile: <name>           # e.g. "balanced"
+          security_profile: <name>             # e.g. "safe"
+          configuration:                       # optional, direct postgresql.conf overrides
+            key: value
+          databases:
+            - name: <dbname>
+              owner: <username>
+              extensions:                      # optional per-database extensions (CREATE EXTENSION)
+                - name: <extension>
+              access:                          # optional pg_hba.conf entries for this database
+                - name: <username>
+                  address: <CIDR>
+                  type: <host|hostssl|local>   # optional, default: host
+                  method: <auth_method>        # optional, default: scram-sha-256
+          users:                               # users that exist in this instance
+            - name: <username>
+              password: <cleartext password>   # optional
+              encrypted_password: <SCRAM hash> # optional
+              createdb: true|false              # optional
+              createuser: true|false            # optional
+              superuser: true|false             # optional
+              login: true|false                 # optional
+'''
+
+A minimal working iac_blueprint that installs PostgreSQL 17 with one instance and allows user app to 
+connect to database appdb from a specific network:
+
+'''yaml
+iac_blueprint:
+  postgresql:
+    - version: 17
+      instances:
+        - name: main
+          users:
+            - name: app
+              password: changeme
+          databases:
+            - name: appdb
+              owner: app
+              access:
+                - name: app
+                  address: 192.168.1.0/24
+'''
