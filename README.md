@@ -66,7 +66,8 @@ a specific PostgreSQL major version and includes one or more instances configure
 same or different hosts.
 
 Top-level structure:
-'''yaml
+
+```yaml
 iac_blueprint:
   postgresql:
     - version: <major version number>          # e.g. 17
@@ -98,12 +99,12 @@ iac_blueprint:
               createuser: true|false            # optional
               superuser: true|false             # optional
               login: true|false                 # optional
-'''
+```
 
 A minimal working iac_blueprint that installs PostgreSQL 17 with one instance and allows user app to 
 connect to database appdb from a specific network:
 
-'''yaml
+```yaml
 iac_blueprint:
   postgresql:
     - version: 17
@@ -118,4 +119,4 @@ iac_blueprint:
               access:
                 - name: app
                   address: 192.168.1.0/24
-'''
+```
