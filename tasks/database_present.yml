@@ -81,7 +81,7 @@
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
   vars:
-    pg_log_write: "Created database {{ pg_version }}/{{ pg_instance }}/{{ pg_database }}"
+    iac_log_write: "Created database {{ pg_version }}/{{ pg_instance }}/{{ pg_database }}"
 
 ###############################################################################
 # ENSURING ACCESS TO DATABASE

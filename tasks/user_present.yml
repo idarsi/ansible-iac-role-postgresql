@@ -97,4 +97,4 @@
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
   vars:
-    pg_log_write: "Created user {{ pg_version }}/{{ pg_instance }}/{{ pg_db_user }}"
+    iac_log_write: "Created user {{ pg_version }}/{{ pg_instance }}/{{ pg_db_user }}"

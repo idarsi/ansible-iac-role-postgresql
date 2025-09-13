@@ -90,7 +90,7 @@
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
   vars:
-    pg_log_write: "Installed instance {{ pg_version }}/{{ pg_instance }}"
+    iac_log_write: "Installed instance {{ pg_version }}/{{ pg_instance }}"
   when: not postgres_data.stat.exists
 
 ###############################################################################
@@ -127,7 +127,7 @@
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
   vars:
-    pg_log_write: "Created {{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/conf.d/40-profile.conf"
+    iac_log_write: "Created {{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/conf.d/40-profile.conf"
   when: pg_profile is defined
 
 ###############################################################################
@@ -146,7 +146,7 @@
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
   vars:
-    pg_log_write: "Created {{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/conf.d/41-security.conf"
+    iac_log_write: "Created {{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/conf.d/41-security.conf"
   when: pg_security is defined
 
 ###############################################################################
@@ -201,7 +201,7 @@
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
   vars:
-    pg_log_write: "Created {{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/conf.d/42-inventory.conf"
+    iac_log_write: "Created {{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/conf.d/42-inventory.conf"
   when: rendered_lines is defined
 
 ###############################################################################
@@ -220,7 +220,7 @@
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
   vars:
-    pg_log_write: "Created {{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/conf.d/43-autotuned.conf"
+    iac_log_write: "Created {{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/conf.d/43-autotuned.conf"
   when: pg_autotuning is defined
 
 ###############################################################################
@@ -278,7 +278,7 @@
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
   vars:
-    pg_log_write: "Ensured {{ pg_systemd_service_dir }}/postgresql-{{ pg_version }}-{{ pg_instance }}.service"
+    iac_log_write: "Ensured {{ pg_systemd_service_dir }}/postgresql-{{ pg_version }}-{{ pg_instance }}.service"
 
 - name: "Executing systemd daemon-reload"
   ansible.builtin.systemd:

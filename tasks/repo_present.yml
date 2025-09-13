@@ -127,7 +127,7 @@
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
   vars:
-    pg_log_write: "Enabled repository {{ pg_version }}"
+    iac_log_write: "Enabled repository {{ pg_version }}"
 
 ###############################################################################
 # EXCLUDING FROM OTHER REPOSITORIES
@@ -158,4 +158,4 @@
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
   vars:
-    pg_log_write: "Enabled repository {{ pg_version }}"
+    iac_log_write: "Enabled repository {{ pg_version }}"

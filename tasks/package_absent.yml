@@ -43,5 +43,5 @@
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
   vars:
-    pg_log_write: "Ensured {{ pg_package }} was removed"
+    iac_log_write: "Ensured {{ pg_package }} was removed"
   when: pg_package is defined

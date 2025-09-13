@@ -41,7 +41,7 @@
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
   vars:
-    pg_log_write: "Checked service {{ pg_version }}/{{ pg_instance }} was {{ service_active.stdout }}"
+    iac_log_write: "Checked service {{ pg_version }}/{{ pg_instance }} was {{ service_active.stdout }}"
 
 - name: "Setting variables"
   ansible.builtin.set_fact:
@@ -55,5 +55,5 @@
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
   vars:
-    pg_log_write: "Started service {{ pg_version }}/{{ pg_instance }}"
+    iac_log_write: "Started service {{ pg_version }}/{{ pg_instance }}"
   when: service_active.stdout != 'active'

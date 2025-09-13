@@ -17,6 +17,14 @@ https_proxy: ""
 no_proxy: ""
 
 ###############################################################################
+# SUPPORTED TARGET OPERATING SYSTEMS
+###############################################################################
+
+iac_supported_os:
+  - { name: "Rocky", versions: [ "8", "9", "10" ] }
+  - { name: "Fedora", versions: [ "41", "42" ] }
+
+###############################################################################
 # DNF CONFIGURATION
 ###############################################################################
 
@@ -31,9 +39,9 @@ pg_dnf_repo_path: "/etc/yum.repos.d/pgdg-redhat-all.repo"
 # ANSIBLE LOG
 ###############################################################################
 
-pg_name: "postgresql"
-pg_ansible_report: true
-pg_ansible_report_tasks_path: "/root/ansible-report-tasks.log"
+iac_service_name: "postgresql"
+iac_ansible_report: true
+iac_ansible_report_tasks_path: "/root/ansible-report-tasks.log"
 
 ###############################################################################
 # INSTALLATION
