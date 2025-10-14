@@ -34,9 +34,8 @@
     - { name: citus,        package: "citus_{{ pg_version }}" }
     - { name: pg_cron,      package: "pg_cron_{{ pg_version }}" }
     - { name: pgaudit,      package: "pgaudit_{{ pg_version }}" }
-    - { name: postgis33,    package: "postgis33_{{ pg_version }}" }
-    - { name: postgis34,    package: "postgis34_{{ pg_version }}" }
     - { name: postgis35,    package: "postgis35_{{ pg_version }}" }
+    - { name: postgis36,    package: "postgis36_{{ pg_version }}" }    
     - { name: set_user,     package: "set_user_{{ pg_version }}" }
     - { name: timescaledb,  package: "timescaledb_{{ pg_version }}" }
   loop_control:
@@ -46,6 +45,6 @@
   when:
     - pg_extension is defined
     - pg_extension == ext.name
-    - pg_version in ['17', '16']
+    - pg_version in ['18', '17', '16']
     - (ansible_distribution in ['RedHat', 'Rocky'] and ansible_distribution_major_version in ['10', '9', '8']) or 
       (ansible_distribution in ['Fedora'] and ansible_distribution_major_version in ['41','42'])
