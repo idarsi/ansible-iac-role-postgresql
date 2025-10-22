@@ -15,24 +15,17 @@
   ansible.builtin.fail:
     msg: "Unsupported operating system: {{ ansible_distribution }} {{ ansible_distribution_major_version }}"
   when: >
-    iac_supported_os | selectattr('name', 'equalto', ansible_distribution) 
-                 | selectattr('versions', 'contains', ansible_distribution_major_version) 
-                 | list 
+    iac_supported_os | selectattr('name', 'equalto', ansible_distribution)
+                 | selectattr('versions', 'contains', ansible_distribution_major_version)
+                 | list
                  | length == 0
 
 - name: "Checking if service_key is found from variables"
   ansible.builtin.fail:
     msg: "iac_blueprint.{{ iac_service_key }} is not defined"
   when:
-   - iac_blueprint is not defined
-   - iac_blueprint.{{ iac_service_key }} is not defined
-
-- name: "Checking if PostgreSQL inventory configuration is found"
-  ansible.builtin.fail:
-    msg: "iac_blueprint.postgresql is not defined"
-  when:
-   - iac_blueprint is not defined
-   - iac_blueprint.postgresql is not defined
+    - iac_blueprint is not defined
+    - iac_blueprint.{{ iac_service_key }} is not defined
 
 ###############################################################################
 # SETTING VARIABLES
