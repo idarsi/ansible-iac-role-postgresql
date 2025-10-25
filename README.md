@@ -59,6 +59,56 @@ changes, separating the what from the how.
 Usage
 =====
 
+how to run playbook with inventory
+----------------------------------
+
+Use playbook and inventory examples to create your own playbook and run command below.
+
+```bash
+ansible-playbook -i <inventory_file> <playbook_file> -kK
+```
+
+playbook example
+----------------
+
+```yaml
+---
+- hosts: postgres
+  become: true
+
+  roles:
+  - role: ansible-role-postgresql
+    state: present
+
+  - role: ansible-role-postgresql
+    state: instances_present
+
+  - role: ansible-role-postgresql
+    state: instances_started
+
+  - role: ansible-role-postgresql
+    state: users_present
+
+  - role: ansible-role-postgresql
+    state: databases_present
+```
+
+inventory example
+-----------------
+
+```yaml
+---
+postgres:
+  hosts:
+    example.org:
+  vars:
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: main
+```
+
 iac_blueprint inventory structure
 ---------------------------------
 
@@ -123,9 +173,4 @@ iac_blueprint:
 Minimal example: just install PostgreSQL with one instance
 
 ```yaml
-iac_blueprint:
-  postgresql:
-    - version: 17
-      instances:
-        - name: main
 ```
