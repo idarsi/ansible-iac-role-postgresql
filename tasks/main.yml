@@ -22,10 +22,10 @@
 
 - name: "Checking if service_key is found from variables"
   ansible.builtin.fail:
-    msg: "iac_blueprint.{{ iac_service_key }} is not defined"
+    msg: "iac_blueprint or iac_blueprint.postgresql is not defined"
   when:
     - iac_blueprint is not defined
-    - iac_blueprint.{{ iac_service_key }} is not defined
+    - iac_blueprint.postgresql is not defined
 
 ###############################################################################
 # SETTING VARIABLES
@@ -72,6 +72,10 @@
   ansible.builtin.include_tasks: install.yml
   when: state == 'install'
 
+- name: "STATE: Ensure PostgreSQL installations are absent"
+  ansible.builtin.include_tasks: uninstall.yml
+  when: state == 'uninstall'
+
 - name: "STATE: Ensure PostgreSQL installations are present"
   ansible.builtin.include_tasks: present.yml
   when: state == 'present'
@@ -82,24 +86,36 @@
 
 - name: "STATE: Ensure PostgreSQL instances are present"
   ansible.builtin.include_tasks: loop_instances.yml
+  vars:
+    pg_state: "{{ state }}"
   when: state == 'instances_present'
 
 - name: "STATE: Ensure PostgreSQL instances are absent"
   ansible.builtin.include_tasks: loop_instances.yml
+  vars:
+    pg_state: "{{ state }}"
   when: state == 'instances_absent'
 
 - name: "STATE: Ensure PostgreSQL instances are started"
   ansible.builtin.include_tasks: loop_instances.yml
+  vars:
+    pg_state: "{{ state }}"
   when: state == 'instances_started'
 
 - name: "STATE: Ensure PostgreSQL instances are stopped"
   ansible.builtin.include_tasks: loop_instances.yml
+  vars:
+    pg_state: "{{ state }}"
   when: state == 'instances_stopped'
 
 - name: "STATE: Ensure PostgreSQL database users are present"
   ansible.builtin.include_tasks: loop_instances.yml
+  vars:
+    pg_state: "{{ state }}"
   when: state == 'users_present'
 
 - name: "STATE: Ensure PostgreSQL databases are present"
   ansible.builtin.include_tasks: loop_instances.yml
+  vars:
+    pg_state: "{{ state }}"
   when: state == 'databases_present'

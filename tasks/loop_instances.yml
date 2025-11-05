@@ -21,17 +21,12 @@
       - pg_lc_ctype is defined
     fail_msg: "All tests did not pass"
 
-- name: "Setting variable"
-  ansible.builtin.set_fact:
-    task_state: "{{ state }}"
-  when: state != 'install'
-
 ###############################################################################
 # LOOPING THROUGH INSTANCES
 ###############################################################################
 
 - name: "Looping through instances"
-  ansible.builtin.include_tasks: "{{ task_state }}.yml"
+  ansible.builtin.include_tasks: "{{ pg_state }}.yml"
   loop: "{{ pg_instances }}"
   loop_control:
     loop_var: pg_instance_record

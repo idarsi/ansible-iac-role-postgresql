@@ -1,9 +1,10 @@
-ANSIBLE-ROLE-POSTGRESQL
-=======================
+ANSIBLE-IAC-ROLE-POSTGRESQL
+===========================
 **COPYRIGHT** 2025 ^(ida|arsi)$ collective  
 **LICENSE** MIT License [LICENSE](LICENSE)  
 **AUTHORS**
 - Arsi Atomi <arsi@atomi.sh>  
+- Arsi Atomi <arsi.atomi@valtori.fi>  
 
 Overview
 ========
@@ -18,16 +19,21 @@ Supported PostgreSQL versions (from PostgreSQL repository):
 - PostgreSQL 16
 
 These operations are supported:
-- Installing PostgreSQL
-- Uninstalling PostgreSQL
-- Creating PostgreSQL instance
-- Removing PostgreSQL instance
-- Starting PostgreSQL instance service
-- Stopping PostgreSQL instance service
-- Creating database
-- Removing database
-- Creating database user
-- Removing database user
+
+Operation                       | State               |
+--------------------------------|---------------------|
+Installing and configuring all  | install             |
+Uninstalling all                | uninstall           |
+Installing PostgreSQL           | present             |
+Uninstalling PostgreSQL         | absent              |
+Create PostgreSQL instances     | instances_present   |
+Remove PostgreSQL instances     | instances_absent    |
+Start PostgreSQL instances      | instances_started   |
+Stop PostgreSQL instances       | instances_stopped   |
+Create databases                | databases_present   |
+Remove databases                | databases_absent    |
+Create database users           | users_present       |
+Remove database users           | users_absent        |
 
 Requirements
 ------------
@@ -35,6 +41,7 @@ Requirements
 - Operating system (one mandatory)
   - Fedora Linux 42
   - Fedora Linux 41
+  - Red Hat Enterprise Linux 8
   - Rocky Linux 10
   - Rocky Linux 9
   - Rocky Linux 8
@@ -175,4 +182,9 @@ iac_blueprint:
 Minimal example: just install PostgreSQL with one instance
 
 ```yaml
+iac_blueprint:
+  postgresql:
+    - version: 17
+      instances:
+        - name: data
 ```

@@ -100,6 +100,19 @@
   loop: "{{ pg_access }}"
   when: pg_access is defined
 
+- name: "Setting log variables"
+  ansible.builtin.set_fact:
+    pg_cli_command: "systemctl reload postgresql-{{ pg_version }}-{{ pg_instance }}.service"
+
+- name: "Ensuring instance is reloaded"
+  ansible.builtin.command: "{{ pg_cli_command }}"
+  failed_when: false
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    iac_log_write: "Reloaded service {{ pg_version }}/{{ pg_instance }}"
+
 ###############################################################################
 # LOOPING THROUGH EXTENSIONS
 ###############################################################################

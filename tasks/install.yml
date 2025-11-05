@@ -1,0 +1,31 @@
+---
+###############################################################################
+#
+# install.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+- name: "STATE: Ensure PostgreSQL installation is present"
+  ansible.builtin.include_tasks: present.yml
+
+- name: "STATE: Ensure PostgreSQL instances are present"
+  ansible.builtin.include_tasks: loop_instances.yml
+  vars:
+    pg_state: "instances_present"
+
+- name: "STATE: Ensure PostgreSQL instances are started"
+  ansible.builtin.include_tasks: loop_instances.yml
+  vars:
+    pg_state: "instances_started"
+
+- name: "STATE: Ensure PostgreSQL users are present"
+  ansible.builtin.include_tasks: loop_instances.yml
+  vars:
+    pg_state: "users_present"
+
+- name: "STATE: Ensure PostgreSQL databases are present"
+  ansible.builtin.include_tasks: loop_instances.yml
+  vars:
+    pg_state: "databases_present"
