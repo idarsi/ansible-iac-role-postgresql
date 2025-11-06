@@ -1,0 +1,35 @@
+---
+servers:
+  hosts:
+    host.example.org:
+  vars:
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: data
+              databases:
+                - name: mydatabase
+                  owner: myadmin
+                  extensions:
+                    - name: pgaudit
+                    - name: citus
+                    - name: postgis35
+                  access:
+                    - name: myuser
+                      address: 10.89.0.1/32
+                      type: host
+                      method: scram-sha-256
+              users:
+                - name: myuser
+                  password: jepujee!
+                  createdb: true
+                - name: myadmin
+                  encrypted_password: SCRAM-SHA-256$4096:1RVfuKXwkdIH5E6/8Faygg==$W3D8X+mL1u72cgysrW1Es88blE7jsUzxDB9MV1sIHrs=:9c1enL1YEr2tLkdmmtNVydhDf/a7PHPvzsnkWOa4HHw=
+                  createuser: false
+              configuration_profile: balanced
+              autotuning_profile: balanced
+              security_profile: safe
+              configuration:
+                max_connections: 50
+                shared_preload_libraries: citus,pgaudit

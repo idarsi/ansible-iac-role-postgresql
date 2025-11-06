@@ -1,0 +1,7 @@
+---
+- hosts: servers
+  become: true
+
+  roles:
+  - role: ansible-iac-role-postgresql
+    state: install
