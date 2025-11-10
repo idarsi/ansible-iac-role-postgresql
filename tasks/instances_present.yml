@@ -16,6 +16,7 @@
     pg_autotuning: "{{ pg_instance_record.1.autotuning_profile | default('off') }}"
     pg_configuration: "{{ pg_instance_record.1.configuration | default(omit) }}"
     pg_databases: "{{ pg_instance_record.1.databases | default([]) }}"
+    pg_global_access: "{{ pg_instance_record.1.global_access | default([]) }}"
     pg_instance: "{{ pg_instance_record.1.name }}"
     pg_max_connections: "{{ pg_instance_record.1.configuration.max_connections | default(pg_default_max_connections) }}"
     pg_port: "{{ pg_instance_record.1.configuration.port | default(pg_default_port) }}"
@@ -242,6 +243,19 @@
     owner: "{{ pg_os_user }}"
     group: "{{ pg_os_group }}"
     mode: "0600"
+
+- name: "Ensure pg_hba.conf access rules are present"
+  ansible.builtin.lineinfile:
+    path: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/pg_hba.conf"
+    line: "{{ item.type | default('host') }} all {{ item.name }} {{ item.address }} {{ item.method | default('scram-sha-256') }} {{ item.options | default('') }}"
+    state: present
+    create: no
+    insertafter: EOF
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0600"
+  loop: "{{ pg_global_access }}"
+  when: pg_global_access is defined
 
 ###############################################################################
 # ENSURING LOG DIRECTORY EXISTS

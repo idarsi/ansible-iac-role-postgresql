@@ -1,0 +1,21 @@
+---
+###############################################################################
+#
+# uninstall.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+- name: "STATE: Ensure PostgreSQL instances are stopped"
+  ansible.builtin.include_tasks: loop_instances.yml
+  vars:
+    pg_state: "instances_stopped"
+
+- name: "STATE: Ensure PostgreSQL instances are absent"
+  ansible.builtin.include_tasks: loop_instances.yml
+  vars:
+    pg_state: "instances_absent"
+
+- name: "STATE: Ensure PostgreSQL installation is absent"
+  ansible.builtin.include_tasks: absent.yml
