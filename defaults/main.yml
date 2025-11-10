@@ -22,7 +22,7 @@ no_proxy: ""
 
 iac_supported_os:
   - { name: "Rocky", versions: ["8", "9", "10"] }
-  - { name: "RedHat", versions: ["8"] }
+  - { name: "RedHat", versions: ["8", "9"] }
   - { name: "Fedora", versions: ["41", "42"] }
 
 ###############################################################################
