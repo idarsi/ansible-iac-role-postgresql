@@ -38,10 +38,11 @@ Remove database users           | users_absent        |
 Requirements
 ------------
 
-- Operating system (one mandatory)
+- Operating system (tested on)
   - Fedora Linux 42
   - Fedora Linux 41
   - Red Hat Enterprise Linux 8
+  - Red Hat Enterprise Linux 9
   - Rocky Linux 10
   - Rocky Linux 9
   - Rocky Linux 8
@@ -77,8 +78,20 @@ Use playbook and inventory examples to create your own playbook and run command 
 ansible-playbook -i <inventory_file> <playbook_file> -kK
 ```
 
-playbook example
+Playbook example
 ----------------
+
+```yaml
+---
+- hosts: postgres
+  become: true
+
+  roles:
+  - role: ansible-role-postgresql
+    state: install
+```
+
+The above example is equivalent to the example below in practical use.
 
 ```yaml
 ---
@@ -102,7 +115,7 @@ playbook example
     state: databases_present
 ```
 
-inventory example
+Inventory example
 -----------------
 
 ```yaml
