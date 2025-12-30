@@ -31,13 +31,20 @@
 - name: "Ensuring required PostgreSQL extension packages are installed"
   ansible.builtin.include_tasks: package_present.yml
   loop:
-    - { name: citus,        package: "citus_{{ pg_version }}" }
-    - { name: pg_cron,      package: "pg_cron_{{ pg_version }}" }
-    - { name: pgaudit,      package: "pgaudit_{{ pg_version }}" }
-    - { name: postgis35,    package: "postgis35_{{ pg_version }}" }
-    - { name: postgis36,    package: "postgis36_{{ pg_version }}" }
-    - { name: set_user,     package: "set_user_{{ pg_version }}" }
-    - { name: timescaledb,  package: "timescaledb_{{ pg_version }}" }
+    - name: citus
+      package: "citus_{{ pg_version }}"
+    - name: pg_cron
+      package: "pg_cron_{{ pg_version }}"
+    - name: pgaudit
+      package: "pgaudit_{{ pg_version }}"
+    - name: postgis35
+      package: "postgis35_{{ pg_version }}"
+    - name: postgis36
+      package: "postgis36_{{ pg_version }}"
+    - name: set_user
+      package: "set_user_{{ pg_version }}"
+    - name: timescaledb
+      package: "timescaledb_{{ pg_version }}"
   loop_control:
     loop_var: ext
   vars:

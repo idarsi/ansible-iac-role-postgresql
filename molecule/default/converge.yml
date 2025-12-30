@@ -1,0 +1,19 @@
+---
+- name: Converge
+  hosts: all
+  become: false
+  vars:
+    state: install
+    pg_lang: "en"
+    pg_locale: "US"
+    pg_disable_postgresql_module: false
+    ansible_become_method: su
+    iac_blueprint:
+      postgresql:
+        - version: "16"
+          instances:
+            - name: main
+              roles: []
+              databases: []
+  roles:
+    - role: ansible-iac-role-postgresql

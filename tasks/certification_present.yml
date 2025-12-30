@@ -34,7 +34,7 @@
 
 - name: "Ensuring directory ssl is present"
   ansible.builtin.file:
-    path: "{{ pg_default_dir}}/{{ pg_version }}/{{ pg_instance }}/ssl/"
+    path: "{{ pg_default_dir }}/{{ pg_version }}/{{ pg_instance }}/ssl/"
     state: directory
     owner: "{{ pg_os_user }}"
     group: "{{ pg_os_group }}"
@@ -68,7 +68,7 @@
 
 - name: "Ensuring files are set to 0600"
   ansible.builtin.file:
-    path: "{{ pg_default_dir}}/{{ pg_version }}/{{ pg_instance }}/ssl/"
+    path: "{{ pg_default_dir }}/{{ pg_version }}/{{ pg_instance }}/ssl/"
     owner: "{{ pg_os_user }}"
     group: "{{ pg_os_group }}"
     mode: "0600"
@@ -76,7 +76,7 @@
 
 - name: "Ensuring directory is set 0700"
   ansible.builtin.file:
-    path: "{{ pg_default_dir}}/{{ pg_version }}/{{ pg_instance }}/ssl/"
+    path: "{{ pg_default_dir }}/{{ pg_version }}/{{ pg_instance }}/ssl/"
     state: directory
     owner: "{{ pg_os_user }}"
     group: "{{ pg_os_group }}"

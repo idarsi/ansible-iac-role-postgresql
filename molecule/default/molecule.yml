@@ -1,0 +1,44 @@
+---
+dependency:
+  name: galaxy
+
+driver:
+  name: podman
+
+platforms:
+  - name: instance
+    image: registry.access.redhat.com/ubi9/ubi-init
+    command: /sbin/init
+    privileged: true
+    pre_build_image: true
+    systemd: true
+    tty: true
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+  - name: instance-ubi8
+    image: registry.access.redhat.com/ubi8/ubi-init
+    command: /sbin/init
+    privileged: true
+    pre_build_image: true
+    systemd: true
+    tty: true
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+  - name: instance-ubi10
+    image: registry.access.redhat.com/ubi10/ubi-init
+    command: /sbin/init
+    privileged: true
+    pre_build_image: true
+    systemd: true
+    tty: true
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ASYNC_DIR: "${MOLECULE_PROJECT_DIRECTORY}/.ansible_async"
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/.."
+
+verifier:
+  name: ansible

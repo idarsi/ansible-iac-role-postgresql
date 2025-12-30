@@ -41,8 +41,8 @@
 
 - name: "Setting certificate variables if security_ssl is not off"
   ansible.builtin.set_fact:
-    pg_certificate_private_key_fullpath: "{{ pg_default_dir}}/{{ pg_version }}/{{ pg_instance }}/ssl/{{ pg_certificate_private_key_path }}"
-    pg_certificate_public_key_fullpath: "{{ pg_default_dir}}/{{ pg_version }}/{{ pg_instance }}/ssl/{{ pg_certificate_public_key_path }}"
+    pg_certificate_private_key_fullpath: "{{ pg_default_dir }}/{{ pg_version }}/{{ pg_instance }}/ssl/{{ pg_certificate_private_key_path }}"
+    pg_certificate_public_key_fullpath: "{{ pg_default_dir }}/{{ pg_version }}/{{ pg_instance }}/ssl/{{ pg_certificate_public_key_path }}"
   when: pg_security_ssl != 'off'
 
 - name: "Checking if required variables are defined"
@@ -112,6 +112,9 @@
     path: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/postgresql.conf"
     line: include_dir = 'conf.d'
     create: true
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0600"
 
 ###############################################################################
 # ENSURING PROFILE CONFIGURATION EXISTS IF NEEDED
@@ -248,9 +251,11 @@
 - name: "Ensure pg_hba.conf access rules are present"
   ansible.builtin.lineinfile:
     path: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/pg_hba.conf"
-    line: "{{ item.type | default('host') }} all {{ item.name }} {{ item.address }} {{ item.method | default('scram-sha-256') }} {{ item.options | default('') }}"
+    line: >-
+      {{ item.type | default('host') }} all {{ item.name }} {{ item.address }}
+      {{ item.method | default('scram-sha-256') }} {{ item.options | default('') }}
     state: present
-    create: no
+    create: false
     insertafter: EOF
     owner: "{{ pg_os_user }}"
     group: "{{ pg_os_group }}"

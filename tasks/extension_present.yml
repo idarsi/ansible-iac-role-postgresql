@@ -37,7 +37,9 @@
 
 - name: "Setting variables"
   ansible.builtin.set_fact:
-    pg_cli_command: "/usr/pgsql-{{ pg_version }}/bin/psql {{ pg_database }} -p {{ pg_port }} -tXAc \"SELECT 1 FROM pg_extension WHERE extname = '{{ pg_extension }}'\""
+    pg_cli_command: >-
+      /usr/pgsql-{{ pg_version }}/bin/psql {{ pg_database }} -p {{ pg_port }}
+      -tXAc "SELECT 1 FROM pg_extension WHERE extname = '{{ pg_extension }}'"
 
 - name: "Checking if extension already exists"
   become: true

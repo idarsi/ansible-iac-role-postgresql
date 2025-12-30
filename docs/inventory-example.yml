@@ -25,7 +25,8 @@ servers:
                   password: jepujee!
                   createdb: true
                 - name: myadmin
-                  encrypted_password: SCRAM-SHA-256$4096:1RVfuKXwkdIH5E6/8Faygg==$W3D8X+mL1u72cgysrW1Es88blE7jsUzxDB9MV1sIHrs=:9c1enL1YEr2tLkdmmtNVydhDf/a7PHPvzsnkWOa4HHw=
+                  encrypted_password: >-
+                    SCRAM-SHA-256$4096:1RVfuKXwkdIH5E6/8Faygg==$W3D8X+mL1u72cgysrW1Es88blE7jsUzxDB9MV1sIHrs=:9c1enL1YEr2tLkdmmtNVydhDf/a7PHPvzsnkWOa4HHw=
                   createuser: false
               configuration_profile: balanced
               autotuning_profile: balanced

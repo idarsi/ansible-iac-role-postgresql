@@ -86,11 +86,11 @@
   register: repo_file
 
 - name: "Adding proxy settings to PostgreSQL repo file if it exists and proxy settings are missing but proxy setting is defined"
-  ansible.builtin.command: >
-    sed -i '/^\[.*\]$/a proxy={{ http_proxy }}' {{ pg_dnf_repo_path }}
-  register: my_output
-  failed_when: false
-  changed_when: false
+  ansible.builtin.lineinfile:
+    path: "{{ pg_dnf_repo_path }}"
+    regexp: '^proxy='
+    line: "proxy={{ http_proxy }}"
+    insertafter: '^\[.*\]$'
   when: repo_file.stat.exists and http_proxy is defined
 
 ###############################################################################
@@ -141,7 +141,10 @@
 - name: "Setting variables"
   ansible.builtin.set_fact:
     pg_cli_command: "dnf -qy module disable postgresql"
-  when: ansible_distribution in ['RedHat','Rocky'] and ansible_distribution_major_version in ['8','9']
+  when: >
+    ansible_distribution in ['RedHat','Rocky']
+    and ansible_distribution_major_version in ['8','9']
+    and (pg_disable_postgresql_module | bool)
 
 - name: "Setting variables"
   ansible.builtin.set_fact:
@@ -154,6 +157,7 @@
   register: my_output
   changed_when: my_output.rc == 0
   failed_when: my_output.rc != 0
+  when: pg_cli_command is defined
 
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml

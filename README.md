@@ -88,7 +88,7 @@ Playbook example
   become: true
 
   roles:
-  - role: ansible-role-postgresql
+  - role: ansible-iac-role-postgresql
     state: install
 ```
 
@@ -100,19 +100,19 @@ The above example is equivalent to the example below in practical use.
   become: true
 
   roles:
-  - role: ansible-role-postgresql
+  - role: ansible-iac-role-postgresql
     state: present
 
-  - role: ansible-role-postgresql
+  - role: ansible-iac-role-postgresql
     state: instances_present
 
-  - role: ansible-role-postgresql
+  - role: ansible-iac-role-postgresql
     state: instances_started
 
-  - role: ansible-role-postgresql
+  - role: ansible-iac-role-postgresql
     state: users_present
 
-  - role: ansible-role-postgresql
+  - role: ansible-iac-role-postgresql
     state: databases_present
 ```
 
@@ -163,7 +163,7 @@ iac_blueprint:
                   address: <CIDR>
                   type: <host|hostssl|local>   # optional, default: host
                   method: <auth_method>        # optional, default: scram-sha-256
-          users:                               # users that exist in this instance
+          roles:                               # roles that exist in this instance
             - name: <username>
               password: <cleartext password>   # optional
               encrypted_password: <SCRAM hash> # optional
@@ -182,7 +182,7 @@ iac_blueprint:
     - version: 17
       instances:
         - name: main
-          users:
+          roles:
             - name: app
               password: changeme
           databases:

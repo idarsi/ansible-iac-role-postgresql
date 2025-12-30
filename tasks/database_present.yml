@@ -34,7 +34,9 @@
 
 - name: "Setting variables"
   ansible.builtin.set_fact:
-    pg_cli_command: "/usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }} -tXAc \"SELECT 1 FROM pg_database WHERE datname='{{ pg_database }}'\""
+    pg_cli_command: >-
+      /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
+      -tXAc "SELECT 1 FROM pg_database WHERE datname='{{ pg_database }}'"
 
 - name: "Checking if database already exists"
   become: true
@@ -45,6 +47,7 @@
   failed_when: database_exists.rc != 0
 
 - name: "Preparing CREATE DATABASE command if database does not exist"
+  when: database_exists.stdout != '1'
   block:
     - name: "Setting optional attributes for CREATE DATABASE"
       ansible.builtin.set_fact:
@@ -55,10 +58,12 @@
     - name: "Assembling full CREATE DATABASE psql command"
       ansible.builtin.set_fact:
         pg_cli_command: >-
-          /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }} -c "CREATE DATABASE \"{{ pg_database }}\" {{ pg_database_owner_str }} {{ pg_database_encoding_str }}"
-  when: database_exists.stdout != '1'
+          /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
+          -c "CREATE DATABASE \"{{ pg_database }}\" {{ pg_database_owner_str }}
+          {{ pg_database_encoding_str }}"
 
 - name: "Preparing ALTER DATABASE command if database does not exist"
+  when: database_exists.stdout == '1'
   block:
     - name: "Setting optional attributes for ALTER DATABASE"
       ansible.builtin.set_fact:
@@ -67,8 +72,8 @@
     - name: "Assembling full ALTER DATABASE psql command"
       ansible.builtin.set_fact:
         pg_cli_command: >-
-          /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }} -c "ALTER DATABASE \"{{ pg_database }}\" {{ pg_database_owner_str }}"
-  when: database_exists.stdout == '1'
+          /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
+          -c "ALTER DATABASE \"{{ pg_database }}\" {{ pg_database_owner_str }}"
 
 - name: "Ensuring database is present with correct parameters"
   become: true
@@ -90,9 +95,12 @@
 - name: "Ensure pg_hba.conf access rules are present"
   ansible.builtin.lineinfile:
     path: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/pg_hba.conf"
-    line: "{{ item.type | default('host') }} {{ pg_database_record.name }} {{ item.name }} {{ item.address }} {{ item.method | default('scram-sha-256') }} {{ item.options | default('') }}"
+    line: >-
+      {{ item.type | default('host') }} {{ pg_database_record.name }}
+      {{ item.name }} {{ item.address }}
+      {{ item.method | default('scram-sha-256') }} {{ item.options | default('') }}
     state: present
-    create: no
+    create: false
     insertafter: EOF
     owner: "{{ pg_os_user }}"
     group: "{{ pg_os_group }}"
@@ -100,13 +108,10 @@
   loop: "{{ pg_access }}"
   when: pg_access is defined
 
-- name: "Setting log variables"
-  ansible.builtin.set_fact:
-    pg_cli_command: "systemctl reload postgresql-{{ pg_version }}-{{ pg_instance }}.service"
-
 - name: "Ensuring instance is reloaded"
-  ansible.builtin.command: "{{ pg_cli_command }}"
-  failed_when: false
+  ansible.builtin.systemd:
+    name: "postgresql-{{ pg_version }}-{{ pg_instance }}.service"
+    state: reloaded
 
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml

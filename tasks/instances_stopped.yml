@@ -32,29 +32,30 @@
 # ENSURING SYSTEMD SERVICE IS STOPPED
 ###############################################################################
 
-- name: "Checking status for service"
-  ansible.builtin.command: "systemctl is-active postgresql-{{ pg_version }}-{{ pg_instance }}.service"
-  register: service_active
-  changed_when: false
-  failed_when: false
+- name: "Setting service name"
+  ansible.builtin.set_fact:
+    pg_service_name: "postgresql-{{ pg_version }}-{{ pg_instance }}.service"
+
+- name: "Gathering service facts"
+  ansible.builtin.service_facts:
+
+- name: "Setting service state"
+  ansible.builtin.set_fact:
+    pg_service_state: "{{ ansible_facts.services[pg_service_name].state | default('unknown') }}"
 
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
   vars:
-    iac_log_write: "Checked service {{ pg_version }}/{{ pg_instance }} was {{ service_active.stdout }}"
-
-- name: "Setting log variables"
-  ansible.builtin.set_fact:
-    pg_cli_command: "systemctl stop postgresql-{{ pg_version }}-{{ pg_instance }}.service"
-  when: service_active.stdout == 'active'
+    iac_log_write: "Checked service {{ pg_version }}/{{ pg_instance }} was {{ pg_service_state }}"
 
 - name: "Ensuring instance is stopped"
-  ansible.builtin.command: "{{ pg_cli_command }}"
-  failed_when: false
-  when: service_active.stdout == 'active'
+  ansible.builtin.systemd:
+    name: "{{ pg_service_name }}"
+    state: stopped
+  when: pg_service_state == 'running'
 
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
   vars:
     iac_log_write: "Stopped service {{ pg_version }}/{{ pg_instance }}"
-  when: service_active.stdout == 'active'
+  when: pg_service_state == 'running'

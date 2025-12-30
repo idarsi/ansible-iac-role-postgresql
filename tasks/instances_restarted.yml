@@ -1,7 +1,7 @@
 ---
 ###############################################################################
 #
-# instances_started.yml
+# instances_restarted.yml
 #
 # @author Arsi Atomi
 #
@@ -29,7 +29,7 @@
     fail_msg: "All tests did not pass"
 
 ###############################################################################
-# ENSURING SYSTEMD SERVICE IS STARTED
+# ENSURING SYSTEMD SERVICE IS RESTARTED
 ###############################################################################
 
 - name: "Setting service name"
@@ -48,14 +48,14 @@
   vars:
     iac_log_write: "Checked service {{ pg_version }}/{{ pg_instance }} was {{ pg_service_state }}"
 
-- name: "Ensuring instance is started"
+- name: "Ensuring instance is restarted"
   ansible.builtin.systemd:
     name: "{{ pg_service_name }}"
-    state: started
-  when: pg_service_state == 'stopped'
+    state: restarted
+  when: pg_service_state == 'running'
 
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
   vars:
-    iac_log_write: "Started service {{ pg_version }}/{{ pg_instance }}"
-  when: pg_service_state == 'stopped'
+    iac_log_write: "Restarted service {{ pg_version }}/{{ pg_instance }}"
+  when: pg_service_state == 'running'

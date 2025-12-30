@@ -33,6 +33,7 @@ dnf_sslverify: true
 dnf_validate_certs: true
 dnf_disable_gpg_check: false
 dnf_update_cache: true
+pg_disable_postgresql_module: true
 
 pg_dnf_repo_path: "/etc/yum.repos.d/pgdg-redhat-all.repo"
 

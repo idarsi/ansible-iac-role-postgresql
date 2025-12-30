@@ -81,11 +81,11 @@
   ansible.builtin.file:
     path: "{{ pg_real_dir }}"
     state: directory
-    recurse: yes
+    recurse: true
     owner: "{{ pg_os_user }}"
     group: "{{ pg_os_group }}"
     mode: u+rwX,g+rwX,o=
-  when: 
+  when:
     - pg_real_dir is defined
     - pg_real_dir != pg_default_dir
 
@@ -93,10 +93,10 @@
   ansible.builtin.copy:
     src: "{{ pg_default_dir }}"
     dest: "{{ pg_real_dir }}/.."
-    remote_src: yes
+    remote_src: true
     owner: "{{ pg_os_user }}"
     group: "{{ pg_os_group }}"
     mode: u+rwX,g+rwX,o=
-  when: 
+  when:
     - pg_real_dir is defined
     - pg_real_dir != pg_default_dir

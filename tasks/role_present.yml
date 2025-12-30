@@ -31,7 +31,9 @@
 
 - name: "Setting variables"
   ansible.builtin.set_fact:
-    pg_cli_command: "/usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }} -tXAc \"SELECT 1 FROM pg_roles WHERE rolname='{{ pg_db_role }}'\""
+    pg_cli_command: >-
+      /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
+      -tXAc "SELECT 1 FROM pg_roles WHERE rolname='{{ pg_db_role }}'"
 
 - name: "Checking if user already exists"
   become: true
@@ -41,6 +43,8 @@
   register: role_exists
 
 - name: "Preparing CREATE ROLE command if user does not exist"
+  when:
+    - role_exists.stdout != '1'
   block:
     - name: "Setting optional attributes for CREATE ROLE"
       ansible.builtin.set_fact:
@@ -49,21 +53,33 @@
         pg_db_role_encrypted_password_str: >-
           {{ "ENCRYPTED PASSWORD '{{ pg_role_record.encrypted_password }}'" if (pg_role_record.encrypted_password is defined) else '' }}
         pg_db_role_createdb_str: >-
-          {{ 'CREATEDB' if (pg_role_record.createdb is defined and pg_role_record.createdb | bool) else 'NOCREATEDB' if pg_role_record.createdb is defined else '' }}
+          {{ 'CREATEDB' if (pg_role_record.createdb is defined and
+          pg_role_record.createdb | bool) else 'NOCREATEDB'
+          if pg_role_record.createdb is defined else '' }}
         pg_db_role_createrole_str: >-
-          {{ 'CREATEROLE' if (pg_role_record.createrole is defined and pg_role_record.createrole | bool) else 'NOCREATEROLE' if pg_role_record.createrole is defined else '' }}
+          {{ 'CREATEROLE' if (pg_role_record.createrole is defined and
+          pg_role_record.createrole | bool) else 'NOCREATEROLE'
+          if pg_role_record.createrole is defined else '' }}
         pg_db_role_superuser_str: >-
-          {{ 'SUPERUSER' if (pg_role_record.superuser is defined and pg_role_record.superuser | bool) else 'NOSUPERUSER' if pg_role_record.superuser is defined else '' }}
+          {{ 'SUPERUSER' if (pg_role_record.superuser is defined and
+          pg_role_record.superuser | bool) else 'NOSUPERUSER'
+          if pg_role_record.superuser is defined else '' }}
         pg_db_role_login_str: >-
-          {{ 'LOGIN' if (pg_role_record.login is defined and pg_role_record.login | bool) else 'NOLOGIN' if pg_role_record.login is defined else '' }}
+          {{ 'LOGIN' if (pg_role_record.login is defined and
+          pg_role_record.login | bool) else 'NOLOGIN'
+          if pg_role_record.login is defined else '' }}
     - name: "Assembling full CREATE ROLE psql command"
       ansible.builtin.set_fact:
         pg_cli_command: >-
-          /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }} -c "CREATE ROLE \"{{ pg_db_role }}\" {{ pg_db_role_password_str }} {{ pg_db_role_encrypted_password_str }} {{ pg_db_role_createdb_str }} {{ pg_db_role_createrole_str }} {{ pg_db_role_superuser_str }} {{ pg_db_role_login_str }}"
-  when:
-    - role_exists.stdout != '1'
+          /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
+          -c "CREATE ROLE \"{{ pg_db_role }}\" {{ pg_db_role_password_str }}
+          {{ pg_db_role_encrypted_password_str }} {{ pg_db_role_createdb_str }}
+          {{ pg_db_role_createrole_str }} {{ pg_db_role_superuser_str }}
+          {{ pg_db_role_login_str }}"
 
 - name: "Preparing ALTER ROLE command if user does exist"
+  when:
+    - role_exists.stdout == '1'
   block:
     - name: "Setting optional attributes for ALTER ROLE"
       ansible.builtin.set_fact:
@@ -72,19 +88,29 @@
         pg_db_role_encrypted_password_str: >-
           {{ "ENCRYPTED PASSWORD '{{ pg_role_record.encrypted_password }}'" if (pg_role_record.encrypted_password is defined) else '' }}
         pg_db_role_createdb_str: >-
-          {{ 'CREATEDB' if (pg_role_record.createdb is defined and pg_role_record.createdb | bool) else 'NOCREATEDB' if pg_role_record.createdb is defined else '' }}
+          {{ 'CREATEDB' if (pg_role_record.createdb is defined and
+          pg_role_record.createdb | bool) else 'NOCREATEDB'
+          if pg_role_record.createdb is defined else '' }}
         pg_db_role_createrole_str: >-
-          {{ 'CREATEROLE' if (pg_role_record.createrole is defined and pg_role_record.createrole | bool) else 'NOCREATEROLE' if pg_role_record.createrole is defined else '' }}
+          {{ 'CREATEROLE' if (pg_role_record.createrole is defined and
+          pg_role_record.createrole | bool) else 'NOCREATEROLE'
+          if pg_role_record.createrole is defined else '' }}
         pg_db_role_superuser_str: >-
-          {{ 'SUPERUSER' if (pg_role_record.superuser is defined and pg_role_record.superuser | bool) else 'NOSUPERUSER' if pg_role_record.superuser is defined else '' }}
+          {{ 'SUPERUSER' if (pg_role_record.superuser is defined and
+          pg_role_record.superuser | bool) else 'NOSUPERUSER'
+          if pg_role_record.superuser is defined else '' }}
         pg_db_role_login_str: >-
-          {{ 'LOGIN' if (pg_role_record.login is defined and pg_role_record.login | bool) else 'NOLOGIN' if pg_role_record.login is defined else '' }}
+          {{ 'LOGIN' if (pg_role_record.login is defined and
+          pg_role_record.login | bool) else 'NOLOGIN'
+          if pg_role_record.login is defined else '' }}
     - name: "Assembling full CREATE ROLE psql command"
       ansible.builtin.set_fact:
         pg_cli_command: >-
-          /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }} -c "ALTER ROLE \"{{ pg_db_role }}\" {{ pg_db_role_password_str }} {{ pg_db_role_encrypted_password_str }} {{ pg_db_role_createdb_str }} {{ pg_db_role_createrole_str }} {{ pg_db_role_superuser_str }} {{ pg_db_role_login_str }}"
-  when:
-    - role_exists.stdout == '1'
+          /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
+          -c "ALTER ROLE \"{{ pg_db_role }}\" {{ pg_db_role_password_str }}
+          {{ pg_db_role_encrypted_password_str }} {{ pg_db_role_createdb_str }}
+          {{ pg_db_role_createrole_str }} {{ pg_db_role_superuser_str }}
+          {{ pg_db_role_login_str }}"
 
 - name: "Ensuring role is present"
   become: true
