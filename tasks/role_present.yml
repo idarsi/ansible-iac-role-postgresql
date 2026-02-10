@@ -119,6 +119,25 @@
   register: role_changed
   changed_when: "role_changed.rc == 0"
 
+- name: "Setting optional role description command"
+  ansible.builtin.set_fact:
+    pg_cli_comment_command: >-
+      /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
+      -c "COMMENT ON ROLE \"{{ pg_db_role }}\" IS '{{ pg_role_record.description | string }}'"
+  when:
+    - pg_role_record.description is defined
+    - pg_role_record.description is not none
+
+- name: "Ensuring role description is present"
+  become: true
+  become_user: "{{ pg_os_user }}"
+  ansible.builtin.command: "{{ pg_cli_comment_command }}"
+  register: role_comment_changed
+  changed_when: "role_comment_changed.rc == 0"
+  when:
+    - pg_role_record.description is defined
+    - pg_role_record.description is not none
+
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
   vars:

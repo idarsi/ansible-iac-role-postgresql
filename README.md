@@ -190,6 +190,7 @@ iac_blueprint:
               createuser: true|false           # optional
               superuser: true|false            # optional
               login: true|false                # optional
+              description: <role comment>      # optional
 ```
 
 A minimal working iac_blueprint that installs PostgreSQL 17 with one instance and allows user app to 

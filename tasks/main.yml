@@ -120,6 +120,12 @@
     pg_state: "{{ state }}"
   when: state == 'roles_present'
 
+- name: "STATE: Ensure PostgreSQL database roles are absent"
+  ansible.builtin.include_tasks: loop_instances.yml
+  vars:
+    pg_state: "{{ state }}"
+  when: state == 'roles_absent'
+
 - name: "STATE: Ensure PostgreSQL databases are present"
   ansible.builtin.include_tasks: loop_instances.yml
   vars:

@@ -1,0 +1,63 @@
+---
+###############################################################################
+#
+# role_absent.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+###############################################################################
+# SETTING VARIABLES
+###############################################################################
+
+- name: "Setting what variables are configured"
+  ansible.builtin.set_fact:
+    pg_db_role: "{{ pg_role_record.name }}"
+  when: pg_role_record is defined
+
+- name: "Checking if required variables are defined"
+  ansible.builtin.assert:
+    that:
+      - pg_db_role is defined
+      - pg_instance is defined
+      - pg_port is defined
+      - pg_version is defined
+    fail_msg: "All tests did not pass"
+
+###############################################################################
+# ENSURING USER IS ABSENT
+###############################################################################
+
+- name: "Setting variables"
+  ansible.builtin.set_fact:
+    pg_cli_command: >-
+      /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
+      -tXAc "SELECT 1 FROM pg_roles WHERE rolname='{{ pg_db_role }}'"
+
+- name: "Checking if user already exists"
+  become: true
+  become_user: "{{ pg_os_user }}"
+  ansible.builtin.command: "{{ pg_cli_command }}"
+  changed_when: false
+  register: role_exists
+
+- name: "Assembling DROP ROLE psql command"
+  ansible.builtin.set_fact:
+    pg_cli_command: >-
+      /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
+      -c "DROP ROLE \"{{ pg_db_role }}\""
+
+- name: "Ensuring role is absent"
+  become: true
+  become_user: "{{ pg_os_user }}"
+  ansible.builtin.command: "{{ pg_cli_command }}"
+  register: role_changed
+  changed_when: "role_changed.rc == 0"
+  when:
+    - role_exists.stdout == '1'
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    iac_log_write: "Dropped role {{ pg_version }}/{{ pg_instance }}/{{ pg_db_role }}"

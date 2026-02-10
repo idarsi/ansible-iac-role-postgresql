@@ -1,0 +1,39 @@
+---
+###############################################################################
+#
+# roles_absent.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+###############################################################################
+# SETTING VARIABLES
+###############################################################################
+
+- name: "Setting what variables are configured"
+  ansible.builtin.set_fact:
+    pg_roles: "{{ pg_instance_record.1.roles | default([]) }}"
+    pg_instance: "{{ pg_instance_record.1.name }}"
+    pg_version: "{{ pg_instance_record.0.version | string }}"
+    pg_port: "{{ pg_instance_record.1.configuration.port | default(pg_default_port) }}"
+  when: pg_instance_record is defined
+
+- name: "Checking if required variables are defined"
+  ansible.builtin.assert:
+    that:
+      - pg_roles is defined
+      - pg_instance is defined
+      - pg_version is defined
+      - pg_port is defined
+    fail_msg: "All tests did not pass"
+
+###############################################################################
+# LOOPING THROUGH USERS TO BE REMOVED
+###############################################################################
+
+- name: "Looping through roles"
+  ansible.builtin.include_tasks: "role_absent.yml"
+  loop: "{{ pg_roles }}"
+  loop_control:
+    loop_var: pg_role_record
