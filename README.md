@@ -33,7 +33,7 @@ Stop PostgreSQL instances       | instances_stopped   |
 Restart PostgreSQL instances    | instances_restarted |
 Create databases                | databases_present   |
 Remove databases                | databases_absent    |
-Create database users           | role_present       |
+Create database users           | roles_present       |
 Remove database users           | roles_absent        |
 
 Requirements
@@ -110,7 +110,7 @@ The above example is equivalent to the example below in practical use.
     state: instances_started
 
   - role: ansible-iac-role-postgresql
-    state: users_present
+    state: roles_present
 
   - role: ansible-iac-role-postgresql
     state: databases_present
