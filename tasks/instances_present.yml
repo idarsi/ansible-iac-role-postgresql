@@ -247,36 +247,26 @@
 # ENSURING DEFAULT PG_HBA.CONF IS DELETED AND NEW WRITTEN
 ###############################################################################
 
-- name: "Removing old pg_hba.conf"
-  ansible.builtin.file:
-    path: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/pg_hba.conf"
-    state: absent
+- name: "Rendering pg_hba.conf base content"
+  ansible.builtin.set_fact:
+    pg_hba_base_content: |-
+      local all postgres peer
+      {% for item in pg_global_access %}
+      {{ item.type | default('host') }} all {{ item.name }} {{ item.address }} {{ item.method | default('scram-sha-256') }}{{ (' ' ~ item.options) if (item.options is defined and (item.options | string | length > 0)) else '' }}
+      {% endfor %}
+      {% for database in pg_databases %}
+      {% for item in database.access | default([]) %}
+      {{ item.type | default('host') }} {{ database.name }} {{ item.name }} {{ item.address }} {{ item.method | default('scram-sha-256') }}{{ (' ' ~ item.options) if (item.options is defined and (item.options | string | length > 0)) else '' }}
+      {% endfor %}
+      {% endfor %}
 
-- name: "Ensure pg_hba.conf access rules are present"
-  ansible.builtin.lineinfile:
-    path: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/pg_hba.conf"
-    line: "local all postgres peer"
-    state: present
-    create: true
-    insertafter: EOF
+- name: "Ensuring pg_hba.conf base content is present"
+  ansible.builtin.copy:
+    content: "{{ pg_hba_base_content }}"
+    dest: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/pg_hba.conf"
     owner: "{{ pg_os_user }}"
     group: "{{ pg_os_group }}"
     mode: "0600"
-
-- name: "Ensure pg_hba.conf access rules are present"
-  ansible.builtin.lineinfile:
-    path: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/pg_hba.conf"
-    line: >-
-      {{ item.type | default('host') }} all {{ item.name }} {{ item.address }}
-      {{ item.method | default('scram-sha-256') }} {{ item.options | default('') }}
-    state: present
-    create: false
-    insertafter: EOF
-    owner: "{{ pg_os_user }}"
-    group: "{{ pg_os_group }}"
-    mode: "0600"
-  loop: "{{ pg_global_access }}"
-  when: pg_global_access is defined
 
 ###############################################################################
 # ENSURING DEFAULT PG_IDENT.CONF IS DELETED AND NEW WRITTEN
@@ -317,14 +307,6 @@
 # ENSURING SYSTEMD SERVICE EXISTS
 ###############################################################################
 
-- name: "Ensuring systemd service file is present"
-  ansible.builtin.file:
-    path: "{{ pg_systemd_service_dir }}/postgresql-{{ pg_version }}-{{ pg_instance }}.service"
-    mode: "0644"
-    owner: "root"
-    group: "root"
-    state: touch
-
 - name: "Ensuring systemd service file matches template"
   ansible.builtin.template:
     src: "systemd-service-{{ pg_version }}.j2"
@@ -332,6 +314,7 @@
     mode: "0644"
     owner: "root"
     group: "root"
+  register: pg_systemd_service_template
 
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
@@ -341,6 +324,7 @@
 - name: "Executing systemd daemon-reload"
   ansible.builtin.systemd:
     daemon_reload: true
+  when: pg_systemd_service_template.changed
 
 ###############################################################################
 # ENSURING EXTENSION PACKAGES ARE INSTALLED

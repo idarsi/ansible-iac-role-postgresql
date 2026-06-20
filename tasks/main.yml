@@ -33,7 +33,7 @@
 
 - name: "Setting variables"
   ansible.builtin.set_fact:
-    pg_versions: "{{ iac_blueprint.postgresql | map(attribute='version') | list }}"
+    pg_versions: "{{ iac_blueprint.postgresql }}"
 
 - name: "Setting what instances are to be configured"
   ansible.builtin.set_fact:

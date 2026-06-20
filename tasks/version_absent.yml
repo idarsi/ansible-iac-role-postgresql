@@ -11,6 +11,14 @@
 # SETTING VARIABLES
 ###############################################################################
 
+- name: "Setting version variables"
+  ansible.builtin.set_fact:
+    pg_version: "{{ pg_version_record.version | string }}"
+    iac_cron: "{{ pg_version_record.cron | default([]) }}"
+    iac_fs_directories: "{{ pg_version_record.directories | default([]) }}"
+    iac_fs_files: "{{ pg_version_record.files | default([]) }}"
+  when: pg_version_record is defined
+
 - name: "Checking if required variables are defined"
   ansible.builtin.assert:
     that:
@@ -31,3 +39,11 @@
   ansible.builtin.include_tasks: package_absent.yml
   vars:
     pg_package: "postgresql{{ pg_version }}-server,postgresql{{ pg_version }}-contrib,postgresql{{ pg_version }}-libs,postgresql{{ pg_version }}"
+
+- name: "Ensuring cron configuration is absent"
+  ansible.builtin.include_tasks: cron_absent.yml
+  when: (iac_cron | default([])) | length > 0
+
+- name: "Ensuring filesystem configuration is absent"
+  ansible.builtin.include_tasks: fs_absent.yml
+  when: (iac_fs_directories | default([])) | length > 0 or (iac_fs_files | default([])) | length > 0

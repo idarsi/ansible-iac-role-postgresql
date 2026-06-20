@@ -144,6 +144,10 @@
 - name: "Adding proxy settings to PostgreSQL repo file if it exists and proxy settings are missing"
   ansible.builtin.shell: |
     sed -i -E -e '/^proxy=/d' -e '/^\[.*\]$/a proxy={{ http_proxy }}' {{ pg_dnf_repo_path }}
+  changed_when: false
+  when:
+    - pg_repofile_available is true
+    - http_proxy | default('') | length > 0
 
 ###############################################################################
 # ENABLING REPOSITORY
@@ -185,7 +189,7 @@
   ansible.builtin.command: >
     {{ pg_cli_command }}
   register: my_output
-  changed_when: my_output.rc == 0
+  changed_when: false
   failed_when: my_output.rc != 0
   when: pg_repofile_available is true
 
@@ -221,7 +225,7 @@
   ansible.builtin.command: >
     {{ pg_cli_command }}
   register: my_output
-  changed_when: my_output.rc == 0
+  changed_when: false
   failed_when: my_output.rc != 0
   when: pg_cli_command is defined
 

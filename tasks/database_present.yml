@@ -46,6 +46,26 @@
   changed_when: false
   failed_when: database_exists.rc != 0
 
+- name: "Setting database existence flag"
+  ansible.builtin.set_fact:
+    database_is_present: "{{ (database_exists.stdout | trim) == '1' }}"
+    database_needs_update: false
+
+- name: "Reading current database owner when database exists"
+  become: true
+  become_user: "{{ pg_os_user }}"
+  ansible.builtin.command: >-
+    /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
+    -tXAc "SELECT pg_catalog.pg_get_userbyid(datdba) FROM pg_database WHERE datname='{{ pg_database }}'"
+  register: database_owner
+  changed_when: false
+  when: database_is_present | bool
+
+- name: "Deciding if existing database needs changes"
+  ansible.builtin.set_fact:
+    database_needs_update: "{{ pg_database_record.owner is defined and (database_owner.stdout | trim) != (pg_database_record.owner | string) }}"
+  when: database_is_present | bool
+
 - name: "Preparing CREATE DATABASE command if database does not exist"
   block:
     - name: "Setting optional attributes for CREATE DATABASE"
@@ -60,7 +80,7 @@
           /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
           -c "CREATE DATABASE \"{{ pg_database }}\" {{ pg_database_owner_str }}
           {{ pg_database_encoding_str }}"
-  when: database_exists.stdout != '1'
+  when: not database_is_present
 
 - name: "Preparing ALTER DATABASE command if database does not exist"
   block:
@@ -73,50 +93,22 @@
         pg_cli_command: >-
           /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
           -c "ALTER DATABASE \"{{ pg_database }}\" {{ pg_database_owner_str }}"
-  when: database_exists.stdout == '1'
+  when: database_is_present
 
 - name: "Ensuring database is present with correct parameters"
   become: true
   become_user: "{{ pg_os_user }}"
   ansible.builtin.command: "{{ pg_cli_command }}"
   register: my_output
-  changed_when: my_output.rc == 0
+  changed_when: (not (database_is_present | bool)) or ((database_needs_update | default(false)) | bool)
   failed_when: my_output.rc != 0
+  when: (not (database_is_present | bool)) or ((database_needs_update | default(false)) | bool)
 
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
   vars:
     iac_log_write: "Created database {{ pg_version }}/{{ pg_instance }}/{{ pg_database }}"
-
-###############################################################################
-# ENSURING ACCESS TO DATABASE
-###############################################################################
-
-- name: "Ensure pg_hba.conf access rules are present"
-  ansible.builtin.lineinfile:
-    path: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/pg_hba.conf"
-    line: >-
-      {{ item.type | default('host') }} {{ pg_database_record.name }}
-      {{ item.name }} {{ item.address }}
-      {{ item.method | default('scram-sha-256') }} {{ item.options | default('') }}
-    state: present
-    create: false
-    insertafter: EOF
-    owner: "{{ pg_os_user }}"
-    group: "{{ pg_os_group }}"
-    mode: "0600"
-  loop: "{{ pg_access }}"
-  when: pg_access is defined
-
-- name: "Ensuring instance is reloaded"
-  ansible.builtin.systemd:
-    name: "postgresql-{{ pg_version }}-{{ pg_instance }}.service"
-    state: reloaded
-
-- name: "Writing log"
-  ansible.builtin.include_tasks: log_write.yml
-  vars:
-    iac_log_write: "Reloaded service {{ pg_version }}/{{ pg_instance }}"
+  when: my_output is defined and (my_output.changed | bool)
 
 ###############################################################################
 # LOOPING THROUGH EXTENSIONS

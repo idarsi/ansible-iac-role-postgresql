@@ -49,21 +49,27 @@
   changed_when: false
   failed_when: extension_exists.rc != 0
 
+- name: "Setting extension existence flag"
+  ansible.builtin.set_fact:
+    extension_is_present: "{{ (extension_exists.stdout | trim) == '1' }}"
+
 - name: "Preparing CREATE EXTENSION command if extension does not exist"
   ansible.builtin.set_fact:
     pg_cli_command: >-
       /usr/pgsql-{{ pg_version }}/bin/psql {{ pg_database }} -p {{ pg_port }} -c "CREATE EXTENSION \"{{ pg_extension }}\""
-  when: extension_exists.stdout != '1'
+  when: not (extension_is_present | bool)
 
 - name: "Ensuring database is present with correct parameters"
   become: true
   become_user: "{{ pg_os_user }}"
   ansible.builtin.command: "{{ pg_cli_command }}"
   register: my_output
-  changed_when: my_output.rc == 0
+  changed_when: not (extension_is_present | bool)
   failed_when: my_output.rc != 0
+  when: not (extension_is_present | bool)
 
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
   vars:
     iac_log_write: "Created extension {{ pg_version }}/{{ pg_instance }}/{{ pg_database }}/{{ pg_extension }}"
+  when: my_output is defined and (my_output.changed | bool)
