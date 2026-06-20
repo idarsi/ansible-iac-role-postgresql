@@ -51,6 +51,42 @@ Requirements
 - Other components
   - Ansible 2.15 or higher
 
+Code Quality
+------------
+
+This project adheres to the [Ansible Lint](https://ansible-lint.readthedocs.io)
+**production** profile, ensuring high-quality and production-ready
+configuration management.
+
+Role Testing
+------------
+
+This role includes baseline Molecule scenarios:
+
+- `molecule/default` validates package installation, instance startup,
+  version-scoped managed filesystem resources, cron entries, role/database
+  provisioning, extension creation, and generated access configuration on
+  Rocky Linux 9
+- `molecule/rocky10` validates the same baseline behavior on Rocky Linux 10
+
+Run locally from the role directory:
+
+```bash
+molecule test
+```
+
+Run the default scenario only:
+
+```bash
+molecule test -s default
+```
+
+Run the Rocky Linux 10 scenario:
+
+```bash
+molecule test -s rocky10
+```
+
 Definitions
 -----------
 

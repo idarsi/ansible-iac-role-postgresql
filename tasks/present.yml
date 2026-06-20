@@ -62,6 +62,12 @@
   vars:
     pg_package: "sed"
 
+- name: "Ensuring cronie is installed when cron jobs are configured"
+  ansible.builtin.include_tasks: package_present.yml
+  vars:
+    pg_package: "cronie"
+  when: pg_versions | selectattr('cron', 'defined') | list | length > 0
+
 - name: "Ensuring gpg2 is installed"
   ansible.builtin.include_tasks: package_present.yml
   vars:
@@ -76,7 +82,7 @@
   ansible.builtin.include_tasks: "version_present.yml"
   loop: "{{ pg_versions }}"
   loop_control:
-    loop_var: pg_version
+    loop_var: pg_version_record
 
 ###############################################################################
 # CHANGING POSTGRES USER HOME DIRECTORY
@@ -105,24 +111,3 @@
   when:
     - pg_real_dir is defined
     - pg_real_dir != pg_default_dir
-
-###############################################################################
-# ENSURING FILESYSTEM CONFIGURATION
-###############################################################################
-
-- name: "Ensuring filesystem configuration is present"
-  ansible.builtin.include_tasks: fs_present.yml
-  when: iac_blueprint.postgresql.directories is defined
-  vars:
-    iac_fs_directories: "{{ iac_blueprint.postgresql.directories | default([]) }}"
-    iac_fs_files: "{{ iac_blueprint.postgresql.files | default([]) }}"
-
-###############################################################################
-# ENSURING CRONJOB CONFIGURATION
-###############################################################################
-
-- name: "Ensuring filesystem configuration is present"
-  ansible.builtin.include_tasks: cron_present.yml
-  when: iac_blueprint.postgresql.cron is defined
-  vars:
-    iac_cron: "{{ iac_blueprint.postgresql.cron | default([]) }}"

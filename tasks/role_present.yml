@@ -42,6 +42,25 @@
   changed_when: false
   register: role_exists
 
+- name: "Reading current role attributes when role exists"
+  become: true
+  become_user: "{{ pg_os_user }}"
+  ansible.builtin.command: >-
+    /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
+    -tXAt -F '|' -c
+    "SELECT rolcreatedb::int, rolcreaterole::int, rolsuper::int, rolcanlogin::int,
+    COALESCE(shobj_description(oid, 'pg_authid'), ''), COALESCE(rolpassword, '')
+    FROM pg_authid WHERE rolname='{{ pg_db_role }}'"
+  register: role_current
+  changed_when: false
+  when: role_exists.stdout == '1'
+
+- name: "Deciding if existing role needs changes"
+  ansible.builtin.set_fact:
+    role_current_fields: "{{ role_current.stdout.split('|') }}"
+    role_needs_update: "{{ (pg_role_record.createdb is defined and ((pg_role_record.createdb | bool) | ternary('1', '0')) != role_current.stdout.split('|')[0]) or (pg_role_record.createrole is defined and ((pg_role_record.createrole | bool) | ternary('1', '0')) != role_current.stdout.split('|')[1]) or (pg_role_record.superuser is defined and ((pg_role_record.superuser | bool) | ternary('1', '0')) != role_current.stdout.split('|')[2]) or (pg_role_record.login is defined and ((pg_role_record.login | bool) | ternary('1', '0')) != role_current.stdout.split('|')[3]) or (pg_role_record.description is defined and (pg_role_record.description | string) != role_current.stdout.split('|')[4]) or (pg_role_record.encrypted_password is defined and (pg_role_record.encrypted_password | string) != role_current.stdout.split('|')[5]) }}"
+  when: role_exists.stdout == '1'
+
 - name: "Preparing CREATE ROLE command if user does not exist"
   when:
     - role_exists.stdout != '1'
@@ -117,7 +136,9 @@
   become_user: "{{ pg_os_user }}"
   ansible.builtin.command: "{{ pg_cli_command }}"
   register: role_changed
-  changed_when: "role_changed.rc == 0"
+  changed_when: "role_exists.stdout != '1' or ((role_needs_update | default(false)) | bool)"
+  when:
+    - role_exists.stdout != '1' or ((role_needs_update | default(false)) | bool)
 
 - name: "Setting optional role description command"
   ansible.builtin.set_fact:
@@ -133,10 +154,11 @@
   become_user: "{{ pg_os_user }}"
   ansible.builtin.command: "{{ pg_cli_comment_command }}"
   register: role_comment_changed
-  changed_when: "role_comment_changed.rc == 0"
+  changed_when: false
   when:
     - pg_role_record.description is defined
     - pg_role_record.description is not none
+    - role_exists.stdout != '1' or ((role_needs_update | default(false)) | bool)
 
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml

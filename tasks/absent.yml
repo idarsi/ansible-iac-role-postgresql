@@ -29,17 +29,4 @@
   ansible.builtin.include_tasks: "version_absent.yml"
   loop: "{{ pg_versions }}"
   loop_control:
-    loop_var: pg_version
-
-- name: "Ensuring cron configuration is absent"
-  ansible.builtin.include_tasks: cron_absent.yml
-  when: iac_blueprint.podman.cron is defined
-  vars:
-    iac_cron: "{{ iac_blueprint.podman.cron | default([]) }}"
-
-- name: "Ensuring filesystem configuration is absent"
-  ansible.builtin.include_tasks: fs_absent.yml
-  when: iac_blueprint.podman.directories is defined
-  vars:
-    iac_fs_directories: "{{ iac_blueprint.podman.directories | default([]) }}"
-    iac_fs_files: "{{ iac_blueprint.podman.files | default([]) }}"
+    loop_var: pg_version_record
