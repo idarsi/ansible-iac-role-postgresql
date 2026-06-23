@@ -15,6 +15,7 @@
         config_file: "/var/lib/pgsql/17/main/conf.d/42-inventory.conf"
         profile_file: "/var/lib/pgsql/17/main/conf.d/40-profile.conf"
         autotuning_file: ""
+        plpython_package: ""
       - version: "18"
         instance: "main"
         port: 5418
@@ -25,11 +26,18 @@
         config_file: "/var/lib/pgsql/18/main/conf.d/42-inventory.conf"
         profile_file: ""
         autotuning_file: "/var/lib/pgsql/18/main/conf.d/43-autotuning.conf"
+        plpython_package: "postgresql18-plpython3"
   tasks:
     - name: "Checking PostgreSQL server packages"
       ansible.builtin.command: "rpm -q postgresql{{ item.version }}-server"
       loop: "{{ pg_molecule_versions }}"
       register: pg_package_checks
+      changed_when: false
+
+    - name: "Checking PL/Python extension packages"
+      ansible.builtin.command: "rpm -q {{ item.plpython_package }}"
+      loop: "{{ pg_molecule_versions | selectattr('plpython_package', 'truthy') | list }}"
+      register: pg_plpython_package_checks
       changed_when: false
 
     - name: "Checking PostgreSQL services are active"
@@ -122,6 +130,16 @@
       register: pg_extension_checks
       changed_when: false
 
+    - name: "Checking plpython3u extension is installed"
+      become: true
+      become_user: postgres
+      ansible.builtin.command: >-
+        /usr/pgsql-{{ item.version }}/bin/psql {{ item.database }} -p {{ item.port }}
+        -tXAc "SELECT 1 FROM pg_extension WHERE extname='plpython3u'"
+      loop: "{{ pg_molecule_versions | selectattr('plpython_package', 'truthy') | list }}"
+      register: pg_plpython_extension_checks
+      changed_when: false
+
     - name: "Checking pg_hba access rules"
       ansible.builtin.command: >-
         grep -F "host {{ item.database }} app_user 10.0.0.1/32 scram-sha-256"
@@ -134,6 +152,7 @@
       ansible.builtin.assert:
         that:
           - pg_package_checks.results | map(attribute='rc') | list == [0, 0]
+          - pg_plpython_package_checks.results | map(attribute='rc') | list == [0]
           - pg_service_checks.results | map(attribute='stdout') | list == ['active', 'active']
           - pg_directory_checks.results | map(attribute='stat.exists') | list == [true, true]
           - pg_directory_checks.results | map(attribute='stat.isdir') | list == [true, true]
@@ -148,5 +167,6 @@
           - pg_database_checks.results | map(attribute='stdout') | list == ['1', '1']
           - pg_role_checks.results | map(attribute='stdout') | list == ['1', '1', '1', '1']
           - pg_extension_checks.results | map(attribute='stdout') | list == ['1', '1']
+          - pg_plpython_extension_checks.results | map(attribute='stdout') | list == ['1']
           - pg_hba_checks.results | map(attribute='rc') | list == [0, 0]
         fail_msg: "PostgreSQL Molecule verification failed"

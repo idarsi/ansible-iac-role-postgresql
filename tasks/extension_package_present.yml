@@ -45,6 +45,8 @@
       package: "set_user_{{ pg_version }}"
     - name: timescaledb
       package: "timescaledb_{{ pg_version }}"
+    - name: plpython3u
+      package: "postgresql{{ pg_version }}-plpython3"
   loop_control:
     loop_var: ext
   vars:

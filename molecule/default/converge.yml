@@ -126,6 +126,7 @@
                   owner: app_admin
                   extensions:
                     - name: pgcrypto
+                    - name: plpython3u
                   access:
                     - name: app_user
                       address: 10.0.0.1/32
