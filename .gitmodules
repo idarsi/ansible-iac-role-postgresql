@@ -1,0 +1,3 @@
+[submodule "tasks/shared"]
+	path = tasks/shared
+	url = git@github.com:idarsi/ansible-iac-shared-tasks.git
