@@ -63,6 +63,11 @@
               owner: root
               group: root
               mode: "0640"
+          git:
+            - repo: /tmp/pg-molecule-source
+              dest: /var/lib/pgsql/git/pg-molecule-source
+              version: main
+              update: true
           cron:
             - name: pg17_heartbeat
               user: root
@@ -136,5 +141,88 @@
               configuration:
                 port: 5418
                 max_connections: 50
+  pre_tasks:
+    - name: "Ensuring git is installed for Molecule git fixture"
+      ansible.builtin.package:
+        name: git
+        state: present
+
+    - name: "Ensuring Molecule git source directory exists"
+      ansible.builtin.file:
+        path: /tmp/pg-molecule-source
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: "Writing Molecule git source fixture file"
+      ansible.builtin.copy:
+        dest: /tmp/pg-molecule-source/README.md
+        owner: root
+        group: root
+        mode: "0644"
+        content: "postgres molecule git fixture\n"
+
+    - name: "Checking whether Molecule git source repository already exists"
+      ansible.builtin.stat:
+        path: /tmp/pg-molecule-source/.git
+      register: pg_molecule_git_source_repo
+
+    - name: "Initializing Molecule git source repository"
+      ansible.builtin.command:
+        argv:
+          - git
+          - init
+          - --initial-branch=main
+          - /tmp/pg-molecule-source
+      changed_when: true
+      when: not pg_molecule_git_source_repo.stat.exists
+
+    - name: "Configuring Molecule git source repository user email"
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - /tmp/pg-molecule-source
+          - config
+          - user.email
+          - molecule@example.org
+      changed_when: true
+      when: not pg_molecule_git_source_repo.stat.exists
+
+    - name: "Configuring Molecule git source repository user name"
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - /tmp/pg-molecule-source
+          - config
+          - user.name
+          - Molecule
+      changed_when: true
+      when: not pg_molecule_git_source_repo.stat.exists
+
+    - name: "Adding Molecule git source fixture to repository"
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - /tmp/pg-molecule-source
+          - add
+          - README.md
+      changed_when: true
+      when: not pg_molecule_git_source_repo.stat.exists
+
+    - name: "Creating Molecule git source fixture commit"
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - /tmp/pg-molecule-source
+          - commit
+          - -m
+          - Initial fixture
+      changed_when: true
+      when: not pg_molecule_git_source_repo.stat.exists
   roles:
     - role: ansible-iac-role-postgresql

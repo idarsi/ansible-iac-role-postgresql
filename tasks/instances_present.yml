@@ -13,7 +13,6 @@
 
 - name: "Setting what variables are configured"
   ansible.builtin.set_fact:
-    iac_git_repos: "{{ pg_instance_record.0.git.sources | default([]) }}"
     pg_autotuning: "{{ pg_instance_record.1.autotuning_profile | default('off') }}"
     pg_configuration: "{{ pg_instance_record.1.configuration | default(omit) }}"
     pg_databases: "{{ pg_instance_record.1.databases | default([]) }}"
@@ -178,20 +177,6 @@
     owner: "{{ pg_os_user }}"
     group: "{{ pg_os_group }}"
   when: pg_security != 'off'
-
-###############################################################################
-# ENSURING GIT REPOSITORIES ARE CLONED
-###############################################################################
-
-- name: "Ensuring git is installed if needed"
-  ansible.builtin.include_tasks: package_present.yml
-  vars:
-    pg_package: "git"
-  when: iac_git_repos | length > 0
-
-- name: "Ensuring git repositories are present"
-  ansible.builtin.include_tasks: git_present.yml
-  when: iac_git_repos | length > 0
 
 ###############################################################################
 # ENSURING INVENTORY CONFIGURATION EXISTS IF NEEDED
