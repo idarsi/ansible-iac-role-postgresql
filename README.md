@@ -210,6 +210,13 @@ iac_blueprint:
           owner: <owner>
           group: <group>
           mode: <mode>
+      git:                                     # optional git working trees
+        - repo: <repository url or path>
+          dest: <destination path>
+          version: <branch, tag, or commit>    # optional
+          update: true|false                   # optional
+          force: true|false                    # optional
+          recursive: true|false                # optional
       cron:                                    # optional cronjobs
         - name: <name>
           job: <command>
@@ -288,15 +295,20 @@ iac_blueprint:
           owner: postgres
           group: postgres
           mode: "0750"
-      files:
-        - path: /etc/pgsql/backup.env
-          content: "PGUSER=postgres\n"
-          owner: root
-          group: root
-          mode: "0640"
-      cron:
-        - name: pg_backup
-          user: postgres
+          files:
+            - path: /etc/pgsql/backup.env
+              content: "PGUSER=postgres\n"
+              owner: root
+              group: root
+              mode: "0640"
+          git:
+            - repo: /srv/git/pg-maintenance
+              dest: /var/lib/pgsql/git/pg-maintenance
+              version: main
+              update: true
+          cron:
+            - name: pg_backup
+              user: postgres
           minute: "0"
           hour: "2"
           job: "/usr/local/bin/pg_backup"

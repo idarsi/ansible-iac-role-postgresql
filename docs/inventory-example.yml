@@ -17,6 +17,11 @@ servers:
               owner: root
               group: root
               mode: "0640"
+          git:
+            - repo: /srv/git/pg-maintenance
+              dest: /var/lib/pgsql/git/pg-maintenance
+              version: main
+              update: true
           cron:
             - name: pg_backup
               user: postgres

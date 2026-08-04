@@ -100,6 +100,17 @@
       loop: "{{ pg_molecule_versions | selectattr('autotuning_file', 'truthy') | list }}"
       register: pg_autotuning_checks
 
+    - name: "Checking cloned git fixture file"
+      ansible.builtin.stat:
+        path: /var/lib/pgsql/git/pg-molecule-source/README.md
+      register: pg_git_fixture_file
+
+    - name: "Reading cloned git fixture file"
+      ansible.builtin.slurp:
+        path: /var/lib/pgsql/git/pg-molecule-source/README.md
+      register: pg_git_fixture_content
+      when: pg_git_fixture_file.stat.exists
+
     - name: "Checking databases exist"
       become: true
       become_user: postgres
@@ -164,6 +175,8 @@
           - pg_config_contents.results | map(attribute='content') | map('b64decode') | join('') is search('max_connections = 50')
           - pg_profile_checks.results | map(attribute='stat.exists') | list == [true]
           - pg_autotuning_checks.results | map(attribute='stat.exists') | list == [true]
+          - pg_git_fixture_file.stat.exists
+          - (pg_git_fixture_content.content | b64decode) == 'postgres molecule git fixture\n'
           - pg_database_checks.results | map(attribute='stdout') | list == ['1', '1']
           - pg_role_checks.results | map(attribute='stdout') | list == ['1', '1', '1', '1']
           - pg_extension_checks.results | map(attribute='stdout') | list == ['1', '1']
