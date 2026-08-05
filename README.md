@@ -186,6 +186,29 @@ postgres:
             - name: main
 ```
 
+Shared filesystem helpers
+-------------------------
+
+Version-scoped `directories:`, `files:`, `binds:`, and `git:` entries are
+implemented through the shared task library under `tasks/shared`.
+
+For the exact `binds:` record structure and examples, see:
+
+- `tasks/shared/README.md`
+
+The PostgreSQL role also supports moving the whole PostgreSQL home/data tree to
+another filesystem location with a bind mount while keeping the legacy path in
+place:
+
+```yaml
+pg_real_dir: /srv/data/pgsql
+pg_bind_dir: /var/lib/pgsql
+```
+
+This creates `/srv/data/pgsql` when needed, moves existing data from
+`/var/lib/pgsql` to the new location when the migration preconditions are met,
+and then bind-mounts `/srv/data/pgsql` back to `/var/lib/pgsql`.
+
 iac_blueprint inventory structure
 ---------------------------------
 

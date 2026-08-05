@@ -4,6 +4,9 @@
   become: false
   vars:
     ansible_become_method: su
+    pg_bind_source: "/srv/data/pgsql"
+    pg_bind_target: "/var/lib/pgsql"
+    pg_bind_fixture_file: "/srv/data/pgsql/molecule-bind-migrated.txt"
     pg_molecule_versions:
       - version: "17"
         instance: "main"
@@ -111,6 +114,28 @@
       register: pg_git_fixture_content
       when: pg_git_fixture_file.stat.exists
 
+    - name: "Checking bind migration fixture file in real PostgreSQL directory"
+      ansible.builtin.stat:
+        path: "{{ pg_bind_fixture_file }}"
+      register: pg_bind_fixture_stat
+
+    - name: "Reading bind migration fixture file"
+      ansible.builtin.slurp:
+        path: "{{ pg_bind_fixture_file }}"
+      register: pg_bind_fixture_content
+      when: pg_bind_fixture_stat.stat.exists
+
+    - name: "Checking live bind mount source for PostgreSQL directory"
+      ansible.builtin.command: "findmnt -n -M {{ pg_bind_target }} -o SOURCE"
+      register: pg_bind_mount_source
+      changed_when: false
+
+    - name: "Checking PostgreSQL bind mount fstab entry"
+      ansible.builtin.command: >-
+        grep -F "{{ pg_bind_source }} {{ pg_bind_target }} none bind 0 0" /etc/fstab
+      register: pg_bind_fstab_check
+      changed_when: false
+
     - name: "Checking databases exist"
       become: true
       become_user: postgres
@@ -177,6 +202,10 @@
           - pg_autotuning_checks.results | map(attribute='stat.exists') | list == [true]
           - pg_git_fixture_file.stat.exists
           - (pg_git_fixture_content.content | b64decode) == 'postgres molecule git fixture\n'
+          - pg_bind_fixture_stat.stat.exists
+          - (pg_bind_fixture_content.content | b64decode) == 'legacy bind data\n'
+          - (pg_bind_mount_source.stdout | trim) == pg_bind_source
+          - pg_bind_fstab_check.rc == 0
           - pg_database_checks.results | map(attribute='stdout') | list == ['1', '1']
           - pg_role_checks.results | map(attribute='stdout') | list == ['1', '1', '1', '1']
           - pg_extension_checks.results | map(attribute='stdout') | list == ['1', '1']

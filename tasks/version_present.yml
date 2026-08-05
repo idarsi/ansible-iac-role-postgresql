@@ -33,6 +33,12 @@
       - pg_version is defined
     fail_msg: "All tests did not pass"
 
+- name: "Checking PostgreSQL version-scoped bind records type"
+  ansible.builtin.assert:
+    that:
+      - pg_version_record.binds is not defined or (pg_version_record.binds | type_debug) == 'list'
+    fail_msg: "pg_versions[].binds must be a list"
+
 ###############################################################################
 # ENSURING REPOSITORIES ARE PRESENT
 ###############################################################################
@@ -48,6 +54,19 @@
   ansible.builtin.include_tasks: package_present.yml
   vars:
     pg_package: "postgresql{{ pg_version }}-server,postgresql{{ pg_version }}-contrib"
+
+- name: "Ensuring PostgreSQL real directory ownership before version-scoped resources"
+  ansible.builtin.file:
+    path: "{{ pg_real_dir }}"
+    state: directory
+    recurse: true
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0700"
+  when:
+    - pg_real_dir is defined
+    - pg_bind_dir is defined
+    - pg_real_dir != pg_bind_dir
 
 ###############################################################################
 # ENSURING FILESYSTEM CONFIGURATION

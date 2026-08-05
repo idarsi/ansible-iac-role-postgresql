@@ -88,8 +88,6 @@
     iac_fs_binds:
       - source: "{{ pg_real_dir }}"
         target: "{{ pg_bind_dir }}"
-        owner: "{{ pg_os_user }}"
-        group: "{{ pg_os_group }}"
         mode: "0700"
         move_from_target: true
   when:
@@ -108,3 +106,16 @@
   loop: "{{ pg_versions }}"
   loop_control:
     loop_var: pg_version_record
+
+- name: "Ensuring PostgreSQL real directory ownership after bind migration"
+  ansible.builtin.file:
+    path: "{{ pg_real_dir }}"
+    state: directory
+    recurse: true
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0700"
+  when:
+    - pg_real_dir is defined
+    - pg_bind_dir is defined
+    - pg_real_dir != pg_bind_dir
