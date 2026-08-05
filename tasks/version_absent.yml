@@ -32,6 +32,12 @@
       - pg_version is defined
     fail_msg: "All tests did not pass"
 
+- name: "Checking PostgreSQL version-scoped bind records type"
+  ansible.builtin.assert:
+    that:
+      - pg_version_record.binds is not defined or (pg_version_record.binds | type_debug) == 'list'
+    fail_msg: "pg_versions[].binds must be a list"
+
 ###############################################################################
 # ENSURING PACKAGES ARE REMOVED
 ###############################################################################

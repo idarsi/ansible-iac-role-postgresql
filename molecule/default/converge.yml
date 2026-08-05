@@ -7,6 +7,8 @@
     pg_lang: "en"
     pg_locale: "US"
     pg_disable_postgresql_module: false
+    pg_real_dir: "/srv/data/pgsql"
+    pg_bind_dir: "/var/lib/pgsql"
     ansible_become_method: su
     iac_blueprint:
       postgresql:
@@ -142,6 +144,68 @@
                 port: 5418
                 max_connections: 50
   pre_tasks:
+    - name: "Checking whether legacy PostgreSQL path is currently mounted"
+      ansible.builtin.command: "findmnt -n -M /var/lib/pgsql -o SOURCE"
+      register: pg_molecule_existing_bind_mount
+      changed_when: false
+      failed_when: false
+
+    - name: "Unmounting previous PostgreSQL bind mount from failed test runs"
+      ansible.builtin.command: "umount /var/lib/pgsql"
+      register: pg_molecule_umount_result
+      failed_when: false
+      changed_when: pg_molecule_umount_result.rc == 0
+      when: pg_molecule_existing_bind_mount.rc == 0
+
+    - name: "Lazy-unmounting previous busy PostgreSQL bind mount from failed test runs"
+      ansible.builtin.command: "umount -l /var/lib/pgsql"
+      when:
+        - pg_molecule_existing_bind_mount.rc == 0
+        - pg_molecule_umount_result.rc is defined
+        - pg_molecule_umount_result.rc != 0
+
+    - name: "Removing previous PostgreSQL bind mount fstab entry from failed test runs"
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        regexp: "^/srv/data/pgsql\\s+/var/lib/pgsql\\s+none\\s+bind\\s+0\\s+0$"
+        state: absent
+      failed_when: false
+
+    - name: "Removing previous bind migration source directory from failed test runs"
+      ansible.builtin.file:
+        path: /srv/data/pgsql
+        state: absent
+
+    - name: "Removing previous legacy PostgreSQL directory from failed test runs"
+      ansible.builtin.file:
+        path: /var/lib/pgsql
+        state: absent
+
+    - name: "Ensuring /etc/fstab exists for bind mount test in container image"
+      ansible.builtin.copy:
+        dest: /etc/fstab
+        owner: root
+        group: root
+        mode: "0644"
+        force: false
+        content: ""
+
+    - name: "Ensuring legacy PostgreSQL directory exists for bind migration test"
+      ansible.builtin.file:
+        path: /var/lib/pgsql
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: "Writing bind migration fixture into legacy PostgreSQL directory"
+      ansible.builtin.copy:
+        dest: /var/lib/pgsql/molecule-bind-migrated.txt
+        owner: root
+        group: root
+        mode: "0600"
+        content: "legacy bind data\n"
+
     - name: "Ensuring git is installed for Molecule git fixture"
       ansible.builtin.package:
         name: git
