@@ -17,6 +17,7 @@
     iac_cron: "{{ pg_version_record.cron | default([]) }}"
     iac_fs_directories: "{{ pg_version_record.directories | default([]) }}"
     iac_fs_files: "{{ pg_version_record.files | default([]) }}"
+    iac_fs_binds: "{{ pg_version_record.binds | default([]) }}"
   when: pg_version_record is defined
 
 - name: "Checking if required variables are defined"
@@ -43,6 +44,10 @@
 - name: "Ensuring cron configuration is absent"
   ansible.builtin.include_tasks: cron_absent.yml
   when: (iac_cron | default([])) | length > 0
+
+- name: "Ensuring bind mount configuration is absent"
+  ansible.builtin.include_tasks: bind_absent.yml
+  when: (iac_fs_binds | default([])) | length > 0
 
 - name: "Ensuring filesystem configuration is absent"
   ansible.builtin.include_tasks: fs_absent.yml
