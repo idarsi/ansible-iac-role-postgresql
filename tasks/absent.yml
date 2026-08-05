@@ -30,3 +30,19 @@
   loop: "{{ pg_versions }}"
   loop_control:
     loop_var: pg_version_record
+
+- name: "Setting PostgreSQL bind mount variables for removal"
+  ansible.builtin.set_fact:
+    iac_fs_binds:
+      - source: "{{ pg_real_dir }}"
+        target: "{{ pg_bind_dir }}"
+  when:
+    - pg_real_dir is defined
+    - pg_bind_dir is defined
+    - pg_real_dir != pg_bind_dir
+
+- name: "Ensuring PostgreSQL bind mount configuration is absent"
+  ansible.builtin.include_tasks: bind_absent.yml
+  when:
+    - iac_fs_binds is defined
+    - (iac_fs_binds | default([])) | length > 0

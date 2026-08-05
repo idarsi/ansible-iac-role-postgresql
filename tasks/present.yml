@@ -83,36 +83,28 @@
 # LOOPING THROUGH POSTGRESQL VERSIONS TO BE INSTALLED
 ###############################################################################
 
+- name: "Setting PostgreSQL bind mount variables"
+  ansible.builtin.set_fact:
+    iac_fs_binds:
+      - source: "{{ pg_real_dir }}"
+        target: "{{ pg_bind_dir }}"
+        owner: "{{ pg_os_user }}"
+        group: "{{ pg_os_group }}"
+        mode: "0700"
+        move_from_target: true
+  when:
+    - pg_real_dir is defined
+    - pg_bind_dir is defined
+    - pg_real_dir != pg_bind_dir
+
+- name: "Ensuring PostgreSQL bind mount configuration is present"
+  ansible.builtin.include_tasks: bind_present.yml
+  when:
+    - iac_fs_binds is defined
+    - (iac_fs_binds | default([])) | length > 0
+
 - name: "Looping through versions"
   ansible.builtin.include_tasks: "version_present.yml"
   loop: "{{ pg_versions }}"
   loop_control:
     loop_var: pg_version_record
-
-###############################################################################
-# CHANGING POSTGRES USER HOME DIRECTORY
-###############################################################################
-
-- name: "Setting pg_real_dir ownership"
-  ansible.builtin.file:
-    path: "{{ pg_real_dir }}"
-    state: directory
-    recurse: true
-    owner: "{{ pg_os_user }}"
-    group: "{{ pg_os_group }}"
-    mode: u+rwX,g+rwX,o=
-  when:
-    - pg_real_dir is defined
-    - pg_real_dir != pg_default_dir
-
-- name: "Copying postgresql homedir to '{{ pg_bind_dir }}'"
-  ansible.builtin.copy:
-    src: "{{ pg_default_dir }}"
-    dest: "{{ pg_real_dir }}/.."
-    remote_src: true
-    owner: "{{ pg_os_user }}"
-    group: "{{ pg_os_group }}"
-    mode: u+rwX,g+rwX,o=
-  when:
-    - pg_real_dir is defined
-    - pg_real_dir != pg_default_dir
