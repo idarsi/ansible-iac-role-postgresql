@@ -89,6 +89,9 @@ This role includes baseline Molecule scenarios:
 - `molecule/all_absent` validates destructive cleanup of packages,
   repositories, bind mounts, service files, managed resources, and the
   PostgreSQL operating system user on Rocky Linux 9
+- `molecule/bind_guardrails` validates that bind-mount migration fails safely
+  when source and target both contain data or when PostgreSQL services are
+  still running against the target directory
 - `molecule/rocky10` validates the same baseline behavior on Rocky Linux 10
 
 Run locally from the role directory:
@@ -107,6 +110,12 @@ Run the `all_absent` scenario only:
 
 ```bash
 molecule test -s all_absent
+```
+
+Run the bind guardrail scenario only:
+
+```bash
+molecule test -s bind_guardrails
 ```
 
 Run the Rocky Linux 10 scenario:

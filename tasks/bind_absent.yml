@@ -69,7 +69,13 @@
         iac_fs_bind_umount_result.rc == 0
         or 'target is busy' in (iac_fs_bind_umount_result.stderr | lower)
     fail_msg: "Bind target could not be unmounted cleanly"
-  loop: "{{ iac_fs_bind_umount_results.results | default([]) }}"
+  loop: >-
+    {{
+      iac_fs_bind_umount_results.results
+      | default([])
+      | selectattr('rc', 'defined')
+      | list
+    }}
   loop_control:
     loop_var: iac_fs_bind_umount_result
     label: "{{ iac_fs_bind_umount_result.iac_fs_bind_mount_triplet.0.target | default('unknown') }}"
@@ -81,7 +87,13 @@
     - iac_fs_bind_umount_result.rc is defined
     - iac_fs_bind_umount_result.rc != 0
     - "'target is busy' in (iac_fs_bind_umount_result.stderr | lower)"
-  loop: "{{ iac_fs_bind_umount_results.results | default([]) }}"
+  loop: >-
+    {{
+      iac_fs_bind_umount_results.results
+      | default([])
+      | selectattr('rc', 'defined')
+      | list
+    }}
   loop_control:
     label: "{{ iac_fs_bind_umount_result.iac_fs_bind_mount_triplet.0.target | default('unknown') }}"
     loop_var: iac_fs_bind_umount_result

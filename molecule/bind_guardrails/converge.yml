@@ -1,0 +1,263 @@
+---
+- name: Prepare bind guardrail fixture
+  hosts: all
+  become: false
+  vars:
+    ansible_become_method: su
+  pre_tasks:
+    - name: "Checking whether legacy PostgreSQL path is currently mounted"
+      ansible.builtin.command: "findmnt -n -M /var/lib/pgsql -o SOURCE"
+      register: pg_molecule_existing_bind_mount
+      changed_when: false
+      failed_when: false
+
+    - name: "Unmounting previous PostgreSQL bind mount from failed test runs"
+      ansible.builtin.command: "umount /var/lib/pgsql"
+      register: pg_molecule_umount_result
+      failed_when: false
+      changed_when: pg_molecule_umount_result.rc == 0
+      when: pg_molecule_existing_bind_mount.rc == 0
+
+    - name: "Lazy-unmounting previous busy PostgreSQL bind mount from failed test runs"
+      ansible.builtin.command: "umount -l /var/lib/pgsql"
+      when:
+        - pg_molecule_existing_bind_mount.rc == 0
+        - pg_molecule_umount_result.rc is defined
+        - pg_molecule_umount_result.rc != 0
+
+    - name: "Removing previous PostgreSQL bind mount fstab entry from failed test runs"
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        regexp: "^/srv/data/pgsql\\s+/var/lib/pgsql\\s+none\\s+bind\\s+0\\s+0$"
+        state: absent
+      failed_when: false
+
+    - name: "Removing previous PostgreSQL fixture directories"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /srv/data/pgsql
+        - /var/lib/pgsql
+        - /var/log/pgsql
+        - /tmp/pgsql17
+        - /tmp/bind-guardrails
+
+    - name: "Creating bind guardrail marker directory"
+      ansible.builtin.file:
+        path: /tmp/bind-guardrails
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: "Ensuring /etc/fstab exists for bind mount tests in container image"
+      ansible.builtin.copy:
+        dest: /etc/fstab
+        owner: root
+        group: root
+        mode: "0644"
+        force: false
+        content: ""
+
+- name: Verify bind migration fails when source and target both contain data
+  hosts: all
+  become: false
+  vars:
+    state: present
+    pg_lang: "en"
+    pg_locale: "US"
+    pg_disable_postgresql_module: false
+    pg_real_dir: "/srv/data/pgsql"
+    pg_bind_dir: "/var/lib/pgsql"
+    ansible_become_method: su
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: main
+              configuration:
+                port: 5417
+                max_connections: 50
+  tasks:
+    - name: "Creating bind source directory with conflicting data"
+      ansible.builtin.file:
+        path: /srv/data/pgsql
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: "Writing conflicting source data"
+      ansible.builtin.copy:
+        dest: /srv/data/pgsql/source-conflict.txt
+        owner: root
+        group: root
+        mode: "0600"
+        content: "source data\n"
+
+    - name: "Creating bind target directory with conflicting data"
+      ansible.builtin.file:
+        path: /var/lib/pgsql
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: "Writing conflicting target data"
+      ansible.builtin.copy:
+        dest: /var/lib/pgsql/target-conflict.txt
+        owner: root
+        group: root
+        mode: "0600"
+        content: "target data\n"
+
+    - name: "Running PostgreSQL role expecting ambiguous bind migration failure"
+      block:
+        - name: "Applying PostgreSQL role with conflicting bind directories"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+      rescue:
+        - name: "Checking ambiguous bind failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (
+                  ansible_failed_result.msg | default(ansible_failed_result | string)
+                ) is search('ambiguous')
+            fail_msg: "Expected ambiguous bind migration failure was not raised"
+
+        - name: "Writing ambiguous bind guardrail marker"
+          ansible.builtin.copy:
+            dest: /tmp/bind-guardrails/ambiguous-bind.ok
+            owner: root
+            group: root
+            mode: "0644"
+            content: "ok\n"
+
+    - name: "Checking ambiguous bind guardrail marker exists"
+      ansible.builtin.stat:
+        path: /tmp/bind-guardrails/ambiguous-bind.ok
+      register: pg_ambiguous_bind_marker
+
+    - name: "Failing if ambiguous bind migration unexpectedly succeeded"
+      ansible.builtin.assert:
+        that:
+          - pg_ambiguous_bind_marker.stat.exists
+        fail_msg: "Ambiguous bind migration did not fail as expected"
+
+- name: Verify bind migration fails while PostgreSQL service is active
+  hosts: all
+  become: false
+  vars:
+    ansible_become_method: su
+  pre_tasks:
+    - name: "Removing conflicting bind source data before active service test"
+      ansible.builtin.file:
+        path: /srv/data/pgsql
+        state: absent
+
+    - name: "Removing previous target directory before active service test"
+      ansible.builtin.file:
+        path: /var/lib/pgsql
+        state: absent
+
+- name: Install baseline PostgreSQL without bind migration
+  hosts: all
+  become: false
+  vars:
+    state: install
+    pg_lang: "en"
+    pg_locale: "US"
+    pg_disable_postgresql_module: false
+    pg_real_dir: "/var/lib/pgsql"
+    pg_bind_dir: "/var/lib/pgsql"
+    ansible_become_method: su
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: main
+              roles:
+                - name: app_admin
+                  password: admin_password
+                  createdb: true
+              databases:
+                - name: appdb17
+                  owner: app_admin
+              configuration:
+                port: 5417
+                max_connections: 50
+  roles:
+    - role: ansible-iac-role-postgresql
+
+- name: Verify bind migration fails while PostgreSQL service is active
+  hosts: all
+  become: false
+  vars:
+    state: present
+    pg_lang: "en"
+    pg_locale: "US"
+    pg_disable_postgresql_module: false
+    pg_real_dir: "/srv/data/pgsql"
+    pg_bind_dir: "/var/lib/pgsql"
+    ansible_become_method: su
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: main
+              roles:
+                - name: app_admin
+                  password: admin_password
+                  createdb: true
+              databases:
+                - name: appdb17
+                  owner: app_admin
+              configuration:
+                port: 5417
+                max_connections: 50
+  tasks:
+    - name: "Ensuring new bind source directory exists and is empty"
+      ansible.builtin.file:
+        path: /srv/data/pgsql
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: "Running PostgreSQL role expecting active service bind migration failure"
+      block:
+        - name: "Applying PostgreSQL role while PostgreSQL service is active"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+      rescue:
+        - name: "Checking active service bind failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (
+                  ansible_failed_result.msg | default(ansible_failed_result | string)
+                ) is search('must be stopped before migrating existing bind target data')
+            fail_msg: "Expected active PostgreSQL bind migration failure was not raised"
+
+        - name: "Writing active service bind guardrail marker"
+          ansible.builtin.copy:
+            dest: /tmp/bind-guardrails/active-service-bind.ok
+            owner: root
+            group: root
+            mode: "0644"
+            content: "ok\n"
+
+    - name: "Checking active service bind guardrail marker exists"
+      ansible.builtin.stat:
+        path: /tmp/bind-guardrails/active-service-bind.ok
+      register: pg_active_service_bind_marker
+
+    - name: "Failing if active service bind migration unexpectedly succeeded"
+      ansible.builtin.assert:
+        that:
+          - pg_active_service_bind_marker.stat.exists
+        fail_msg: "Active PostgreSQL bind migration did not fail as expected"
