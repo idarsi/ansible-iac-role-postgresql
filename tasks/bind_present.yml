@@ -1,3 +1,61 @@
 ---
+- name: "Selecting PostgreSQL home bind records"
+  ansible.builtin.set_fact:
+    pg_bind_home_records: >-
+      {{
+        iac_fs_binds
+        | selectattr('move_from_target', 'defined')
+        | selectattr('move_from_target')
+        | selectattr('source', 'equalto', pg_real_dir)
+        | selectattr('target', 'equalto', pg_bind_dir)
+        | list
+      }}
+  when:
+    - iac_fs_binds is defined
+    - pg_real_dir is defined
+    - pg_bind_dir is defined
+
+- name: "Collecting service facts for PostgreSQL bind migration checks"
+  ansible.builtin.service_facts:
+  when: (pg_bind_home_records | default([])) | length > 0
+
+- name: "Checking current live mount source for PostgreSQL bind target"
+  ansible.builtin.command: >-
+    findmnt -n -M {{ iac_fs_bind_record.target }} -o SOURCE
+  register: pg_bind_live_mounts
+  changed_when: false
+  failed_when: false
+  loop: "{{ pg_bind_home_records | default([]) }}"
+  loop_control:
+    loop_var: iac_fs_bind_record
+    label: "{{ iac_fs_bind_record.target }}"
+  when: (pg_bind_home_records | default([])) | length > 0
+
+- name: "Checking PostgreSQL services are stopped before bind migration"
+  ansible.builtin.assert:
+    that:
+      - >-
+        pg_bind_live_mount_source != ''
+        or (pg_active_postgresql_services | length) == 0
+    fail_msg: "PostgreSQL services must be stopped before migrating existing bind target data"
+  loop: "{{ pg_bind_home_records | zip(pg_bind_live_mounts.results | default([])) | list }}"
+  loop_control:
+    loop_var: pg_bind_service_triplet
+    label: "{{ pg_bind_service_triplet.0.target }}"
+  vars:
+    iac_fs_bind_record: "{{ pg_bind_service_triplet.0 }}"
+    pg_bind_live_mount: "{{ pg_bind_service_triplet.1 }}"
+    pg_bind_live_mount_source: "{{ pg_bind_live_mount.stdout | trim }}"
+    pg_active_postgresql_services: >-
+      {{
+        ansible_facts.services | default({})
+        | dict2items
+        | selectattr('key', 'match', '^postgresql(-[0-9]+-.+)?\\.service$')
+        | selectattr('value.state', 'equalto', 'running')
+        | map(attribute='key')
+        | list
+      }}
+  when: (pg_bind_home_records | default([])) | length > 0
+
 - name: "Including shared bind mount present tasks"
   ansible.builtin.include_tasks: shared/bind_present.yml

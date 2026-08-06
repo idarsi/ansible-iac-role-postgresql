@@ -7,7 +7,20 @@
     pg_bind_source: "/srv/data/pgsql"
     pg_bind_target: "/var/lib/pgsql"
     pg_bind_fixture_file: "/srv/data/pgsql/molecule-bind-migrated.txt"
+    pg_repo_file: "/etc/yum.repos.d/pgdg-redhat-all.repo"
     pg_molecule_versions:
+      - version: "16"
+        instance: "main"
+        port: 5416
+        database: "appdb16"
+        directory: "/tmp/pgsql16"
+        file: "/tmp/pgsql16/example.txt"
+        cron_file: "/etc/cron.d/pg16_heartbeat"
+        config_file: "/var/lib/pgsql/16/main/conf.d/42-inventory.conf"
+        profile_file: ""
+        autotuning_file: ""
+        service_file: "/usr/lib/systemd/system/postgresql-16-main.service"
+        plpython_package: ""
       - version: "17"
         instance: "main"
         port: 5417
@@ -18,6 +31,7 @@
         config_file: "/var/lib/pgsql/17/main/conf.d/42-inventory.conf"
         profile_file: "/var/lib/pgsql/17/main/conf.d/40-profile.conf"
         autotuning_file: ""
+        service_file: "/usr/lib/systemd/system/postgresql-17-main.service"
         plpython_package: ""
       - version: "18"
         instance: "main"
@@ -29,8 +43,19 @@
         config_file: "/var/lib/pgsql/18/main/conf.d/42-inventory.conf"
         profile_file: ""
         autotuning_file: "/var/lib/pgsql/18/main/conf.d/43-autotuning.conf"
+        service_file: "/usr/lib/systemd/system/postgresql-18-main.service"
         plpython_package: "postgresql18-plpython3"
   tasks:
+    - name: "Checking PostgreSQL operating system user"
+      ansible.builtin.command: "getent passwd postgres"
+      register: pg_os_user_check
+      changed_when: false
+
+    - name: "Checking PostgreSQL repository file"
+      ansible.builtin.stat:
+        path: "{{ pg_repo_file }}"
+      register: pg_repo_file_check
+
     - name: "Checking PostgreSQL server packages"
       ansible.builtin.command: "rpm -q postgresql{{ item.version }}-server"
       loop: "{{ pg_molecule_versions }}"
@@ -47,6 +72,12 @@
       ansible.builtin.command: "systemctl is-active postgresql-{{ item.version }}-{{ item.instance }}.service"
       loop: "{{ pg_molecule_versions }}"
       register: pg_service_checks
+      changed_when: false
+
+    - name: "Checking PostgreSQL services are enabled"
+      ansible.builtin.command: "systemctl is-enabled postgresql-{{ item.version }}-{{ item.instance }}.service"
+      loop: "{{ pg_molecule_versions }}"
+      register: pg_service_enabled_checks
       changed_when: false
 
     - name: "Checking managed directories"
@@ -102,6 +133,12 @@
         path: "{{ item.autotuning_file }}"
       loop: "{{ pg_molecule_versions | selectattr('autotuning_file', 'truthy') | list }}"
       register: pg_autotuning_checks
+
+    - name: "Checking generated systemd service files"
+      ansible.builtin.stat:
+        path: "{{ item.service_file }}"
+      loop: "{{ pg_molecule_versions }}"
+      register: pg_service_file_checks
 
     - name: "Checking cloned git fixture file"
       ansible.builtin.stat:
@@ -187,28 +224,32 @@
     - name: "Verifying Molecule-managed PostgreSQL state"
       ansible.builtin.assert:
         that:
-          - pg_package_checks.results | map(attribute='rc') | list == [0, 0]
+          - pg_os_user_check.rc == 0
+          - pg_repo_file_check.stat.exists
+          - pg_package_checks.results | map(attribute='rc') | list == [0, 0, 0]
           - pg_plpython_package_checks.results | map(attribute='rc') | list == [0]
-          - pg_service_checks.results | map(attribute='stdout') | list == ['active', 'active']
-          - pg_directory_checks.results | map(attribute='stat.exists') | list == [true, true]
-          - pg_directory_checks.results | map(attribute='stat.isdir') | list == [true, true]
-          - pg_file_checks.results | map(attribute='stat.exists') | list == [true, true]
-          - pg_file_contents.results | map(attribute='content') | map('b64decode') | list == ['molecule\n', 'molecule\n']
-          - pg_cron_checks.results | map(attribute='stat.exists') | list == [true, true]
+          - pg_service_checks.results | map(attribute='stdout') | list == ['active', 'active', 'active']
+          - pg_service_enabled_checks.results | map(attribute='stdout') | list == ['enabled', 'enabled', 'enabled']
+          - pg_directory_checks.results | map(attribute='stat.exists') | list == [true, true, true]
+          - pg_directory_checks.results | map(attribute='stat.isdir') | list == [true, true, true]
+          - pg_file_checks.results | map(attribute='stat.exists') | list == [true, true, true]
+          - pg_file_contents.results | map(attribute='content') | map('b64decode') | list == ['molecule\n', 'molecule\n', 'molecule\n']
+          - pg_cron_checks.results | map(attribute='stat.exists') | list == [true, true, true]
           - pg_cron_contents.results | map(attribute='content') | map('b64decode') | join('') is search('/bin/true')
-          - pg_config_checks.results | map(attribute='stat.exists') | list == [true, true]
+          - pg_config_checks.results | map(attribute='stat.exists') | list == [true, true, true]
           - pg_config_contents.results | map(attribute='content') | map('b64decode') | join('') is search('max_connections = 50')
           - pg_profile_checks.results | map(attribute='stat.exists') | list == [true]
           - pg_autotuning_checks.results | map(attribute='stat.exists') | list == [true]
+          - pg_service_file_checks.results | map(attribute='stat.exists') | list == [true, true, true]
           - pg_git_fixture_file.stat.exists
           - (pg_git_fixture_content.content | b64decode) == 'postgres molecule git fixture\n'
           - pg_bind_fixture_stat.stat.exists
           - (pg_bind_fixture_content.content | b64decode) == 'legacy bind data\n'
           - (pg_bind_mount_source.stdout | trim) == pg_bind_source
           - pg_bind_fstab_check.rc == 0
-          - pg_database_checks.results | map(attribute='stdout') | list == ['1', '1']
-          - pg_role_checks.results | map(attribute='stdout') | list == ['1', '1', '1', '1']
-          - pg_extension_checks.results | map(attribute='stdout') | list == ['1', '1']
+          - pg_database_checks.results | map(attribute='stdout') | list == ['1', '1', '1']
+          - pg_role_checks.results | map(attribute='stdout') | list == ['1', '1', '1', '1', '1', '1']
+          - pg_extension_checks.results | map(attribute='stdout') | list == ['1', '1', '1']
           - pg_plpython_extension_checks.results | map(attribute='stdout') | list == ['1']
-          - pg_hba_checks.results | map(attribute='rc') | list == [0, 0]
+          - pg_hba_checks.results | map(attribute='rc') | list == [0, 0, 0]
         fail_msg: "PostgreSQL Molecule verification failed"

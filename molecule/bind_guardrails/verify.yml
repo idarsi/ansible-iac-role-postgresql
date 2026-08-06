@@ -1,0 +1,21 @@
+---
+- name: Verify
+  hosts: all
+  become: false
+  tasks:
+    - name: "Checking ambiguous bind guardrail marker"
+      ansible.builtin.stat:
+        path: /tmp/bind-guardrails/ambiguous-bind.ok
+      register: pg_ambiguous_bind_marker
+
+    - name: "Checking active service bind guardrail marker"
+      ansible.builtin.stat:
+        path: /tmp/bind-guardrails/active-service-bind.ok
+      register: pg_active_service_bind_marker
+
+    - name: "Verifying bind guardrail markers"
+      ansible.builtin.assert:
+        that:
+          - pg_ambiguous_bind_marker.stat.exists
+          - pg_active_service_bind_marker.stat.exists
+        fail_msg: "PostgreSQL bind guardrail scenario did not capture the expected failures"
