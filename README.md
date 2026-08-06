@@ -82,10 +82,10 @@ Role Testing
 
 This role includes baseline Molecule scenarios:
 
-- `molecule/default` validates package installation, instance startup,
-  version-scoped managed filesystem resources, cron entries, role/database
-  provisioning, extension creation, and generated access configuration on
-  Rocky Linux 9
+- `molecule/default` validates package installation, multi-instance startup,
+  version-scoped managed filesystem resources including `binds:`, cron
+  entries, role/database provisioning, extension creation, and generated
+  access configuration on Rocky Linux 9
 - `molecule/all_absent` validates destructive cleanup of packages,
   repositories, bind mounts, service files, managed resources, and the
   PostgreSQL operating system user on Rocky Linux 9
