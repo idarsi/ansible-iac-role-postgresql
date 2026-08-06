@@ -1,0 +1,27 @@
+---
+- name: "Checking git repository records are defined"
+  ansible.builtin.assert:
+    that:
+      - iac_git_repos is defined
+    fail_msg: "iac_git_repos must be defined"
+
+- name: "Checking git repository record"
+  ansible.builtin.assert:
+    that:
+      - iac_git_repo_record.dest is defined
+      - iac_git_repo_record.dest is match('^/')
+    fail_msg: "Git repository record is missing required fields"
+  loop: "{{ iac_git_repos | default([]) }}"
+  loop_control:
+    loop_var: iac_git_repo_record
+    label: "{{ iac_git_repo_record.dest | default('unknown') }}"
+
+- name: "Ensuring git repository working trees are absent"
+  ansible.builtin.file:
+    path: "{{ iac_git_repo_record.dest }}"
+    state: absent
+  loop: "{{ iac_git_repos | default([]) }}"
+  when: (iac_git_repos | default([])) | length > 0
+  loop_control:
+    loop_var: iac_git_repo_record
+    label: "{{ iac_git_repo_record.dest }}"

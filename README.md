@@ -24,6 +24,7 @@ Operation                       | State               |
 --------------------------------|---------------------|
 Installing and configuring all  | install             |
 Uninstalling all                | uninstall           |
+Removing PostgreSQL completely  | all_absent          |
 Installing PostgreSQL           | present             |
 Uninstalling PostgreSQL         | absent              |
 Create PostgreSQL instances     | instances_present   |
@@ -85,6 +86,9 @@ This role includes baseline Molecule scenarios:
   version-scoped managed filesystem resources, cron entries, role/database
   provisioning, extension creation, and generated access configuration on
   Rocky Linux 9
+- `molecule/all_absent` validates destructive cleanup of packages,
+  repositories, bind mounts, service files, managed resources, and the
+  PostgreSQL operating system user on Rocky Linux 9
 - `molecule/rocky10` validates the same baseline behavior on Rocky Linux 10
 
 Run locally from the role directory:
@@ -97,6 +101,12 @@ Run the default scenario only:
 
 ```bash
 molecule test -s default
+```
+
+Run the `all_absent` scenario only:
+
+```bash
+molecule test -s all_absent
 ```
 
 Run the Rocky Linux 10 scenario:
@@ -169,6 +179,28 @@ The above example is equivalent to the example below in practical use.
   - role: ansible-iac-role-postgresql
     state: databases_present
 ```
+
+To aggressively remove PostgreSQL from a host, including repository
+configuration, the operating system user, and PostgreSQL-owned data
+directories, run:
+
+```yaml
+---
+- hosts: postgres
+  become: true
+
+  roles:
+  - role: ansible-iac-role-postgresql
+    state: all_absent
+```
+
+`all_absent` is intentionally destructive. It stops PostgreSQL systemd units,
+removes PostgreSQL packages and repository configuration, deletes PostgreSQL
+service files, removes PostgreSQL data and log directories, and deletes the
+PostgreSQL operating system user together with its home directory. It also
+removes version-scoped managed Git working trees before the final directory
+cleanup. Use it when a host or test environment must be reset back to a clean
+pre-PostgreSQL baseline instead of preserving any existing PostgreSQL data.
 
 Inventory example
 -----------------

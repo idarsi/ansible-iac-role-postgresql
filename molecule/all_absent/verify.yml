@@ -1,0 +1,73 @@
+---
+- name: Verify
+  hosts: all
+  become: false
+  vars:
+    ansible_become_method: su
+    pg_repo_file: "/etc/yum.repos.d/pgdg-redhat-all.repo"
+    pg_service_file: "/usr/lib/systemd/system/postgresql-17-main.service"
+    pg_bind_source: "/srv/data/pgsql"
+    pg_bind_target: "/var/lib/pgsql"
+    pg_git_clone_target: "/var/lib/pgsql/git/pg-molecule-source"
+    pg_removed_paths:
+      - "/srv/data/pgsql"
+      - "/var/lib/pgsql"
+      - "/var/log/pgsql"
+      - "/tmp/pgsql17"
+      - "/etc/cron.d/pg17_heartbeat"
+      - "/tmp/pgsql17/example.txt"
+      - "/usr/lib/systemd/system/postgresql-17-main.service"
+      - "/var/lib/pgsql/git/pg-molecule-source"
+  tasks:
+    - name: "Checking installed PostgreSQL RPMs"
+      ansible.builtin.shell: "rpm -qa 'postgresql*'"
+      register: pg_installed_rpms
+      changed_when: false
+
+    - name: "Checking PostgreSQL operating system user"
+      ansible.builtin.command: "getent passwd postgres"
+      register: pg_os_user_check
+      changed_when: false
+      failed_when: false
+
+    - name: "Checking PostgreSQL bind mount is absent"
+      ansible.builtin.command: "findmnt -n -M {{ pg_bind_target }} -o SOURCE"
+      register: pg_bind_mount_source
+      changed_when: false
+      failed_when: false
+
+    - name: "Checking PostgreSQL bind mount fstab entry is absent"
+      ansible.builtin.command: >-
+        grep -F "{{ pg_bind_source }} {{ pg_bind_target }} none bind 0 0" /etc/fstab
+      register: pg_bind_fstab_check
+      changed_when: false
+      failed_when: false
+
+    - name: "Checking PostgreSQL repository file"
+      ansible.builtin.stat:
+        path: "{{ pg_repo_file }}"
+      register: pg_repo_file_check
+
+    - name: "Checking removed PostgreSQL paths"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ pg_removed_paths }}"
+      register: pg_removed_path_checks
+
+    - name: "Checking PostgreSQL systemd service is absent"
+      ansible.builtin.command: "systemctl list-unit-files {{ pg_service_file | basename }}"
+      register: pg_service_unit_file_check
+      changed_when: false
+      failed_when: false
+
+    - name: "Verifying all_absent cleanup state"
+      ansible.builtin.assert:
+        that:
+          - (pg_installed_rpms.stdout | trim) == ''
+          - pg_os_user_check.rc != 0
+          - (pg_bind_mount_source.stdout | trim) == ''
+          - pg_bind_fstab_check.rc != 0
+          - not pg_repo_file_check.stat.exists
+          - pg_removed_path_checks.results | map(attribute='stat.exists') | list == [false, false, false, false, false, false, false, false]
+          - pg_service_unit_file_check.rc != 0 or ('0 unit files listed.' in (pg_service_unit_file_check.stdout | default('')))
+        fail_msg: "PostgreSQL all_absent Molecule verification failed"

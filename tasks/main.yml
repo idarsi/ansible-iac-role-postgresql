@@ -76,6 +76,10 @@
   ansible.builtin.include_tasks: uninstall.yml
   when: state == 'uninstall'
 
+- name: "STATE: Ensure PostgreSQL installations and host-level remnants are absent"
+  ansible.builtin.include_tasks: all_absent.yml
+  when: state == 'all_absent'
+
 - name: "STATE: Ensure PostgreSQL installations are present"
   ansible.builtin.include_tasks: present.yml
   when: state == 'present'

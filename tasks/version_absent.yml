@@ -18,6 +18,7 @@
     iac_fs_directories: "{{ pg_version_record.directories | default([]) }}"
     iac_fs_files: "{{ pg_version_record.files | default([]) }}"
     iac_fs_binds: "{{ pg_version_record.binds | default([]) }}"
+    iac_git_repos: "{{ pg_version_record.git | default([]) }}"
   when: pg_version_record is defined
 
 - name: "Checking if required variables are defined"
@@ -54,6 +55,10 @@
 - name: "Ensuring bind mount configuration is absent"
   ansible.builtin.include_tasks: bind_absent.yml
   when: (iac_fs_binds | default([])) | length > 0
+
+- name: "Ensuring git repositories are absent"
+  ansible.builtin.include_tasks: git_absent.yml
+  when: (iac_git_repos | default([])) | length > 0
 
 - name: "Ensuring filesystem configuration is absent"
   ansible.builtin.include_tasks: fs_absent.yml
