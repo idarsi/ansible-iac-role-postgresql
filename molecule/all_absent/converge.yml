@@ -1,0 +1,287 @@
+---
+- name: Prepare PostgreSQL installation fixture
+  hosts: all
+  become: false
+  vars:
+    ansible_become_method: su
+  pre_tasks:
+    - name: "Checking whether legacy PostgreSQL path is currently mounted"
+      ansible.builtin.command: "findmnt -n -M /var/lib/pgsql -o SOURCE"
+      register: pg_molecule_existing_bind_mount
+      changed_when: false
+      failed_when: false
+
+    - name: "Unmounting previous PostgreSQL bind mount from failed test runs"
+      ansible.builtin.command: "umount /var/lib/pgsql"
+      register: pg_molecule_umount_result
+      failed_when: false
+      changed_when: pg_molecule_umount_result.rc == 0
+      when: pg_molecule_existing_bind_mount.rc == 0
+
+    - name: "Lazy-unmounting previous busy PostgreSQL bind mount from failed test runs"
+      ansible.builtin.command: "umount -l /var/lib/pgsql"
+      when:
+        - pg_molecule_existing_bind_mount.rc == 0
+        - pg_molecule_umount_result.rc is defined
+        - pg_molecule_umount_result.rc != 0
+
+    - name: "Removing previous PostgreSQL bind mount fstab entry from failed test runs"
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        regexp: "^/srv/data/pgsql\\s+/var/lib/pgsql\\s+none\\s+bind\\s+0\\s+0$"
+        state: absent
+      failed_when: false
+
+    - name: "Removing previous bind migration source directory from failed test runs"
+      ansible.builtin.file:
+        path: /srv/data/pgsql
+        state: absent
+
+    - name: "Removing previous legacy PostgreSQL directory from failed test runs"
+      ansible.builtin.file:
+        path: /var/lib/pgsql
+        state: absent
+
+    - name: "Removing previous PostgreSQL log directory from failed test runs"
+      ansible.builtin.file:
+        path: /var/log/pgsql
+        state: absent
+
+    - name: "Removing previous managed fixture directory from failed test runs"
+      ansible.builtin.file:
+        path: /tmp/pgsql17
+        state: absent
+
+    - name: "Ensuring /etc/fstab exists for bind mount test in container image"
+      ansible.builtin.copy:
+        dest: /etc/fstab
+        owner: root
+        group: root
+        mode: "0644"
+        force: false
+        content: ""
+
+    - name: "Ensuring legacy PostgreSQL directory exists for bind migration test"
+      ansible.builtin.file:
+        path: /var/lib/pgsql
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: "Writing bind migration fixture into legacy PostgreSQL directory"
+      ansible.builtin.copy:
+        dest: /var/lib/pgsql/molecule-bind-migrated.txt
+        owner: root
+        group: root
+        mode: "0600"
+        content: "legacy bind data\n"
+
+    - name: "Ensuring git is installed for Molecule git fixture"
+      ansible.builtin.package:
+        name: git
+        state: present
+
+    - name: "Ensuring Molecule git source directory exists"
+      ansible.builtin.file:
+        path: /tmp/pg-molecule-source
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: "Writing Molecule git source fixture file"
+      ansible.builtin.copy:
+        dest: /tmp/pg-molecule-source/README.md
+        owner: root
+        group: root
+        mode: "0644"
+        content: "postgres molecule git fixture\n"
+
+    - name: "Checking whether Molecule git source repository already exists"
+      ansible.builtin.stat:
+        path: /tmp/pg-molecule-source/.git
+      register: pg_molecule_git_source_repo
+
+    - name: "Initializing Molecule git source repository"
+      ansible.builtin.command:
+        argv:
+          - git
+          - init
+          - --initial-branch=main
+          - /tmp/pg-molecule-source
+      changed_when: true
+      when: not pg_molecule_git_source_repo.stat.exists
+
+    - name: "Configuring Molecule git source repository user email"
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - /tmp/pg-molecule-source
+          - config
+          - user.email
+          - molecule@example.org
+      changed_when: true
+      when: not pg_molecule_git_source_repo.stat.exists
+
+    - name: "Configuring Molecule git source repository user name"
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - /tmp/pg-molecule-source
+          - config
+          - user.name
+          - Molecule
+      changed_when: true
+      when: not pg_molecule_git_source_repo.stat.exists
+
+    - name: "Adding Molecule git fixture file to repository"
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - /tmp/pg-molecule-source
+          - add
+          - README.md
+      changed_when: true
+      when: not pg_molecule_git_source_repo.stat.exists
+
+    - name: "Creating Molecule git fixture commit"
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - /tmp/pg-molecule-source
+          - commit
+          - -m
+          - Initial fixture
+      changed_when: true
+      when: not pg_molecule_git_source_repo.stat.exists
+
+- name: Install PostgreSQL fixture
+  hosts: all
+  become: false
+  vars:
+    state: install
+    pg_lang: "en"
+    pg_locale: "US"
+    pg_disable_postgresql_module: false
+    pg_real_dir: "/srv/data/pgsql"
+    pg_bind_dir: "/var/lib/pgsql"
+    ansible_become_method: su
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          directories:
+            - path: /tmp/pgsql17
+              owner: root
+              group: root
+              mode: "0750"
+          files:
+            - path: /tmp/pgsql17/example.txt
+              content: "molecule\n"
+              owner: root
+              group: root
+              mode: "0640"
+          git:
+            - repo: /tmp/pg-molecule-source
+              dest: /var/lib/pgsql/git/pg-molecule-source
+              version: main
+              update: true
+          cron:
+            - name: pg17_heartbeat
+              user: root
+              minute: "0"
+              hour: "3"
+              job: "/bin/true"
+              cron_file: pg17_heartbeat
+          instances:
+            - name: main
+              roles:
+                - name: app_user
+                  password: app_password
+                  createdb: false
+                - name: app_admin
+                  password: admin_password
+                  createdb: true
+              databases:
+                - name: appdb17
+                  owner: app_admin
+                  extensions:
+                    - name: pgcrypto
+                  access:
+                    - name: app_user
+                      address: 10.0.0.1/32
+                      type: host
+                      method: scram-sha-256
+              configuration_profile: balanced
+              configuration:
+                port: 5417
+                max_connections: 50
+  roles:
+    - role: ansible-iac-role-postgresql
+
+- name: Remove PostgreSQL fixture completely
+  hosts: all
+  become: false
+  vars:
+    state: all_absent
+    pg_lang: "en"
+    pg_locale: "US"
+    pg_disable_postgresql_module: false
+    pg_real_dir: "/srv/data/pgsql"
+    pg_bind_dir: "/var/lib/pgsql"
+    ansible_become_method: su
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          directories:
+            - path: /tmp/pgsql17
+              owner: root
+              group: root
+              mode: "0750"
+          files:
+            - path: /tmp/pgsql17/example.txt
+              content: "molecule\n"
+              owner: root
+              group: root
+              mode: "0640"
+          git:
+            - repo: /tmp/pg-molecule-source
+              dest: /var/lib/pgsql/git/pg-molecule-source
+              version: main
+              update: true
+          cron:
+            - name: pg17_heartbeat
+              user: root
+              minute: "0"
+              hour: "3"
+              job: "/bin/true"
+              cron_file: pg17_heartbeat
+          instances:
+            - name: main
+              roles:
+                - name: app_user
+                  password: app_password
+                  createdb: false
+                - name: app_admin
+                  password: admin_password
+                  createdb: true
+              databases:
+                - name: appdb17
+                  owner: app_admin
+                  extensions:
+                    - name: pgcrypto
+                  access:
+                    - name: app_user
+                      address: 10.0.0.1/32
+                      type: host
+                      method: scram-sha-256
+              configuration_profile: balanced
+              configuration:
+                port: 5417
+                max_connections: 50
+  roles:
+    - role: ansible-iac-role-postgresql

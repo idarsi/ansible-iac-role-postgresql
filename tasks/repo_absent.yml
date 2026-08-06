@@ -15,29 +15,32 @@
   ansible.builtin.assert:
     that:
       - pg_dnf_repo_path is defined
+      - dnf_disable_gpg_check is defined
+      - dnf_sslverify is defined
+      - dnf_validate_certs is defined
+      - dnf_update_cache is defined
+      - http_proxy is defined
+      - https_proxy is defined
+      - no_proxy is defined
     fail_msg: "All tests did not pass"
 
 ###############################################################################
 # REMOVING REPOSITORY
 ###############################################################################
 
-- name: "Ensuring PostgreSQL repository is present if distribution is Fedora and packages were not available"
-  ansible.builtin.dnf:
-    name: "https://download.postgresql.org/pub/repos/yum/reporpms/F-{{ ansible_distribution_major_version }}-x86_64/pgdg-fedora-repo-latest.noarch.rpm"
-    sslverify: "{{ dnf_sslverify }}"
-    validate_certs: "{{ dnf_validate_certs }}"
-    disable_gpg_check: "{{ dnf_disable_gpg_check }}"
-    update_cache: "{{ dnf_update_cache }}"
-    state: absent
-  environment:
-    http_proxy: "{{ http_proxy }}"
-    https_proxy: "{{ https_proxy }}"
-    no_proxy: "{{ no_proxy }}"
-  when: "'postgresql' + pg_version|string + '-server' not in sw_packages.stdout_lines and ansible_facts['distribution'] == 'Fedora'"
+- name: "Setting PostgreSQL repository package names for removal"
+  ansible.builtin.set_fact:
+    pg_repo_packages:
+      - "pgdg-redhat-repo"
+      - "pgdg-fedora-repo"
 
-- name: "Ensuring PostgreSQL repository is present if distribution is RedHat and packages were not available"
+- name: "Gathering installed package facts"
+  ansible.builtin.package_facts:
+    manager: auto
+
+- name: "Ensuring PostgreSQL repository packages are absent"
   ansible.builtin.dnf:
-    name: "https://download.postgresql.org/pub/repos/yum/reporpms/EL-{{ ansible_facts['distribution_major_version'] }}-x86_64/pgdg-redhat-repo-latest.noarch.rpm"
+    name: "{{ pg_repo_packages | select('in', ansible_facts.packages.keys() | list) | list }}"
     sslverify: "{{ dnf_sslverify }}"
     validate_certs: "{{ dnf_validate_certs }}"
     disable_gpg_check: "{{ dnf_disable_gpg_check }}"
@@ -47,7 +50,8 @@
     http_proxy: "{{ http_proxy }}"
     https_proxy: "{{ https_proxy }}"
     no_proxy: "{{ no_proxy }}"
-  when: "'postgresql' + pg_version|string + '-server' not in sw_packages.stdout_lines and (ansible_facts['distribution'] == 'RedHat' or ansible_facts['distribution'] == 'Rocky')"
+  when: >
+    (pg_repo_packages | select('in', ansible_facts.packages.keys() | list) | list | length) > 0
 
 - name: "Removing repository file"
   ansible.builtin.file:

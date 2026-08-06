@@ -1,0 +1,153 @@
+---
+###############################################################################
+#
+# all_absent.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+###############################################################################
+# SETTING VARIABLES
+###############################################################################
+
+- name: "Checking if required variables are defined"
+  ansible.builtin.assert:
+    that:
+      - dnf_disable_gpg_check is defined
+      - dnf_sslverify is defined
+      - dnf_validate_certs is defined
+      - http_proxy is defined
+      - https_proxy is defined
+      - no_proxy is defined
+      - pg_bind_dir is defined
+      - pg_default_dir is defined
+      - pg_dnf_repo_path is defined
+      - pg_log_directory is defined
+      - pg_os_user is defined
+      - pg_real_dir is defined
+      - pg_systemd_service_dir is defined
+    fail_msg: "All tests did not pass"
+
+###############################################################################
+# STOPPING SERVICES
+###############################################################################
+
+- name: "Collecting service facts"
+  ansible.builtin.service_facts:
+
+- name: "Stopping PostgreSQL systemd services"
+  ansible.builtin.systemd:
+    name: "{{ pg_service_name }}"
+    state: stopped
+    enabled: false
+  loop: >-
+    {{
+      ansible_facts.services.keys()
+      | select('match', '^postgresql(-[0-9]+-.+)?\\.service$')
+      | list
+    }}
+  loop_control:
+    loop_var: pg_service_name
+    label: "{{ pg_service_name }}"
+
+###############################################################################
+# REMOVING ROLE-MANAGED RESOURCES
+###############################################################################
+
+- name: "STATE: Ensure PostgreSQL installation is absent"
+  ansible.builtin.include_tasks: absent.yml
+  when: (pg_versions | default([])) | length > 0
+
+###############################################################################
+# REMOVING LEFTOVER SYSTEMD SERVICE FILES
+###############################################################################
+
+- name: "Finding PostgreSQL systemd service files"
+  ansible.builtin.find:
+    paths: "{{ pg_systemd_service_dir }}"
+    patterns: "postgresql-*.service"
+    file_type: file
+  register: pg_systemd_service_files
+
+- name: "Removing PostgreSQL systemd service files"
+  ansible.builtin.file:
+    path: "{{ pg_systemd_service_file.path }}"
+    state: absent
+  loop: "{{ pg_systemd_service_files.files }}"
+  loop_control:
+    loop_var: pg_systemd_service_file
+    label: "{{ pg_systemd_service_file.path }}"
+
+- name: "Executing systemd daemon-reload"
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+###############################################################################
+# REMOVING PACKAGES AND REPOSITORY
+###############################################################################
+
+- name: "Ensuring all PostgreSQL packages are absent"
+  ansible.builtin.dnf:
+    name: "postgresql*"
+    sslverify: "{{ dnf_sslverify }}"
+    validate_certs: "{{ dnf_validate_certs }}"
+    disable_gpg_check: "{{ dnf_disable_gpg_check }}"
+    state: absent
+  environment:
+    http_proxy: "{{ http_proxy }}"
+    https_proxy: "{{ https_proxy }}"
+    no_proxy: "{{ no_proxy }}"
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    iac_log_write: "Ensured all PostgreSQL packages were removed"
+
+- name: "Ensuring PostgreSQL repository is absent"
+  ansible.builtin.include_tasks: repo_absent.yml
+
+###############################################################################
+# REMOVING DIRECTORIES
+###############################################################################
+
+- name: "Removing PostgreSQL data and log directories"
+  ansible.builtin.file:
+    path: "{{ pg_cleanup_path }}"
+    state: absent
+  loop: >-
+    {{
+      [
+        pg_bind_dir,
+        pg_default_dir,
+        pg_log_directory,
+        pg_real_dir
+      ]
+      | reject('equalto', '')
+      | unique
+      | list
+    }}
+  loop_control:
+    loop_var: pg_cleanup_path
+    label: "{{ pg_cleanup_path }}"
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    iac_log_write: "Removed PostgreSQL directories {{ [pg_bind_dir, pg_default_dir, pg_log_directory, pg_real_dir] | unique | join(', ') }}"
+
+###############################################################################
+# REMOVING USER
+###############################################################################
+
+- name: "Removing PostgreSQL operating system user and home directory"
+  ansible.builtin.user:
+    name: "{{ pg_os_user }}"
+    state: absent
+    force: true
+    remove: true
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    iac_log_write: "Removed operating system user {{ pg_os_user }}"
