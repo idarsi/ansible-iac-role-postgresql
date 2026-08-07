@@ -177,13 +177,13 @@
     - name: "Checking optional profile files"
       ansible.builtin.stat:
         path: "{{ item.profile_file }}"
-      loop: "{{ pg_molecule_instances | rejectattr('profile_file', 'equalto', '') | list }}"
+      loop: "{{ pg_molecule_instances | selectattr('profile_file', 'truthy') | list }}"
       register: pg_profile_checks
 
     - name: "Checking optional autotuning files"
       ansible.builtin.stat:
         path: "{{ item.autotuning_file }}"
-      loop: "{{ pg_molecule_instances | rejectattr('autotuning_file', 'equalto', '') | list }}"
+      loop: "{{ pg_molecule_instances | selectattr('autotuning_file', 'truthy') | list }}"
       register: pg_autotuning_checks
 
     - name: "Checking generated systemd service files"
