@@ -41,6 +41,7 @@ Requirements
 ------------
 
 - Operating system (tested on)
+  - Red Hat Enterprise Linux 10
   - Fedora Linux 42
   - Fedora Linux 41
   - Red Hat Enterprise Linux 9
@@ -92,7 +93,16 @@ This role includes baseline Molecule scenarios:
 - `molecule/bind_guardrails` validates that bind-mount migration fails safely
   when source and target both contain data or when PostgreSQL services are
   still running against the target directory
+- `molecule/rocky8` validates the baseline repository workflow on Rocky Linux
+  8, including PGDG enablement, `powertools`, and PostgreSQL module disablement
+- `molecule/rhel8` validates the same baseline repository workflow on Red Hat
+  Enterprise Linux 8 UBI, including PGDG enablement, CodeReady Builder, and
+  PostgreSQL module disablement
+- `molecule/rhel9` validates the default multi-instance, bind, git, and
+  repository workflow on Red Hat Enterprise Linux 9 UBI
 - `molecule/rocky10` validates the same baseline behavior on Rocky Linux 10
+- `molecule/rhel10` validates the same baseline behavior on Red Hat Enterprise
+  Linux 10 UBI
 
 Run locally from the role directory:
 
@@ -122,6 +132,30 @@ Run the Rocky Linux 10 scenario:
 
 ```bash
 molecule test -s rocky10
+```
+
+Run the Rocky Linux 8 repository scenario:
+
+```bash
+molecule test -s rocky8
+```
+
+Run the Red Hat Enterprise Linux 8 repository scenario:
+
+```bash
+molecule test -s rhel8
+```
+
+Run the Red Hat Enterprise Linux 9 UBI scenario:
+
+```bash
+molecule test -s rhel9
+```
+
+Run the Red Hat Enterprise Linux 10 UBI scenario:
+
+```bash
+molecule test -s rhel10
 ```
 
 Definitions

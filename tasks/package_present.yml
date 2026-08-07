@@ -23,22 +23,84 @@
       - pg_package is defined
     fail_msg: "All tests did not pass"
 
+- name: "Normalizing package list for installation"
+  ansible.builtin.set_fact:
+    pg_package_list: >-
+      {{
+        pg_package
+        if (pg_package is sequence and pg_package is not string)
+        else
+        (
+          pg_package.split(',')
+          | map('trim')
+          | reject('equalto', '')
+          | list
+        )
+      }}
+
 ###############################################################################
 # ENSURING PACKAGE IS PRESENT
 ###############################################################################
 
 - name: "Ensuring packages are installed"
-  ansible.builtin.dnf:
-    name: "{{ pg_package }}"
-    sslverify: "{{ dnf_sslverify }}"
-    validate_certs: "{{ dnf_validate_certs }}"
-    disable_gpg_check: "{{ dnf_disable_gpg_check }}"
-    state: "present"
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          'dnf',
+          '-y',
+          'install',
+          '--setopt=sslverify=' ~ (1 if dnf_sslverify else 0),
+          '--nogpgcheck' if dnf_disable_gpg_check else '--setopt=gpgcheck=1'
+        ] + pg_package_list
+      }}
   environment:
     http_proxy: "{{ http_proxy }}"
     https_proxy: "{{ https_proxy }}"
     no_proxy: "{{ no_proxy }}"
-  when: pg_package is defined
+  register: pg_package_present_result
+  retries: "{{ pg_repo_network_retries | default(1) }}"
+  delay: "{{ pg_repo_network_delay | default(0) }}"
+  until: pg_package_present_result is succeeded
+  changed_when: false
+  when:
+    - pg_package is defined
+    - ansible_facts["os_family"] == "RedHat"
+    - ansible_facts["distribution_major_version"] == "8"
+
+- name: "Ensuring packages are installed"
+  ansible.builtin.dnf:
+    name: "{{ pg_package_list }}"
+    sslverify: "{{ dnf_sslverify }}"
+    validate_certs: "{{ dnf_validate_certs }}"
+    disable_gpg_check: "{{ dnf_disable_gpg_check }}"
+    state: "present"
+  vars:
+    ansible_python_interpreter: >-
+      {{
+        pg_el8_dnf_interpreter
+        if
+        (
+          ansible_facts["os_family"] == "RedHat"
+          and ansible_facts["distribution_major_version"] == "8"
+        )
+        else ansible_playbook_python
+      }}
+  environment:
+    http_proxy: "{{ http_proxy }}"
+    https_proxy: "{{ https_proxy }}"
+    no_proxy: "{{ no_proxy }}"
+  register: pg_package_present_result
+  retries: "{{ pg_repo_network_retries | default(1) }}"
+  delay: "{{ pg_repo_network_delay | default(0) }}"
+  until: pg_package_present_result is succeeded
+  when:
+    - pg_package is defined
+    - not
+      (
+        ansible_facts["os_family"] == "RedHat"
+        and ansible_facts["distribution_major_version"] == "8"
+      )
 
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml

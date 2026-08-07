@@ -6,11 +6,11 @@ driver:
   name: podman
 
 platforms:
-  - name: instance-idarsi-rl9-bind-guardrails
-    image: docker.io/rockylinux/rockylinux:9-ubi-init
+  - name: instance-idarsi-rhel8
+    image: registry.access.redhat.com/ubi8-init
     command: /sbin/init
     privileged: true
-    pre_build_image: true
+    pre_build_image: false
     systemd: true
     tty: true
     volumes:
@@ -23,19 +23,10 @@ provisioner:
     ANSIBLE_LOCAL_TEMP: "/tmp/.ansible/tmp"
     ANSIBLE_REMOTE_TMP: "/tmp"
     ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/.."
-
-scenario:
-  test_sequence:
-    - dependency
-    - cleanup
-    - destroy
-    - syntax
-    - create
-    - prepare
-    - converge
-    - verify
-    - cleanup
-    - destroy
+  inventory:
+    host_vars:
+      instance-idarsi-rhel8:
+        ansible_python_interpreter: /usr/bin/python3.9
 
 verifier:
   name: ansible

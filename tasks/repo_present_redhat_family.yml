@@ -1,0 +1,182 @@
+---
+###############################################################################
+#
+# repo_present_redhat_family.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+###############################################################################
+# CHECKING CURRENT REPOSITORY STATE
+###############################################################################
+
+- name: "Setting RedHat family repository state defaults"
+  ansible.builtin.set_fact:
+    pg_repofile_available: false
+    pg_files_available: false
+
+- name: "Cleaning DNF cache before repository checks"
+  ansible.builtin.command: dnf clean all
+  changed_when: false
+
+- name: "Checking if PostgreSQL server package is already available"
+  ansible.builtin.shell: >
+    set -o pipefail &&
+    dnf list postgresql{{ pg_version | string }}-server |
+    grep postgresql{{ pg_version | string }}-server |
+    awk '{print $1}' |
+    awk '{split($0,a,"."); print a[1]}'
+  environment:
+    http_proxy: "{{ http_proxy }}"
+    https_proxy: "{{ https_proxy }}"
+    no_proxy: "{{ no_proxy }}"
+  register: sw_packages
+  changed_when: false
+  failed_when: sw_packages.rc not in [0, 1]
+
+- name: "Marking package availability"
+  ansible.builtin.set_fact:
+    pg_files_available: true
+  when: "'postgresql' + pg_version|string + '-server' in sw_packages.stdout_lines"
+
+- name: "Checking if postgresql.org repository file exists"
+  ansible.builtin.stat:
+    path: "{{ pg_dnf_repo_path }}"
+  register: repo_file
+
+- name: "Marking repository file availability"
+  ansible.builtin.set_fact:
+    pg_repofile_available: true
+  when: repo_file.stat.exists
+
+###############################################################################
+# ENSURING REPOSITORY DEFINITION IS PRESENT
+###############################################################################
+
+- name: "Ensuring PostgreSQL repository RPM key for EL is present"
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - --import
+      - "https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-RHEL"
+  environment:
+    http_proxy: "{{ http_proxy }}"
+    https_proxy: "{{ https_proxy }}"
+    no_proxy: "{{ no_proxy }}"
+  register: pg_repo_rpm_key_result
+  retries: "{{ pg_repo_network_retries | default(1) }}"
+  delay: "{{ pg_repo_network_delay | default(0) }}"
+  until: pg_repo_rpm_key_result is succeeded
+  changed_when: false
+  when:
+    - pg_files_available is false
+    - pg_repofile_available is false
+    - ansible_facts["distribution_major_version"] in ["8", "10"]
+
+- name: "Ensuring PostgreSQL repository RPM key for EL is present"
+  ansible.builtin.rpm_key:
+    key: "https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-RHEL"
+    state: present
+  vars:
+    ansible_python_interpreter: >-
+      {{
+        pg_el8_dnf_interpreter
+        if ansible_facts["distribution_major_version"] == "8"
+        else ansible_playbook_python
+      }}
+  environment:
+    http_proxy: "{{ http_proxy }}"
+    https_proxy: "{{ https_proxy }}"
+    no_proxy: "{{ no_proxy }}"
+  register: pg_repo_rpm_key_result
+  retries: "{{ pg_repo_network_retries | default(1) }}"
+  delay: "{{ pg_repo_network_delay | default(0) }}"
+  until: pg_repo_rpm_key_result is succeeded
+  when:
+    - pg_files_available is false
+    - pg_repofile_available is false
+    - ansible_facts["distribution_major_version"] not in ["8", "10"]
+
+- name: "Ensuring PostgreSQL repository package is present for EL"
+  ansible.builtin.include_tasks: package_present.yml
+  vars:
+    pg_package: "https://download.postgresql.org/pub/repos/yum/reporpms/EL-{{ ansible_facts['distribution_major_version'] }}-x86_64/pgdg-redhat-repo-latest.noarch.rpm"
+  when:
+    - pg_files_available is false
+    - pg_repofile_available is false
+
+###############################################################################
+# ENSURING PROXY IS CONFIGURED TO REPOSITORY IF NEEDED
+###############################################################################
+
+- name: "Cleaning DNF cache after repository setup"
+  ansible.builtin.command: dnf clean all
+  changed_when: false
+
+- name: "Refreshing repository file status"
+  ansible.builtin.stat:
+    path: "{{ pg_dnf_repo_path }}"
+  register: repo_file
+
+- name: "Marking repository file availability after setup"
+  ansible.builtin.set_fact:
+    pg_repofile_available: true
+  when: repo_file.stat.exists
+
+- name: "Adding proxy settings to PostgreSQL repo file if needed"
+  ansible.builtin.shell: |
+    sed -i -E -e '/^proxy=/d' -e '/^\[.*\]$/a proxy={{ http_proxy }}' {{ pg_dnf_repo_path }}
+  changed_when: false
+  when:
+    - pg_repofile_available is true
+    - http_proxy | default('') | length > 0
+
+###############################################################################
+# ENABLING REPOSITORY
+###############################################################################
+
+- name: "Ensuring PostgreSQL PGDG repository is enabled"
+  ansible.builtin.command: "dnf config-manager --set-enabled pgdg{{ pg_version }}"
+  register: pg_repo_enable
+  changed_when: false
+  failed_when: false
+  when: pg_repofile_available is true
+
+- name: "Falling back to repo file enablement for PostgreSQL PGDG repository"
+  ansible.builtin.include_tasks: repo_enable_in_file.yml
+  vars:
+    pg_repo_enable_file: "{{ pg_dnf_repo_path }}"
+    pg_repo_enable_section: "pgdg{{ pg_version }}"
+  when:
+    - pg_repofile_available is true
+    - pg_repo_enable.rc != 0
+
+- name: "Checking PostgreSQL PGDG repository is enabled"
+  ansible.builtin.command: "dnf repolist --enabled pgdg{{ pg_version }}"
+  register: pg_repo_enabled_check
+  changed_when: false
+  failed_when: pg_repo_enabled_check.rc != 0
+  when: pg_repofile_available is true
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    iac_log_write: "Enabled repository {{ pg_version }}"
+  when: pg_repofile_available is true
+
+###############################################################################
+# ENABLING OPERATING SYSTEM SUPPORTING REPOSITORIES
+###############################################################################
+
+- name: "Ensuring EL8 repository extras are configured"
+  ansible.builtin.include_tasks: repo_present_el8.yml
+  when: ansible_facts["distribution_major_version"] == "8"
+
+- name: "Ensuring EL9 repository extras are configured"
+  ansible.builtin.include_tasks: repo_present_el9.yml
+  when: ansible_facts["distribution_major_version"] == "9"
+
+- name: "Ensuring EL10 repository extras are configured"
+  ansible.builtin.include_tasks: repo_present_el10.yml
+  when: ansible_facts["distribution_major_version"] == "10"

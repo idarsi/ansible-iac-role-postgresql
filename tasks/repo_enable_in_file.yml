@@ -1,0 +1,29 @@
+---
+###############################################################################
+#
+# repo_enable_in_file.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+- name: "Checking repository file exists for fallback enablement"
+  ansible.builtin.stat:
+    path: "{{ pg_repo_enable_file }}"
+  register: pg_repo_enable_file_stat
+
+- name: "Ensuring repository file fallback target exists"
+  ansible.builtin.assert:
+    that:
+      - pg_repo_enable_file is defined
+      - pg_repo_enable_section is defined
+      - pg_repo_enable_file_stat.stat.exists
+    fail_msg: "Repository file fallback target is missing"
+
+- name: "Enabling repository in repo file fallback"
+  ansible.builtin.replace:
+    path: "{{ pg_repo_enable_file }}"
+    regexp: "^(enabled=)0$"
+    replace: "\\g<1>1"
+    after: "^\\[{{ pg_repo_enable_section }}\\]$"
+    before: "^\\["

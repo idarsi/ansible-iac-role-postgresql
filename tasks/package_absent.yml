@@ -23,23 +23,76 @@
       - pg_package is defined
     fail_msg: "All tests did not pass"
 
+- name: "Normalizing package list for removal"
+  ansible.builtin.set_fact:
+    pg_package_list: >-
+      {{
+        pg_package
+        if (pg_package is sequence and pg_package is not string)
+        else
+        (
+          pg_package.split(',')
+          | map('trim')
+          | reject('equalto', '')
+          | list
+        )
+      }}
+
 ###############################################################################
-# ENSURING PACKAGE IS PRESENT
+# ENSURING PACKAGE IS ABSENT
 ###############################################################################
 
 - name: "Ensuring packages are absent"
-  ansible.builtin.dnf:
-    name: "{{ pg_package }}"
-    sslverify: "{{ dnf_sslverify }}"
-    validate_certs: "{{ dnf_validate_certs }}"
-    disable_gpg_check: "{{ dnf_disable_gpg_check }}"
-    state: "absent"
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          'dnf',
+          '-y',
+          'remove',
+          '--setopt=sslverify=' ~ (1 if dnf_sslverify else 0),
+          '--nogpgcheck' if dnf_disable_gpg_check else '--setopt=gpgcheck=1'
+        ] + pg_package_list
+      }}
   environment:
     http_proxy: "{{ http_proxy }}"
     https_proxy: "{{ https_proxy }}"
     no_proxy: "{{ no_proxy }}"
-  when: pg_package is defined
+  changed_when: false
+  when:
+    - pg_package is defined
+    - ansible_facts["os_family"] == "RedHat"
+    - ansible_facts["distribution_major_version"] == "8"
 
+- name: "Ensuring packages are absent"
+  ansible.builtin.dnf:
+    name: "{{ pg_package_list }}"
+    sslverify: "{{ dnf_sslverify }}"
+    validate_certs: "{{ dnf_validate_certs }}"
+    disable_gpg_check: "{{ dnf_disable_gpg_check }}"
+    state: "absent"
+  vars:
+    ansible_python_interpreter: >-
+      {{
+        pg_el8_dnf_interpreter
+        if
+        (
+          ansible_facts["os_family"] == "RedHat"
+          and ansible_facts["distribution_major_version"] == "8"
+        )
+        else ansible_playbook_python
+      }}
+  environment:
+    http_proxy: "{{ http_proxy }}"
+    https_proxy: "{{ https_proxy }}"
+    no_proxy: "{{ no_proxy }}"
+  when:
+    - pg_package is defined
+    - not
+      (
+        ansible_facts["os_family"] == "RedHat"
+        and ansible_facts["distribution_major_version"] == "8"
+      )
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
   vars:

@@ -94,6 +94,17 @@
     validate_certs: "{{ dnf_validate_certs }}"
     disable_gpg_check: "{{ dnf_disable_gpg_check }}"
     state: absent
+  vars:
+    ansible_python_interpreter: >-
+      {{
+        pg_el8_dnf_interpreter
+        if
+        (
+          ansible_facts["os_family"] == "RedHat"
+          and ansible_facts["distribution_major_version"] == "8"
+        )
+        else ansible_playbook_python
+      }}
   environment:
     http_proxy: "{{ http_proxy }}"
     https_proxy: "{{ https_proxy }}"

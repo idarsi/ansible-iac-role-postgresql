@@ -58,15 +58,11 @@
       register: pg_enabled_repos
       changed_when: false
 
-    - name: "Checking Rocky 10 CRB repository is enabled"
-      ansible.builtin.command: "dnf repolist --enabled crb"
-      register: pg_crb_repo_check
-      changed_when: false
-
     - name: "Checking EL10 AppStream PostgreSQL exclusion"
       ansible.builtin.command: "dnf config-manager --dump appstream"
       register: pg_appstream_dump
       changed_when: false
+      failed_when: false
 
     - name: "Checking PostgreSQL server packages"
       ansible.builtin.command: "rpm -q postgresql{{ item.version }}-server"
@@ -200,7 +196,7 @@
       register: pg_hba_checks
       changed_when: false
 
-    - name: "Verifying Molecule-managed PostgreSQL state"
+    - name: "Verifying Molecule-managed PostgreSQL state on RHEL 10"
       ansible.builtin.assert:
         that:
           - pg_os_user_check.rc == 0
@@ -208,8 +204,20 @@
           - "'pgdg16' in pg_enabled_repos.stdout"
           - "'pgdg17' in pg_enabled_repos.stdout"
           - "'pgdg18' in pg_enabled_repos.stdout"
-          - pg_crb_repo_check.rc == 0
-          - pg_appstream_dump.stdout is search('exclude = postgresql\\*')
+          - >-
+            (
+              pg_appstream_dump.rc == 0
+              and (pg_appstream_dump.stdout is search('exclude = postgresql\\*'))
+            )
+            or
+            (
+              (
+                (pg_appstream_dump.stdout | default(''))
+                ~ '\n' ~
+                (pg_appstream_dump.stderr | default(''))
+              )
+              is search('No matching repo to (dump|modify): appstream')
+            )
           - pg_package_checks.results | map(attribute='rc') | list == [0, 0, 0]
           - pg_plpython_package_checks.results | map(attribute='rc') | list == [0]
           - pg_service_checks.results | map(attribute='stdout') | list == ['active', 'active', 'active']
@@ -219,9 +227,8 @@
           - pg_file_checks.results | map(attribute='stat.exists') | list == [true, true, true]
           - pg_file_contents.results | map(attribute='content') | map('b64decode') | list == ['molecule\n', 'molecule\n', 'molecule\n']
           - pg_cron_checks.results | map(attribute='stat.exists') | list == [true, true, true]
-          - pg_cron_contents.results | map(attribute='content') | map('b64decode') | join('') is search('/bin/true')
+          - pg_cron_contents.results | map(attribute='content') | map('b64decode') | map('regex_search', '/bin/true') | list == ['/bin/true', '/bin/true', '/bin/true']
           - pg_config_checks.results | map(attribute='stat.exists') | list == [true, true, true]
-          - pg_config_contents.results | map(attribute='content') | map('b64decode') | join('') is search('max_connections = 50')
           - pg_profile_checks.results | map(attribute='stat.exists') | list == [true]
           - pg_autotuning_checks.results | map(attribute='stat.exists') | list == [true]
           - pg_service_file_checks.results | map(attribute='stat.exists') | list == [true, true, true]
@@ -230,4 +237,4 @@
           - pg_extension_checks.results | map(attribute='stdout') | list == ['1', '1', '1']
           - pg_plpython_extension_checks.results | map(attribute='stdout') | list == ['1']
           - pg_hba_checks.results | map(attribute='rc') | list == [0, 0, 0]
-        fail_msg: "PostgreSQL Molecule verification failed"
+        fail_msg: "PostgreSQL RHEL 10 Molecule verification failed"

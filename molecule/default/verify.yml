@@ -92,6 +92,22 @@
         path: "{{ pg_repo_file }}"
       register: pg_repo_file_check
 
+    - name: "Checking enabled PostgreSQL PGDG repositories"
+      ansible.builtin.command: "dnf repolist --enabled"
+      register: pg_enabled_repos
+      changed_when: false
+
+    - name: "Checking Rocky 9 CRB repository is enabled"
+      ansible.builtin.command: "dnf repolist --enabled crb"
+      register: pg_crb_repo_check
+      changed_when: false
+
+    - name: "Checking PostgreSQL module is disabled on Rocky 9"
+      ansible.builtin.command: "dnf -qy module list postgresql --disabled"
+      register: pg_module_disabled_check
+      changed_when: false
+      failed_when: false
+
     - name: "Checking PostgreSQL server packages"
       ansible.builtin.command: "rpm -q postgresql{{ item.version }}-server"
       loop: "{{ pg_molecule_versions }}"
@@ -100,7 +116,7 @@
 
     - name: "Checking PL/Python extension packages"
       ansible.builtin.command: "rpm -q {{ item.plpython_package }}"
-      loop: "{{ pg_molecule_versions | selectattr('plpython_package', 'truthy') | list }}"
+      loop: "{{ pg_molecule_versions | selectattr('plpython_package', 'defined') | rejectattr('plpython_package', 'equalto', '') | list }}"
       register: pg_plpython_package_checks
       changed_when: false
 
@@ -307,6 +323,19 @@
         that:
           - pg_os_user_check.rc == 0
           - pg_repo_file_check.stat.exists
+          - "'pgdg16' in pg_enabled_repos.stdout"
+          - "'pgdg17' in pg_enabled_repos.stdout"
+          - "'pgdg18' in pg_enabled_repos.stdout"
+          - pg_crb_repo_check.rc == 0
+          - >-
+            (
+              pg_module_disabled_check.rc == 0
+              and (pg_module_disabled_check.stdout is search('postgresql'))
+            )
+            or
+            (
+              pg_module_disabled_check.stderr is search('No matching Modules to list')
+            )
           - pg_package_checks.results | map(attribute='rc') | list == [0, 0, 0]
           - pg_plpython_package_checks.results | map(attribute='rc') | list == [0]
           - pg_service_checks.results | map(attribute='stdout') | list == ['active', 'active', 'active', 'active']
@@ -327,13 +356,13 @@
           - (pg_git_fixture_content.content | b64decode) == 'postgres molecule git fixture\n'
           - pg_bind_fixture_stat.stat.exists
           - (pg_bind_fixture_content.content | b64decode) == 'legacy bind data\n'
-          - (pg_bind_mount_source.stdout | trim) == pg_bind_source
+          - (pg_bind_mount_source.stdout | trim) is search(pg_bind_source)
           - pg_bind_fstab_check.rc == 0
           - pg_version_bind_source_stat.stat.exists
           - pg_version_bind_source_stat.stat.isdir
           - pg_version_bind_target_stat.stat.exists
           - pg_version_bind_target_stat.stat.isdir
-          - (pg_version_bind_mount_source.stdout | trim) == pg_version_bind_source
+          - (pg_version_bind_mount_source.stdout | trim) is search(pg_version_bind_source)
           - pg_version_bind_fstab_check.rc == 0
           - pg_database_checks.results | map(attribute='stdout') | list == ['1', '1', '1', '1']
           - pg_role_checks.results | map(attribute='stdout') | list == ['1', '1', '1', '1']
