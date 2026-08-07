@@ -7,7 +7,7 @@ driver:
 
 platforms:
   - name: instance-idarsi-rl9-all-absent
-    image: docker.io/idarsi/rockylinux-init:9
+    image: docker.io/rockylinux/rockylinux:9-ubi-init
     command: /sbin/init
     privileged: true
     pre_build_image: true

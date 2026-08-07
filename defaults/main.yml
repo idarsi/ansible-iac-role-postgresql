@@ -22,7 +22,7 @@ no_proxy: ""
 
 iac_supported_os:
   - { name: "Rocky", versions: ["8", "9", "10"] }
-  - { name: "RedHat", versions: ["8", "9"] }
+  - { name: "RedHat", versions: ["8", "9", "10"] }
   - { name: "Fedora", versions: ["41", "42"] }
 
 ###############################################################################
@@ -34,6 +34,9 @@ dnf_validate_certs: true
 dnf_disable_gpg_check: false
 dnf_update_cache: true
 pg_disable_postgresql_module: true
+pg_repo_network_retries: 3
+pg_repo_network_delay: 5
+pg_el8_dnf_interpreter: "/usr/libexec/platform-python"
 
 pg_dnf_repo_path: "/etc/yum.repos.d/pgdg-redhat-all.repo"
 

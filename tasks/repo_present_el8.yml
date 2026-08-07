@@ -1,0 +1,47 @@
+---
+###############################################################################
+#
+# repo_present_el8.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+- name: "Ensuring Rocky 8 powertools repository is enabled"
+  ansible.builtin.command: "dnf config-manager --set-enabled powertools"
+  register: pg_powertools_enable
+  changed_when: false
+  failed_when: false
+  when:
+    - ansible_facts["distribution"] == "Rocky"
+    - pg_repofile_available is true
+
+- name: "Falling back to repo file enablement for Rocky 8 powertools repository"
+  ansible.builtin.include_tasks: repo_enable_in_file.yml
+  vars:
+    pg_repo_enable_file: "/etc/yum.repos.d/Rocky-PowerTools.repo"
+    pg_repo_enable_section: "powertools"
+  when:
+    - ansible_facts["distribution"] == "Rocky"
+    - pg_repofile_available is true
+    - pg_powertools_enable.rc != 0
+
+- name: "Checking Rocky 8 powertools repository is enabled"
+  ansible.builtin.command: "dnf repolist --enabled powertools"
+  register: pg_powertools_repo_check
+  changed_when: false
+  failed_when: pg_powertools_repo_check.rc != 0
+  when:
+    - ansible_facts["distribution"] == "Rocky"
+    - pg_repofile_available is true
+
+- name: "Ensuring PostgreSQL AppStream module is disabled on EL8"
+  ansible.builtin.command: "dnf -qy module disable postgresql"
+  register: pg_module_disable
+  changed_when: false
+  failed_when:
+    - pg_module_disable.rc != 0
+    - >-
+      'missing groups or modules: postgresql'
+      not in (pg_module_disable.stderr | default(''))
+  when: pg_disable_postgresql_module | bool

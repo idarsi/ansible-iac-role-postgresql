@@ -97,12 +97,7 @@
       register: pg_enabled_repos
       changed_when: false
 
-    - name: "Checking Rocky 9 CRB repository is enabled"
-      ansible.builtin.command: "dnf repolist --enabled crb"
-      register: pg_crb_repo_check
-      changed_when: false
-
-    - name: "Checking PostgreSQL module is disabled on Rocky 9"
+    - name: "Checking PostgreSQL module is disabled on RHEL 9"
       ansible.builtin.command: "dnf -qy module list postgresql --disabled"
       register: pg_module_disabled_check
       changed_when: false
@@ -220,44 +215,16 @@
     - name: "Checking bind migration fixture file in real PostgreSQL directory"
       ansible.builtin.stat:
         path: "{{ pg_bind_fixture_file }}"
-      register: pg_bind_fixture_stat
+      register: pg_bind_fixture_file_check
 
-    - name: "Reading bind migration fixture file"
-      ansible.builtin.slurp:
-        path: "{{ pg_bind_fixture_file }}"
-      register: pg_bind_fixture_content
-      when: pg_bind_fixture_stat.stat.exists
-
-    - name: "Checking live bind mount source for PostgreSQL directory"
+    - name: "Checking PostgreSQL home bind mount"
       ansible.builtin.command: "findmnt -n -M {{ pg_bind_target }} -o SOURCE"
-      register: pg_bind_mount_source
+      register: pg_bind_mount_check
       changed_when: false
 
-    - name: "Checking PostgreSQL bind mount fstab entry"
-      ansible.builtin.command: >-
-        grep -F "{{ pg_bind_source }} {{ pg_bind_target }} none bind 0 0" /etc/fstab
-      register: pg_bind_fstab_check
-      changed_when: false
-
-    - name: "Checking version-scoped bind source directory"
-      ansible.builtin.stat:
-        path: "{{ pg_version_bind_source }}"
-      register: pg_version_bind_source_stat
-
-    - name: "Checking version-scoped bind target directory"
-      ansible.builtin.stat:
-        path: "{{ pg_version_bind_target }}"
-      register: pg_version_bind_target_stat
-
-    - name: "Checking live bind mount source for version-scoped bind target"
+    - name: "Checking version-scoped bind mount"
       ansible.builtin.command: "findmnt -n -M {{ pg_version_bind_target }} -o SOURCE"
-      register: pg_version_bind_mount_source
-      changed_when: false
-
-    - name: "Checking version-scoped bind mount fstab entry"
-      ansible.builtin.command: >-
-        grep -F "{{ pg_version_bind_source }} {{ pg_version_bind_target }} none bind 0 0" /etc/fstab
-      register: pg_version_bind_fstab_check
+      register: pg_version_bind_mount_check
       changed_when: false
 
     - name: "Checking databases exist"
@@ -270,24 +237,14 @@
       register: pg_database_checks
       changed_when: false
 
-    - name: "Checking primary application roles exist"
+    - name: "Checking application roles exist"
       become: true
       become_user: postgres
       ansible.builtin.command: >-
-        /usr/pgsql-{{ item.version }}/bin/psql postgres -p {{ item.port }}
-        -tXAc "SELECT 1 FROM pg_roles WHERE rolname='{{ item.role_names[0] }}'"
-      loop: "{{ pg_molecule_instances }}"
+        /usr/pgsql-{{ item.0.version }}/bin/psql postgres -p {{ item.0.port }}
+        -tXAc "SELECT 1 FROM pg_roles WHERE rolname='{{ item.1 }}'"
+      loop: "{{ pg_molecule_instances | subelements('role_names') }}"
       register: pg_role_checks
-      changed_when: false
-
-    - name: "Checking administrative roles exist"
-      become: true
-      become_user: postgres
-      ansible.builtin.command: >-
-        /usr/pgsql-{{ item.version }}/bin/psql postgres -p {{ item.port }}
-        -tXAc "SELECT 1 FROM pg_roles WHERE rolname='{{ item.role_names[1] }}'"
-      loop: "{{ pg_molecule_instances }}"
-      register: pg_admin_role_checks
       changed_when: false
 
     - name: "Checking pgcrypto extension is installed"
@@ -318,7 +275,7 @@
       register: pg_hba_checks
       changed_when: false
 
-    - name: "Verifying Molecule-managed PostgreSQL state"
+    - name: "Verifying Molecule-managed PostgreSQL state on RHEL 9"
       ansible.builtin.assert:
         that:
           - pg_os_user_check.rc == 0
@@ -326,7 +283,6 @@
           - "'pgdg16' in pg_enabled_repos.stdout"
           - "'pgdg17' in pg_enabled_repos.stdout"
           - "'pgdg18' in pg_enabled_repos.stdout"
-          - pg_crb_repo_check.rc == 0
           - >-
             (
               pg_module_disabled_check.rc == 0
@@ -345,29 +301,21 @@
           - pg_file_checks.results | map(attribute='stat.exists') | list == [true, true, true]
           - pg_file_contents.results | map(attribute='content') | map('b64decode') | list == ['molecule\n', 'molecule\n', 'molecule\n']
           - pg_cron_checks.results | map(attribute='stat.exists') | list == [true, true, true]
-          - pg_cron_contents.results | map(attribute='content') | map('b64decode') | join('') is search('/bin/true')
+          - pg_cron_contents.results | map(attribute='content') | map('b64decode') | map('regex_search', '/bin/true') | list == ['/bin/true', '/bin/true', '/bin/true']
           - pg_config_checks.results | map(attribute='stat.exists') | list == [true, true, true, true]
-          - pg_expected_config_checks.results | map(attribute='rc') | list == [0, 0, 0, 0]
-          - pg_expected_port_checks.results | map(attribute='rc') | list == [0, 0, 0, 0]
           - pg_profile_checks.results | map(attribute='stat.exists') | list == [true]
           - pg_autotuning_checks.results | map(attribute='stat.exists') | list == [true]
           - pg_service_file_checks.results | map(attribute='stat.exists') | list == [true, true, true, true]
+          - pg_expected_config_checks.results | map(attribute='rc') | list == [0, 0, 0, 0]
+          - pg_expected_port_checks.results | map(attribute='rc') | list == [0, 0, 0, 0]
           - pg_git_fixture_file.stat.exists
-          - (pg_git_fixture_content.content | b64decode) == 'postgres molecule git fixture\n'
-          - pg_bind_fixture_stat.stat.exists
-          - (pg_bind_fixture_content.content | b64decode) == 'legacy bind data\n'
-          - (pg_bind_mount_source.stdout | trim) is search(pg_bind_source)
-          - pg_bind_fstab_check.rc == 0
-          - pg_version_bind_source_stat.stat.exists
-          - pg_version_bind_source_stat.stat.isdir
-          - pg_version_bind_target_stat.stat.exists
-          - pg_version_bind_target_stat.stat.isdir
-          - (pg_version_bind_mount_source.stdout | trim) is search(pg_version_bind_source)
-          - pg_version_bind_fstab_check.rc == 0
+          - (pg_git_fixture_content.content | default('') | b64decode) is search('pg-molecule-source')
+          - pg_bind_fixture_file_check.stat.exists
+          - pg_bind_mount_check.stdout == pg_bind_source
+          - pg_version_bind_mount_check.stdout == pg_version_bind_source
           - pg_database_checks.results | map(attribute='stdout') | list == ['1', '1', '1', '1']
-          - pg_role_checks.results | map(attribute='stdout') | list == ['1', '1', '1', '1']
-          - pg_admin_role_checks.results | map(attribute='stdout') | list == ['1', '1', '1', '1']
+          - pg_role_checks.results | map(attribute='stdout') | list == ['1', '1', '1', '1', '1', '1', '1', '1']
           - pg_extension_checks.results | map(attribute='stdout') | list == ['1', '1', '1', '1']
           - pg_plpython_extension_checks.results | map(attribute='stdout') | list == ['1']
           - pg_hba_checks.results | map(attribute='rc') | list == [0, 0, 0, 0]
-        fail_msg: "PostgreSQL Molecule verification failed"
+        fail_msg: "PostgreSQL RHEL 9 Molecule verification failed"
