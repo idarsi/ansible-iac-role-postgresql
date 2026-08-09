@@ -79,12 +79,7 @@
     key: "https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-RHEL"
     state: present
   vars:
-    ansible_python_interpreter: >-
-      {{
-        pg_el8_dnf_interpreter
-        if ansible_facts["distribution_major_version"] == "8"
-        else ansible_playbook_python
-      }}
+    ansible_python_interpreter: "{{ pg_package_module_interpreter }}"
   environment:
     http_proxy: "{{ http_proxy }}"
     https_proxy: "{{ https_proxy }}"
