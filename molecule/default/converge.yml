@@ -270,6 +270,22 @@
         mode: "0600"
         content: "legacy bind data\n"
 
+    - name: "Ensuring bind migration source directory exists before role execution"
+      ansible.builtin.file:
+        path: /srv/data/pgsql
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: "Writing non-conflicting fixture into bind migration source directory"
+      ansible.builtin.copy:
+        dest: /srv/data/pgsql/.bash_profile
+        owner: root
+        group: root
+        mode: "0600"
+        content: "source fixture\n"
+
     - name: "Ensuring git is installed for Molecule git fixture"
       ansible.builtin.package:
         name: git

@@ -228,6 +228,17 @@
       register: pg_bind_fixture_content
       when: pg_bind_fixture_stat.stat.exists
 
+    - name: "Checking non-conflicting source fixture file in real PostgreSQL directory"
+      ansible.builtin.stat:
+        path: "/srv/data/pgsql/.bash_profile"
+      register: pg_bind_source_fixture_stat
+
+    - name: "Reading non-conflicting source fixture file"
+      ansible.builtin.slurp:
+        path: "/srv/data/pgsql/.bash_profile"
+      register: pg_bind_source_fixture_content
+      when: pg_bind_source_fixture_stat.stat.exists
+
     - name: "Checking live bind mount source for PostgreSQL directory"
       ansible.builtin.command: "findmnt -n -M {{ pg_bind_target }} -o SOURCE"
       register: pg_bind_mount_source
@@ -356,6 +367,8 @@
           - (pg_git_fixture_content.content | b64decode) == 'postgres molecule git fixture\n'
           - pg_bind_fixture_stat.stat.exists
           - (pg_bind_fixture_content.content | b64decode) == 'legacy bind data\n'
+          - pg_bind_source_fixture_stat.stat.exists
+          - (pg_bind_source_fixture_content.content | b64decode) == 'source fixture\n'
           - (pg_bind_mount_source.stdout | trim) is search(pg_bind_source)
           - pg_bind_fstab_check.rc == 0
           - pg_version_bind_source_stat.stat.exists
