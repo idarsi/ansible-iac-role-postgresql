@@ -35,6 +35,19 @@
   ansible.builtin.set_fact:
     pg_versions: "{{ iac_blueprint.postgresql }}"
 
+- name: "Setting Python interpreter for DNF and RPM modules"
+  ansible.builtin.set_fact:
+    pg_package_module_interpreter: >-
+      {{
+        pg_el8_dnf_interpreter
+        if
+        (
+          ansible_facts["os_family"] == "RedHat"
+          and ansible_facts["distribution_major_version"] == "8"
+        )
+        else ansible_facts["python"]["executable"] | default('/usr/bin/python3')
+      }}
+
 - name: "Setting what instances are to be configured"
   ansible.builtin.set_fact:
     pg_instances: "{{ iac_blueprint.postgresql | subelements('instances', skip_missing=True) }}"
