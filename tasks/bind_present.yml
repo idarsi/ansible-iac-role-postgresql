@@ -15,9 +15,39 @@
     - pg_real_dir is defined
     - pg_bind_dir is defined
 
-- name: "Collecting service facts for PostgreSQL bind migration checks"
-  ansible.builtin.service_facts:
-  when: (pg_bind_home_records | default([])) | length > 0
+- name: "Selecting expected PostgreSQL service names for bind migration checks"
+  ansible.builtin.set_fact:
+    pg_bind_expected_services: []
+  when:
+    - (pg_bind_home_records | default([])) | length > 0
+    - (pg_instances | default([])) | length > 0
+
+- name: "Building expected PostgreSQL service names for bind migration checks"
+  ansible.builtin.set_fact:
+    pg_bind_expected_services: >-
+      {{
+        (pg_bind_expected_services | default([]))
+        + ['postgresql-' ~ (pg_bind_service_triplet.0.version | string) ~ '-' ~ pg_bind_service_triplet.1.name ~ '.service']
+      }}
+  loop: "{{ pg_instances | default([]) }}"
+  loop_control:
+    loop_var: pg_bind_service_triplet
+    label: "postgresql-{{ pg_bind_service_triplet.0.version | string }}-{{ pg_bind_service_triplet.1.name }}.service"
+  when:
+    - (pg_bind_home_records | default([])) | length > 0
+    - (pg_instances | default([])) | length > 0
+
+- name: "Checking active expected PostgreSQL services for bind migration checks"
+  ansible.builtin.command: >-
+    systemctl is-active {{ pg_bind_service_name }}
+  register: pg_bind_expected_service_states
+  changed_when: false
+  failed_when: false
+  loop: "{{ pg_bind_expected_services | default([]) }}"
+  loop_control:
+    loop_var: pg_bind_service_name
+    label: "{{ pg_bind_service_name }}"
+  when: (pg_bind_expected_services | default([])) | length > 0
 
 - name: "Checking current live mount source for PostgreSQL bind target"
   ansible.builtin.command: >-
@@ -31,28 +61,50 @@
     label: "{{ iac_fs_bind_record.target }}"
   when: (pg_bind_home_records | default([])) | length > 0
 
+- name: "Checking current live mount options for PostgreSQL bind target"
+  ansible.builtin.command: >-
+    findmnt -n -M {{ iac_fs_bind_record.target }} -o OPTIONS
+  register: pg_bind_live_mount_options
+  changed_when: false
+  failed_when: false
+  loop: "{{ pg_bind_home_records | default([]) }}"
+  loop_control:
+    loop_var: iac_fs_bind_record
+    label: "{{ iac_fs_bind_record.target }}"
+  when: (pg_bind_home_records | default([])) | length > 0
+
 - name: "Checking PostgreSQL services are stopped before bind migration"
   ansible.builtin.assert:
     that:
       - >-
-        pg_bind_live_mount_source != ''
-        or (pg_active_postgresql_services | length) == 0
+        pg_bind_target_is_expected_bind
+        or (pg_bind_active_expected_services | length) == 0
     fail_msg: "PostgreSQL services must be stopped before migrating existing bind target data"
-  loop: "{{ pg_bind_home_records | zip(pg_bind_live_mounts.results | default([])) | list }}"
+  loop: "{{ pg_bind_home_records | zip(pg_bind_live_mounts.results | default([]), pg_bind_live_mount_options.results | default([])) | list }}"
   loop_control:
     loop_var: pg_bind_service_triplet
     label: "{{ pg_bind_service_triplet.0.target }}"
   vars:
     iac_fs_bind_record: "{{ pg_bind_service_triplet.0 }}"
     pg_bind_live_mount: "{{ pg_bind_service_triplet.1 }}"
-    pg_bind_live_mount_source: "{{ pg_bind_live_mount.stdout | trim }}"
-    pg_active_postgresql_services: >-
+    pg_bind_live_mount_source: "{{ pg_bind_live_mount.stdout | default('') | trim }}"
+    pg_bind_live_mount_options: "{{ pg_bind_service_triplet.2 }}"
+    pg_bind_live_mount_option_list: "{{ (pg_bind_live_mount_options.stdout | default('') | trim).split(',') }}"
+    pg_bind_target_is_expected_bind: >-
       {{
-        ansible_facts.services | default({})
-        | dict2items
-        | selectattr('key', 'match', '^postgresql(-[0-9]+-.+)?\\.service$')
-        | selectattr('value.state', 'equalto', 'running')
-        | map(attribute='key')
+        (pg_bind_live_mount.rc | default(1)) == 0
+        and ('bind' in pg_bind_live_mount_option_list)
+        and (
+          pg_bind_live_mount_source == iac_fs_bind_record.source
+          or pg_bind_live_mount_source.endswith('[' ~ iac_fs_bind_record.source ~ ']')
+        )
+      }}
+    pg_bind_active_expected_services: >-
+      {{
+        pg_bind_expected_service_states.results | default([])
+        | selectattr('stdout', 'defined')
+        | selectattr('stdout', 'equalto', 'active')
+        | map(attribute='pg_bind_service_name')
         | list
       }}
   when: (pg_bind_home_records | default([])) | length > 0

@@ -17,7 +17,13 @@
     iac_cron: "{{ pg_version_record.cron | default([]) }}"
     iac_fs_directories: "{{ pg_version_record.directories | default([]) }}"
     iac_fs_files: "{{ pg_version_record.files | default([]) }}"
-    iac_fs_binds: "{{ pg_version_record.binds | default([]) }}"
+    iac_fs_binds: >-
+      {{
+        pg_version_record.binds
+        | default([])
+        | map('combine', {'purge_on_absent': true})
+        | list
+      }}
     iac_git_repos: "{{ pg_version_record.git | default([]) }}"
   when: pg_version_record is defined
 
