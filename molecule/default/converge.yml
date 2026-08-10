@@ -97,6 +97,9 @@
               dest: /var/lib/pgsql/git/pg-molecule-source
               version: main
               update: true
+            - repo: /tmp/pg-molecule-source
+              dest: /var/lib/pgsql/git/pg-molecule-source-no-update
+              version: main
           cron:
             - name: pg17_heartbeat
               user: root
@@ -270,22 +273,6 @@
         mode: "0600"
         content: "legacy bind data\n"
 
-    - name: "Ensuring bind migration source directory exists before role execution"
-      ansible.builtin.file:
-        path: /srv/data/pgsql
-        state: directory
-        owner: root
-        group: root
-        mode: "0700"
-
-    - name: "Writing non-conflicting fixture into bind migration source directory"
-      ansible.builtin.copy:
-        dest: /srv/data/pgsql/.bash_profile
-        owner: root
-        group: root
-        mode: "0600"
-        content: "source fixture\n"
-
     - name: "Ensuring git is installed for Molecule git fixture"
       ansible.builtin.package:
         name: git
@@ -370,3 +357,11 @@
       when: not pg_molecule_git_source_repo.stat.exists
   roles:
     - role: ansible-iac-role-postgresql
+  post_tasks:
+    - name: "Writing source fixture after bind migration completes"
+      ansible.builtin.copy:
+        dest: /srv/data/pgsql/.bash_profile
+        owner: root
+        group: root
+        mode: "0600"
+        content: "source fixture\n"
