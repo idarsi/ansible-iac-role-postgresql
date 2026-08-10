@@ -217,6 +217,17 @@
       register: pg_git_fixture_content
       when: pg_git_fixture_file.stat.exists
 
+    - name: "Checking cloned git fixture file without update option"
+      ansible.builtin.stat:
+        path: /var/lib/pgsql/git/pg-molecule-source-no-update/README.md
+      register: pg_git_fixture_no_update_file
+
+    - name: "Reading cloned git fixture file without update option"
+      ansible.builtin.slurp:
+        path: /var/lib/pgsql/git/pg-molecule-source-no-update/README.md
+      register: pg_git_fixture_no_update_content
+      when: pg_git_fixture_no_update_file.stat.exists
+
     - name: "Checking bind migration fixture file in real PostgreSQL directory"
       ansible.builtin.stat:
         path: "{{ pg_bind_fixture_file }}"
@@ -365,6 +376,8 @@
           - pg_service_file_checks.results | map(attribute='stat.exists') | list == [true, true, true, true]
           - pg_git_fixture_file.stat.exists
           - (pg_git_fixture_content.content | b64decode) == 'postgres molecule git fixture\n'
+          - pg_git_fixture_no_update_file.stat.exists
+          - (pg_git_fixture_no_update_content.content | b64decode) == 'postgres molecule git fixture\n'
           - pg_bind_fixture_stat.stat.exists
           - (pg_bind_fixture_content.content | b64decode) == 'legacy bind data\n'
           - pg_bind_source_fixture_stat.stat.exists
