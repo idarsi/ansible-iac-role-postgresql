@@ -36,6 +36,7 @@
     iac_fs_binds:
       - source: "{{ pg_real_dir }}"
         target: "{{ pg_bind_dir }}"
+        purge_on_absent: true
   when:
     - pg_real_dir is defined
     - pg_bind_dir is defined
