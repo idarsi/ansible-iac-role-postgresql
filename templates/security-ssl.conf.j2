@@ -2,6 +2,9 @@
 ssl = 'on'
 ssl_cert_file = '{{ pg_certificate_public_key_fullpath }}'
 ssl_key_file = '{{ pg_certificate_private_key_fullpath }}'
+{% if pg_client_certificate_authority_enabled | default(false) %}
+ssl_ca_file = '{{ pg_client_certificate_authority_fullpath }}'
+{% endif %}
 ssl_min_protocol_version = '{{ pg_certificate_ssl_min_protocol_version }}'
 {% if pg_certificate_ssl_min_protocol_version|lower == 'tlsv1.2' %}
 ssl_prefer_server_ciphers = 'off'

@@ -39,6 +39,11 @@
               cron_file: pg16_heartbeat
           instances:
             - name: main
+              client_certificate_authority_src: /tmp/molecule-client-ca.crt
+              maprole:
+                - mapname: app_cert_map
+                  system_username: app-client
+                  pg_username: app_user
               roles:
                 - name: app_user
                   password: app_password
@@ -121,9 +126,12 @@
                   access:
                     - name: app_user
                       address: 10.0.0.1/32
-                      type: host
-                      method: scram-sha-256
+                      type: hostssl
+                      method: cert
+                      clientname: CN
+                      map: app_cert_map
               configuration_profile: balanced
+              security_profile: safe
               configuration:
                 port: 5417
                 max_connections: 50
@@ -148,6 +156,11 @@
               cron_file: pg18_heartbeat
           instances:
             - name: main
+              client_certificate_authority_src: /tmp/molecule-client-ca.crt
+              maprole:
+                - mapname: app_dn_map
+                  system_username: CN=app-client-dn
+                  pg_username: app_user
               roles:
                 - name: app_user
                   password: app_password
@@ -164,9 +177,13 @@
                   access:
                     - name: app_user
                       address: 10.0.0.1/32
-                      type: host
+                      type: hostssl
                       method: scram-sha-256
+                      clientcert: verify-full
+                      clientname: DN
+                      map: app_dn_map
               autotuning_profile: balanced
+              security_profile: safe
               configuration:
                 port: 5418
                 max_connections: 50
@@ -224,6 +241,21 @@
         regexp: "^/srv/data/pgsql16-shared\\s+/tmp/pgsql16-shared\\s+none\\s+bind\\s+0\\s+0$"
         state: absent
       failed_when: false
+
+    - name: "Generating Molecule client CA private key"
+      ansible.builtin.command: >-
+        openssl genrsa -out /tmp/molecule-client-ca.key 2048
+      args:
+        creates: /tmp/molecule-client-ca.key
+
+    - name: "Generating Molecule client CA certificate"
+      ansible.builtin.command: >-
+        openssl req -new -x509 -key /tmp/molecule-client-ca.key
+        -out /tmp/molecule-client-ca.crt
+        -days 3650
+        -subj /CN=molecule-client-ca
+      args:
+        creates: /tmp/molecule-client-ca.crt
 
     - name: "Removing previous bind migration source directory from failed test runs"
       ansible.builtin.file:

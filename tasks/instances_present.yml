@@ -14,6 +14,9 @@
 - name: "Setting what variables are configured"
   ansible.builtin.set_fact:
     pg_autotuning: "{{ pg_instance_record.1.autotuning_profile | default('off') }}"
+    pg_client_certificate_authority_content: "{{ pg_instance_record.1.client_certificate_authority_content | default(omit) }}"
+    pg_client_certificate_authority_enabled: false
+    pg_client_certificate_authority_src: "{{ pg_instance_record.1.client_certificate_authority_src | default(omit) }}"
     pg_configuration: "{{ pg_instance_record.1.configuration | default(omit) }}"
     pg_databases: "{{ pg_instance_record.1.databases | default([]) }}"
     pg_global_access: "{{ pg_instance_record.1.global_access | default([]) }}"
@@ -43,7 +46,32 @@
   ansible.builtin.set_fact:
     pg_certificate_private_key_fullpath: "{{ pg_default_dir }}/{{ pg_version }}/{{ pg_instance }}/ssl/{{ pg_certificate_private_key_path }}"
     pg_certificate_public_key_fullpath: "{{ pg_default_dir }}/{{ pg_version }}/{{ pg_instance }}/ssl/{{ pg_certificate_public_key_path }}"
+    pg_client_certificate_authority_fullpath: "{{ pg_default_dir }}/{{ pg_version }}/{{ pg_instance }}/ssl/{{ pg_client_certificate_authority_path }}"
+    pg_client_certificate_authority_enabled: >-
+      {{
+        (pg_client_certificate_authority_content is defined)
+        or
+        (pg_client_certificate_authority_src is defined)
+      }}
   when: pg_security_ssl != 'off'
+
+- name: "Checking whether client certificate authentication is required"
+  ansible.builtin.set_fact:
+    pg_client_certificate_auth_required: |-
+      {% set ns = namespace(required=false) %}
+      {% for item in pg_global_access %}
+      {% if item.method | default('scram-sha-256') == 'cert' or item.clientcert is defined or item.clientname is defined or item.map is defined %}
+      {% set ns.required = true %}
+      {% endif %}
+      {% endfor %}
+      {% for database in pg_databases %}
+      {% for item in database.access | default([]) %}
+      {% if item.method | default('scram-sha-256') == 'cert' or item.clientcert is defined or item.clientname is defined or item.map is defined %}
+      {% set ns.required = true %}
+      {% endif %}
+      {% endfor %}
+      {% endfor %}
+      {{ ns.required | bool }}
 
 - name: "Checking if required variables are defined"
   ansible.builtin.assert:
@@ -58,7 +86,58 @@
       - pg_security is defined
       - pg_systemd_service_dir is defined
       - pg_version is defined
+      - >-
+        not pg_client_certificate_auth_required | bool
+        or
+        pg_client_certificate_authority_enabled | bool
     fail_msg: "All tests did not pass"
+
+- name: "Checking pg_ident map records"
+  ansible.builtin.assert:
+    that:
+      - item.mapname is defined
+      - item.system_username is defined
+      - item.pg_username is defined
+    fail_msg: "PostgreSQL pg_ident map record is missing required fields"
+  loop: "{{ pg_maprole }}"
+  when: pg_maprole | length > 0
+
+- name: "Checking global pg_hba access records"
+  ansible.builtin.include_tasks: validate_hba_access_record.yml
+  loop: "{{ pg_global_access }}"
+  loop_control:
+    loop_var: pg_hba_access_record
+  vars:
+    pg_hba_access_type: "{{ pg_hba_access_record.type | default('host') }}"
+    pg_hba_access_uses_client_certificate: >-
+      {{
+        (pg_hba_access_record.method | default('scram-sha-256')) == 'cert'
+        or
+        (pg_hba_access_record.clientcert is defined)
+        or
+        (pg_hba_access_record.clientname is defined)
+        or
+        (pg_hba_access_record.map is defined)
+      }}
+
+- name: "Checking database-specific pg_hba access records"
+  ansible.builtin.include_tasks: validate_hba_access_record.yml
+  loop: "{{ pg_databases | subelements('access', skip_missing=True) }}"
+  loop_control:
+    loop_var: pg_hba_database_access_record
+  vars:
+    pg_hba_access_record: "{{ pg_hba_database_access_record.1 }}"
+    pg_hba_access_type: "{{ pg_hba_access_record.type | default('host') }}"
+    pg_hba_access_uses_client_certificate: >-
+      {{
+        (pg_hba_access_record.method | default('scram-sha-256')) == 'cert'
+        or
+        (pg_hba_access_record.clientcert is defined)
+        or
+        (pg_hba_access_record.clientname is defined)
+        or
+        (pg_hba_access_record.map is defined)
+      }}
 
 ###############################################################################
 # ENSURING INSTANCE IS PRESENT
@@ -232,22 +311,9 @@
 # ENSURING DEFAULT PG_HBA.CONF IS DELETED AND NEW WRITTEN
 ###############################################################################
 
-- name: "Rendering pg_hba.conf base content"
-  ansible.builtin.set_fact:
-    pg_hba_base_content: |-
-      local all postgres peer
-      {% for item in pg_global_access %}
-      {{ item.type | default('host') }} all {{ item.name }} {{ item.address }} {{ item.method | default('scram-sha-256') }}{{ (' ' ~ item.options) if (item.options is defined and (item.options | string | length > 0)) else '' }}
-      {% endfor %}
-      {% for database in pg_databases %}
-      {% for item in database.access | default([]) %}
-      {{ item.type | default('host') }} {{ database.name }} {{ item.name }} {{ item.address }} {{ item.method | default('scram-sha-256') }}{{ (' ' ~ item.options) if (item.options is defined and (item.options | string | length > 0)) else '' }}
-      {% endfor %}
-      {% endfor %}
-
 - name: "Ensuring pg_hba.conf base content is present"
-  ansible.builtin.copy:
-    content: "{{ pg_hba_base_content }}"
+  ansible.builtin.template:
+    src: "pg_hba.conf.j2"
     dest: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/pg_hba.conf"
     owner: "{{ pg_os_user }}"
     group: "{{ pg_os_group }}"
@@ -261,19 +327,14 @@
   ansible.builtin.file:
     path: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/pg_ident.conf"
     state: absent
-  when: pg_maprole | length > 0
 
 - name: "Ensure pg_ident.conf access rules are present"
-  ansible.builtin.lineinfile:
-    path: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/pg_ident.conf"
-    line: "{{ item.mapname }} {{ item.system_username }} {{ item.pg_username }}"
-    state: present
-    create: true
-    insertafter: EOF
+  ansible.builtin.template:
+    src: "pg_ident.conf.j2"
+    dest: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/pg_ident.conf"
     owner: "{{ pg_os_user }}"
     group: "{{ pg_os_group }}"
     mode: "0600"
-  loop: "{{ pg_maprole }}"
   when: pg_maprole | length > 0
 
 ###############################################################################

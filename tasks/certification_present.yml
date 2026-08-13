@@ -17,6 +17,14 @@
       - pg_certificate_private_key_bits is defined
       - pg_certificate_private_key_fullpath is defined
       - pg_certificate_public_key_fullpath is defined
+      - >-
+        (
+          pg_client_certificate_authority_content is not defined
+        )
+        or
+        (
+          pg_client_certificate_authority_src is not defined
+        )
       - pg_default_dir is defined
       - pg_instance is defined
       - pg_os_user is defined
@@ -66,6 +74,24 @@
   failed_when: my_output.rc != 0
   changed_when: my_output.rc == 0
 
+- name: "Ensuring trusted client CA certificate from inline content is present"
+  ansible.builtin.copy:
+    content: "{{ pg_client_certificate_authority_content }}"
+    dest: "{{ pg_client_certificate_authority_fullpath }}"
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0600"
+  when: pg_client_certificate_authority_content is defined
+
+- name: "Ensuring trusted client CA certificate from source path is present"
+  ansible.builtin.copy:
+    src: "{{ pg_client_certificate_authority_src }}"
+    dest: "{{ pg_client_certificate_authority_fullpath }}"
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0600"
+  when: pg_client_certificate_authority_src is defined
+
 - name: "Ensuring files are set to 0600"
   ansible.builtin.file:
     path: "{{ pg_default_dir }}/{{ pg_version }}/{{ pg_instance }}/ssl/"
@@ -86,3 +112,9 @@
   ansible.builtin.include_tasks: log_write.yml
   vars:
     iac_log_write: "Created public key to {{ pg_certificate_public_key_fullpath }}"
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    iac_log_write: "Created trusted client CA certificate to {{ pg_client_certificate_authority_fullpath }}"
+  when: pg_client_certificate_authority_enabled
