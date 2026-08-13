@@ -93,8 +93,15 @@
     pg_bind_target_is_expected_bind: >-
       {{
         (pg_bind_live_mount.rc | default(1)) == 0
-        and ('bind' in pg_bind_live_mount_option_list)
         and (
+          (
+            'bind' in pg_bind_live_mount_option_list
+            and (
+              pg_bind_live_mount_source == iac_fs_bind_record.source
+              or pg_bind_live_mount_source.endswith('[' ~ iac_fs_bind_record.source ~ ']')
+            )
+          )
+          or
           pg_bind_live_mount_source == iac_fs_bind_record.source
           or pg_bind_live_mount_source.endswith('[' ~ iac_fs_bind_record.source ~ ']')
         )
