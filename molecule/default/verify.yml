@@ -64,9 +64,13 @@
         expected_config: "max_connections = 50"
         expected_port: "port = 5417"
         profile_file: "/var/lib/pgsql/17/main/conf.d/40-profile.conf"
+        security_file: "/var/lib/pgsql/17/main/conf.d/41-security.conf"
+        ca_file: "/var/lib/pgsql/17/main/ssl/client-root-ca.crt"
         autotuning_file: ""
         service_file: "/usr/lib/systemd/system/postgresql-17-main.service"
-        hba_rule: "host appdb17 app_user 10.0.0.1/32 scram-sha-256"
+        hba_rule: "hostssl appdb17 app_user 10.0.0.1/32 cert clientname=CN map=app_cert_map"
+        ident_rule: "app_cert_map app-client app_user"
+        security_rule: "ssl_ca_file = '/var/lib/pgsql/17/main/ssl/client-root-ca.crt'"
       - version: "18"
         instance: "main"
         port: 5418
@@ -78,9 +82,13 @@
         expected_config: "max_connections = 50"
         expected_port: "port = 5418"
         profile_file: ""
+        security_file: "/var/lib/pgsql/18/main/conf.d/41-security.conf"
+        ca_file: "/var/lib/pgsql/18/main/ssl/client-root-ca.crt"
         autotuning_file: "/var/lib/pgsql/18/main/conf.d/43-autotuning.conf"
         service_file: "/usr/lib/systemd/system/postgresql-18-main.service"
-        hba_rule: "host appdb18 app_user 10.0.0.1/32 scram-sha-256"
+        hba_rule: "hostssl appdb18 app_user 10.0.0.1/32 scram-sha-256 clientcert=verify-full clientname=DN map=app_dn_map"
+        ident_rule: "app_dn_map CN=app-client-dn app_user"
+        security_rule: "ssl_ca_file = '/var/lib/pgsql/18/main/ssl/client-root-ca.crt'"
   tasks:
     - name: "Checking PostgreSQL operating system user"
       ansible.builtin.command: "getent passwd postgres"
@@ -340,6 +348,28 @@
       register: pg_hba_checks
       changed_when: false
 
+    - name: "Checking pg_ident access rules"
+      ansible.builtin.command: >-
+        grep -F "{{ item.ident_rule }}"
+        /var/lib/pgsql/{{ item.version }}/{{ item.instance }}/pg_ident.conf
+      loop: "{{ pg_molecule_instances | selectattr('ident_rule', 'defined') | list }}"
+      register: pg_ident_checks
+      changed_when: false
+
+    - name: "Checking SSL client CA files"
+      ansible.builtin.stat:
+        path: "{{ item.ca_file }}"
+      loop: "{{ pg_molecule_instances | selectattr('ca_file', 'defined') | list }}"
+      register: pg_client_ca_checks
+
+    - name: "Checking security configuration for SSL client CA"
+      ansible.builtin.command: >-
+        grep -F "{{ item.security_rule }}"
+        {{ item.security_file }}
+      loop: "{{ pg_molecule_instances | selectattr('security_rule', 'defined') | list }}"
+      register: pg_security_checks
+      changed_when: false
+
     - name: "Verifying Molecule-managed PostgreSQL state"
       ansible.builtin.assert:
         that:
@@ -396,4 +426,7 @@
           - pg_extension_checks.results | map(attribute='stdout') | list == ['1', '1', '1', '1']
           - pg_plpython_extension_checks.results | map(attribute='stdout') | list == ['1']
           - pg_hba_checks.results | map(attribute='rc') | list == [0, 0, 0, 0]
+          - pg_ident_checks.results | map(attribute='rc') | list == [0, 0]
+          - pg_client_ca_checks.results | map(attribute='stat.exists') | list == [true, true]
+          - pg_security_checks.results | map(attribute='rc') | list == [0, 0]
         fail_msg: "PostgreSQL Molecule verification failed"

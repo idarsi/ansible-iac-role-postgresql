@@ -329,6 +329,15 @@ iac_blueprint:
           configuration_profile: <name>        # e.g. "balanced"
           autotuning_profile: <name>           # e.g. "balanced"
           security_profile: <name>             # e.g. "safe"
+          client_certificate_authority_content: |  # optional trusted CA PEM for client certificate auth
+            -----BEGIN CERTIFICATE-----
+            ...
+            -----END CERTIFICATE-----
+          client_certificate_authority_src: <path> # optional controller-side CA PEM path for client certificate auth
+          maprole:                            # optional pg_ident.conf mappings, also used by certificate auth
+            - mapname: <map name>
+              system_username: <system user or certificate CN/DN>
+              pg_username: <database role>
           configuration:                       # optional, direct postgresql.conf overrides
             key: value
           databases:
@@ -341,6 +350,9 @@ iac_blueprint:
                   address: <CIDR>
                   type: <host|hostssl|local>   # optional, default: host
                   method: <auth_method>        # optional, default: scram-sha-256
+                  clientcert: <verify-ca|verify-full> # optional, hostssl only
+                  clientname: <CN|DN>          # optional, hostssl only
+                  map: <map name>              # optional, hostssl certificate auth only
           roles:                               # roles that exist in this instance
             - name: <username>
               password: <cleartext password>   # optional
@@ -370,6 +382,35 @@ iac_blueprint:
               access:
                 - name: app
                   address: 192.168.1.0/24
+```
+
+Certificate authentication example with explicit certificate-aware pg_hba fields:
+
+```yaml
+iac_blueprint:
+  postgresql:
+    - version: 17
+      instances:
+        - name: main
+          security_profile: safe
+          client_certificate_authority_src: /srv/pki/postgresql/client-root-ca.crt
+          maprole:
+            - mapname: app_cert_map
+              system_username: app-client
+              pg_username: app_user
+          roles:
+            - name: app_user
+              login: true
+          databases:
+            - name: appdb
+              owner: app_user
+              access:
+                - name: app_user
+                  address: 192.168.1.0/24
+                  type: hostssl
+                  method: cert
+                  clientname: CN
+                  map: app_cert_map
 ```
 
 Minimal example: just install PostgreSQL with one instance

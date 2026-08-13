@@ -1,0 +1,63 @@
+---
+- name: "Checking pg_hba access record"
+  ansible.builtin.assert:
+    that:
+      - pg_hba_access_record.name is defined
+      - pg_hba_access_type in ['local', 'host', 'hostssl', 'hostnossl', 'hostgssenc', 'hostnogssenc']
+      - >-
+        (
+          pg_hba_access_type == 'local'
+          and pg_hba_access_record.address is not defined
+        )
+        or
+        (
+          pg_hba_access_type != 'local'
+          and pg_hba_access_record.address is defined
+        )
+      - >-
+        pg_hba_access_record.clientcert is not defined
+        or
+        pg_hba_access_record.clientcert in ['verify-ca', 'verify-full']
+      - >-
+        pg_hba_access_record.clientname is not defined
+        or
+        (pg_hba_access_record.clientname | upper) in ['CN', 'DN']
+      - >-
+        pg_hba_access_record.clientcert is not defined
+        or
+        pg_hba_access_type == 'hostssl'
+      - >-
+        pg_hba_access_record.clientname is not defined
+        or
+        pg_hba_access_type == 'hostssl'
+      - >-
+        pg_hba_access_record.map is not defined
+        or
+        pg_hba_access_type == 'hostssl'
+      - >-
+        (pg_hba_access_record.method | default('scram-sha-256')) != 'cert'
+        or
+        pg_hba_access_type == 'hostssl'
+      - >-
+        pg_hba_access_record.clientcert is not defined
+        or
+        (pg_hba_access_record.method | default('scram-sha-256')) != 'cert'
+      - >-
+        pg_hba_access_record.map is not defined
+        or
+        pg_hba_access_uses_client_certificate
+      - >-
+        not pg_hba_access_uses_client_certificate
+        or
+        pg_security_ssl != 'off'
+      - >-
+        not pg_hba_access_uses_client_certificate
+        or
+        pg_client_certificate_authority_enabled
+      - >-
+        pg_hba_access_record.map is not defined
+        or
+        (
+          pg_maprole | selectattr('mapname', 'equalto', pg_hba_access_record.map) | list | length
+        ) > 0
+    fail_msg: "PostgreSQL pg_hba access record is invalid for certificate-aware authentication"

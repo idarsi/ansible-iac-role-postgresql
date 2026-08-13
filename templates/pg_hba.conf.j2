@@ -1,0 +1,12 @@
+local all postgres peer
+{% macro render_hba_record(database_name, record) -%}
+{{ record.type | default('host') }} {{ database_name }} {{ record.name }}{% if (record.type | default('host')) != 'local' %} {{ record.address }}{% endif %} {{ record.method | default('scram-sha-256') }}{% if record.clientcert is defined %} clientcert={{ record.clientcert }}{% endif %}{% if record.clientname is defined %} clientname={{ record.clientname | upper }}{% endif %}{% if record.map is defined %} map={{ record.map }}{% endif %}
+{%- endmacro %}
+{% for item in pg_global_access %}
+{{ render_hba_record('all', item) }}
+{% endfor %}
+{% for database in pg_databases %}
+{% for item in database.access | default([]) %}
+{{ render_hba_record(database.name, item) }}
+{% endfor %}
+{% endfor %}
