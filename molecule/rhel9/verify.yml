@@ -86,8 +86,7 @@
         ca_file: "/var/lib/pgsql/18/main/ssl/client-root-ca.crt"
         autotuning_file: "/var/lib/pgsql/18/main/conf.d/43-autotuning.conf"
         service_file: "/usr/lib/systemd/system/postgresql-18-main.service"
-        hba_rule: "hostssl appdb18 app_user 10.0.0.1/32 scram-sha-256 clientcert=verify-full clientname=DN map=app_dn_map"
-        ident_rule: "app_dn_map CN=app-client-dn app_user"
+        hba_rule: "hostssl appdb18 app_user 10.0.0.1/32 scram-sha-256 clientcert=verify-full clientname=DN"
         security_rule: "ssl_ca_file = '/var/lib/pgsql/18/main/ssl/client-root-ca.crt'"
   tasks:
     - name: "Checking PostgreSQL operating system user"
@@ -348,7 +347,7 @@
           - pg_extension_checks.results | map(attribute='stdout') | list == ['1', '1', '1', '1']
           - pg_plpython_extension_checks.results | map(attribute='stdout') | list == ['1']
           - pg_hba_checks.results | map(attribute='rc') | list == [0, 0, 0, 0]
-          - pg_ident_checks.results | map(attribute='rc') | list == [0, 0]
+          - pg_ident_checks.results | map(attribute='rc') | list == [0]
           - pg_client_ca_checks.results | map(attribute='stat.exists') | list == [true, true]
           - pg_security_checks.results | map(attribute='rc') | list == [0, 0]
         fail_msg: "PostgreSQL RHEL 9 Molecule verification failed"

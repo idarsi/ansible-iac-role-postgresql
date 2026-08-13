@@ -35,6 +35,10 @@
         or
         pg_hba_access_type == 'hostssl'
       - >-
+        pg_hba_access_record.map is not defined
+        or
+        (pg_hba_access_record.method | default('scram-sha-256')) == 'cert'
+      - >-
         (pg_hba_access_record.method | default('scram-sha-256')) != 'cert'
         or
         pg_hba_access_type == 'hostssl'
