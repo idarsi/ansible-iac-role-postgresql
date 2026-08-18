@@ -1,0 +1,27 @@
+---
+- name: Verify
+  hosts: all
+  become: false
+  tasks:
+    - name: "Checking host address validation marker"
+      ansible.builtin.stat:
+        path: /tmp/hba-guardrails/host-address.ok
+      register: pg_host_address_marker
+
+    - name: "Checking missing client CA validation marker"
+      ansible.builtin.stat:
+        path: /tmp/hba-guardrails/missing-ca.ok
+      register: pg_missing_ca_marker
+
+    - name: "Checking undefined map validation marker"
+      ansible.builtin.stat:
+        path: /tmp/hba-guardrails/missing-map.ok
+      register: pg_missing_map_marker
+
+    - name: "Verifying hba guardrail markers"
+      ansible.builtin.assert:
+        that:
+          - pg_host_address_marker.stat.exists
+          - pg_missing_ca_marker.stat.exists
+          - pg_missing_map_marker.stat.exists
+        fail_msg: "PostgreSQL hba guardrail scenario did not capture the expected failures"

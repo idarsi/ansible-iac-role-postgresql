@@ -39,6 +39,7 @@
               cron_file: pg16_heartbeat
           instances:
             - name: main
+              security_profile: safe
               roles:
                 - name: app_user
                   password: app_password
@@ -54,7 +55,7 @@
                   access:
                     - name: app_user
                       address: 10.0.0.1/32
-                      type: host
+                      type: hostssl
                       method: scram-sha-256
               configuration:
                 port: 5416
@@ -178,6 +179,11 @@
                     - name: pgcrypto
                     - name: plpython3u
                   access:
+                    - name: app_user
+                      address: 10.0.0.2/32
+                      type: hostssl
+                      method: cert
+                      clientname: CN
                     - name: app_user
                       address: 10.0.0.1/32
                       type: hostssl

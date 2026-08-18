@@ -36,9 +36,10 @@
         expected_config: "max_connections = 50"
         expected_port: "port = 5416"
         profile_file: ""
+        security_file: "/var/lib/pgsql/16/main/conf.d/41-security.conf"
         autotuning_file: ""
         service_file: "/usr/lib/systemd/system/postgresql-16-main.service"
-        hba_rule: "host appdb16 app_user 10.0.0.1/32 scram-sha-256"
+        hba_rule: "hostssl appdb16 app_user 10.0.0.1/32 scram-sha-256"
       - version: "16"
         instance: "analytics"
         port: 5516
@@ -87,6 +88,7 @@
         autotuning_file: "/var/lib/pgsql/18/main/conf.d/43-autotuning.conf"
         service_file: "/usr/lib/systemd/system/postgresql-18-main.service"
         hba_rule: "hostssl appdb18 app_user 10.0.0.1/32 scram-sha-256 clientcert=verify-full clientname=DN"
+        extra_hba_rule: "hostssl appdb18 app_user 10.0.0.2/32 cert clientname=CN"
         security_rule: "ssl_ca_file = '/var/lib/pgsql/18/main/ssl/client-root-ca.crt'"
   tasks:
     - name: "Checking PostgreSQL operating system user"
@@ -347,6 +349,14 @@
       register: pg_hba_checks
       changed_when: false
 
+    - name: "Checking additional pg_hba access rules"
+      ansible.builtin.command: >-
+        grep -F "{{ item.extra_hba_rule }}"
+        /var/lib/pgsql/{{ item.version }}/{{ item.instance }}/pg_hba.conf
+      loop: "{{ pg_molecule_instances | selectattr('extra_hba_rule', 'defined') | list }}"
+      register: pg_extra_hba_checks
+      changed_when: false
+
     - name: "Checking pg_ident access rules"
       ansible.builtin.command: >-
         grep -F "{{ item.ident_rule }}"
@@ -425,6 +435,7 @@
           - pg_extension_checks.results | map(attribute='stdout') | list == ['1', '1', '1', '1']
           - pg_plpython_extension_checks.results | map(attribute='stdout') | list == ['1']
           - pg_hba_checks.results | map(attribute='rc') | list == [0, 0, 0, 0]
+          - pg_extra_hba_checks.results | map(attribute='rc') | list == [0]
           - pg_ident_checks.results | map(attribute='rc') | list == [0]
           - pg_client_ca_checks.results | map(attribute='stat.exists') | list == [true, true]
           - pg_security_checks.results | map(attribute='rc') | list == [0, 0]
