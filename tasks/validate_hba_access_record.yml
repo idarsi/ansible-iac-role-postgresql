@@ -1,9 +1,24 @@
 ---
-- name: "Checking pg_hba access record"
+- name: "Normalizing optional pg_hba access fields"
+  ansible.builtin.set_fact:
+    pg_hba_access_map: "{{ pg_hba_access_record.map | default('') }}"
+    pg_hba_access_method: "{{ pg_hba_access_record.method | default('scram-sha-256') }}"
+
+- name: "Checking pg_hba access record name"
   ansible.builtin.assert:
     that:
       - pg_hba_access_record.name is defined
+    fail_msg: "PostgreSQL pg_hba access record is missing required field 'name'"
+
+- name: "Checking pg_hba access record type"
+  ansible.builtin.assert:
+    that:
       - pg_hba_access_type in ['local', 'host', 'hostssl', 'hostnossl', 'hostgssenc', 'hostnogssenc']
+    fail_msg: "PostgreSQL pg_hba access record has invalid type '{{ pg_hba_access_type }}'"
+
+- name: "Checking pg_hba access record address requirements"
+  ansible.builtin.assert:
+    that:
       - >-
         (
           pg_hba_access_type == 'local'
@@ -14,54 +29,116 @@
           pg_hba_access_type != 'local'
           and pg_hba_access_record.address is defined
         )
+    fail_msg: >-
+      PostgreSQL pg_hba access record has invalid address usage for type '{{ pg_hba_access_type }}':
+      local entries must not define 'address', and non-local entries must define it
+
+- name: "Checking pg_hba clientcert value"
+  ansible.builtin.assert:
+    that:
       - >-
         pg_hba_access_record.clientcert is not defined
         or
         pg_hba_access_record.clientcert in ['verify-ca', 'verify-full']
+    fail_msg: "PostgreSQL pg_hba access record has invalid clientcert value"
+
+- name: "Checking pg_hba clientname value"
+  ansible.builtin.assert:
+    that:
       - >-
         pg_hba_access_record.clientname is not defined
         or
         (pg_hba_access_record.clientname | upper) in ['CN', 'DN']
+    fail_msg: "PostgreSQL pg_hba access record has invalid clientname value; expected CN or DN"
+
+- name: "Checking pg_hba clientcert type requirements"
+  ansible.builtin.assert:
+    that:
       - >-
         pg_hba_access_record.clientcert is not defined
         or
         pg_hba_access_type == 'hostssl'
+    fail_msg: "PostgreSQL pg_hba access record uses clientcert but type is not hostssl"
+
+- name: "Checking pg_hba clientname type requirements"
+  ansible.builtin.assert:
+    that:
       - >-
         pg_hba_access_record.clientname is not defined
         or
         pg_hba_access_type == 'hostssl'
+    fail_msg: "PostgreSQL pg_hba access record uses clientname but type is not hostssl"
+
+- name: "Checking pg_hba map type requirements"
+  ansible.builtin.assert:
+    that:
       - >-
         pg_hba_access_record.map is not defined
         or
         pg_hba_access_type == 'hostssl'
+    fail_msg: "PostgreSQL pg_hba access record uses map but type is not hostssl"
+
+- name: "Checking pg_hba map method requirements"
+  ansible.builtin.assert:
+    that:
       - >-
         pg_hba_access_record.map is not defined
         or
-        (pg_hba_access_record.method | default('scram-sha-256')) == 'cert'
+        pg_hba_access_method == 'cert'
+    fail_msg: "PostgreSQL pg_hba access record uses map but method is not cert"
+
+- name: "Checking pg_hba cert method type requirements"
+  ansible.builtin.assert:
+    that:
       - >-
-        (pg_hba_access_record.method | default('scram-sha-256')) != 'cert'
+        pg_hba_access_method != 'cert'
         or
         pg_hba_access_type == 'hostssl'
+    fail_msg: "PostgreSQL pg_hba access record uses method cert but type is not hostssl"
+
+- name: "Checking pg_hba cert method and clientcert exclusivity"
+  ansible.builtin.assert:
+    that:
       - >-
         pg_hba_access_record.clientcert is not defined
         or
-        (pg_hba_access_record.method | default('scram-sha-256')) != 'cert'
+        pg_hba_access_method != 'cert'
+    fail_msg: "PostgreSQL pg_hba access record must not define clientcert when method is cert"
+
+- name: "Checking pg_hba certificate-aware field consistency"
+  ansible.builtin.assert:
+    that:
       - >-
         pg_hba_access_record.map is not defined
         or
         pg_hba_access_uses_client_certificate
+    fail_msg: "PostgreSQL pg_hba access record uses map without certificate-aware authentication fields"
+
+- name: "Checking pg_hba SSL requirements for certificate-aware authentication"
+  ansible.builtin.assert:
+    that:
       - >-
         not pg_hba_access_uses_client_certificate
         or
         pg_security_ssl != 'off'
+    fail_msg: "PostgreSQL pg_hba access record uses certificate-aware authentication but SSL is disabled"
+
+- name: "Checking pg_hba CA requirements for certificate-aware authentication"
+  ansible.builtin.assert:
+    that:
       - >-
         not pg_hba_access_uses_client_certificate
         or
         pg_client_certificate_authority_enabled
+    fail_msg: "PostgreSQL pg_hba access record uses certificate-aware authentication but no client CA is configured"
+
+- name: "Checking pg_hba maprole references"
+  ansible.builtin.assert:
+    that:
       - >-
         pg_hba_access_record.map is not defined
         or
         (
-          pg_maprole | selectattr('mapname', 'equalto', pg_hba_access_record.map) | list | length
+          pg_maprole | selectattr('mapname', 'equalto', pg_hba_access_map) | list | length
         ) > 0
-    fail_msg: "PostgreSQL pg_hba access record is invalid for certificate-aware authentication"
+    fail_msg: "PostgreSQL pg_hba access record references undefined map '{{ pg_hba_access_map }}'"

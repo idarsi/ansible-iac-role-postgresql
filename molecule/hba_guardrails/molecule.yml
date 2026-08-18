@@ -6,7 +6,7 @@ driver:
   name: podman
 
 platforms:
-  - name: instance-idarsi-rl9
+  - name: instance-idarsi-rl9-hba-guardrails
     image: docker.io/rockylinux/rockylinux:9-ubi-init
     command: /sbin/init
     privileged: true
@@ -24,6 +24,19 @@ provisioner:
     ANSIBLE_LOCAL_TEMP: "/tmp/.ansible/tmp"
     ANSIBLE_REMOTE_TMP: "/tmp"
     ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/.."
+
+scenario:
+  test_sequence:
+    - dependency
+    - cleanup
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - verify
+    - cleanup
+    - destroy
 
 verifier:
   name: ansible

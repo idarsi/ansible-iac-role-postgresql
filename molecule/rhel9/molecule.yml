@@ -19,6 +19,7 @@ platforms:
 provisioner:
   name: ansible
   env:
+    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
     ANSIBLE_ASYNC_DIR: "${MOLECULE_PROJECT_DIRECTORY}/.ansible_async"
     ANSIBLE_LOCAL_TEMP: "/tmp/.ansible/tmp"
     ANSIBLE_REMOTE_TMP: "/tmp"

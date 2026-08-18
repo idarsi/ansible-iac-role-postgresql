@@ -90,7 +90,9 @@
         not pg_client_certificate_auth_required | bool
         or
         pg_client_certificate_authority_enabled | bool
-    fail_msg: "All tests did not pass"
+    fail_msg: >-
+      PostgreSQL instance configuration is missing required values or certificate-aware
+      authentication is enabled without a configured client CA
 
 - name: "Checking pg_ident map records"
   ansible.builtin.assert:

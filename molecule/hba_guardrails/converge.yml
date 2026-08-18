@@ -1,0 +1,221 @@
+---
+- name: Prepare hba guardrail fixture
+  hosts: all
+  become: false
+  vars:
+    ansible_become_method: su
+  tasks:
+    - name: "Removing previous hba guardrail marker directory"
+      ansible.builtin.file:
+        path: /tmp/hba-guardrails
+        state: absent
+
+    - name: "Creating hba guardrail marker directory"
+      ansible.builtin.file:
+        path: /tmp/hba-guardrails
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+- name: Verify hba address validation failure is specific
+  hosts: all
+  become: false
+  vars:
+    state: instances_present
+    pg_lang: "en"
+    pg_locale: "US"
+    pg_disable_postgresql_module: false
+    ansible_become_method: su
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: main
+              roles:
+                - name: app_user
+                  password: app_password
+              databases:
+                - name: appdb17
+                  owner: app_user
+                  access:
+                    - name: app_user
+                      type: host
+                      method: scram-sha-256
+              configuration:
+                port: 5417
+  tasks:
+    - name: "Running PostgreSQL role expecting host address validation failure"
+      block:
+        - name: "Applying PostgreSQL role with missing host address"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+      rescue:
+        - name: "Checking host address validation failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("invalid address usage for type 'host'")
+            fail_msg: "Expected host address validation failure was not raised"
+
+        - name: "Writing host address validation marker"
+          ansible.builtin.copy:
+            dest: /tmp/hba-guardrails/host-address.ok
+            owner: root
+            group: root
+            mode: "0644"
+            content: "ok\n"
+
+    - name: "Checking host address validation marker exists"
+      ansible.builtin.stat:
+        path: /tmp/hba-guardrails/host-address.ok
+      register: pg_host_address_marker
+
+    - name: "Failing if host address validation unexpectedly succeeded"
+      ansible.builtin.assert:
+        that:
+          - pg_host_address_marker.stat.exists
+        fail_msg: "Host address validation did not fail as expected"
+
+- name: Verify client certificate auth without CA fails with specific message
+  hosts: all
+  become: false
+  vars:
+    state: instances_present
+    pg_lang: "en"
+    pg_locale: "US"
+    pg_disable_postgresql_module: false
+    ansible_become_method: su
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: main
+              security_profile: safe
+              roles:
+                - name: app_user
+                  password: app_password
+              databases:
+                - name: appdb17
+                  owner: app_user
+                  access:
+                    - name: app_user
+                      address: 10.0.0.1/32
+                      type: hostssl
+                      method: cert
+                      clientname: CN
+              configuration:
+                port: 5417
+  tasks:
+    - name: "Running PostgreSQL role expecting missing client CA failure"
+      block:
+        - name: "Applying PostgreSQL role with cert auth but without CA"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+      rescue:
+        - name: "Checking missing client CA failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search('certificate-aware authentication is enabled without a configured client CA')
+            fail_msg: "Expected missing client CA failure was not raised"
+
+        - name: "Writing missing client CA validation marker"
+          ansible.builtin.copy:
+            dest: /tmp/hba-guardrails/missing-ca.ok
+            owner: root
+            group: root
+            mode: "0644"
+            content: "ok\n"
+
+    - name: "Checking missing client CA validation marker exists"
+      ansible.builtin.stat:
+        path: /tmp/hba-guardrails/missing-ca.ok
+      register: pg_missing_ca_marker
+
+    - name: "Failing if missing client CA validation unexpectedly succeeded"
+      ansible.builtin.assert:
+        that:
+          - pg_missing_ca_marker.stat.exists
+        fail_msg: "Missing client CA validation did not fail as expected"
+
+- name: Verify undefined map reference fails with specific message
+  hosts: all
+  become: false
+  vars:
+    state: instances_present
+    pg_lang: "en"
+    pg_locale: "US"
+    pg_disable_postgresql_module: false
+    ansible_become_method: su
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: main
+              security_profile: safe
+              client_certificate_authority_content: |
+                -----BEGIN CERTIFICATE-----
+                MIIBhTCCASugAwIBAgIUe5yM0r9V4l6R4QwW0kY2pQ0Jk0AwCgYIKoZIzj0EAwIw
+                GzEZMBcGA1UEAwwQaGJhLWd1YXJkcmFpbHMtY2EwHhcNMjYwODE4MDAwMDAwWhcN
+                MzYwODE2MDAwMDAwWjAbMRkwFwYDVQQDDBBoYmEtZ3VhcmRyYWlscy1jYTBZMBMG
+                ByqGSM49AgEGCCqGSM49AwEHA0IABAwSUq4K2YjE3wVDh0fW9R+P6M4D3K2H0qY6
+                Dv9F3n2d4oYj3zX6R6w8XG3Z0+W4QW7YvD2wL1vM1eM9zj0i4fOjUzBRMB0GA1Ud
+                DgQWBBR8xj1w3bZ6XW0hA4Wb1g7i9Ww+WjAfBgNVHSMEGDAWgBR8xj1w3bZ6XW0h
+                A4Wb1g7i9Ww+WjAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0kAMEYCIQDI
+                0S6g5gM5E8wNwq5Qq7L4N4mN4H0g6VwQxX3w+F7i3QIhAIP6w3s8iN3E4hQ4xJ1d
+                7j6h3zV0x4h8mQ0S2C2L6n2V
+                -----END CERTIFICATE-----
+              roles:
+                - name: app_user
+                  password: app_password
+              databases:
+                - name: appdb17
+                  owner: app_user
+                  access:
+                    - name: app_user
+                      address: 10.0.0.1/32
+                      type: hostssl
+                      method: cert
+                      clientname: CN
+                      map: missing_map
+              configuration:
+                port: 5417
+  tasks:
+    - name: "Running PostgreSQL role expecting undefined map failure"
+      block:
+        - name: "Applying PostgreSQL role with undefined map reference"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+      rescue:
+        - name: "Checking undefined map failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("references undefined map 'missing_map'")
+            fail_msg: "Expected undefined map failure was not raised"
+
+        - name: "Writing undefined map validation marker"
+          ansible.builtin.copy:
+            dest: /tmp/hba-guardrails/missing-map.ok
+            owner: root
+            group: root
+            mode: "0644"
+            content: "ok\n"
+
+    - name: "Checking undefined map validation marker exists"
+      ansible.builtin.stat:
+        path: /tmp/hba-guardrails/missing-map.ok
+      register: pg_missing_map_marker
+
+    - name: "Failing if undefined map validation unexpectedly succeeded"
+      ansible.builtin.assert:
+        that:
+          - pg_missing_map_marker.stat.exists
+        fail_msg: "Undefined map validation did not fail as expected"

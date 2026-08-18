@@ -93,6 +93,9 @@ This role includes baseline Molecule scenarios:
 - `molecule/bind_guardrails` validates that bind-mount migration fails safely
   when source and target both contain data or when PostgreSQL services are
   still running against the target directory
+- `molecule/hba_guardrails` validates that pg_hba validation failures report
+  specific root causes for invalid address usage, missing client CA
+  configuration, and undefined certificate-auth map references
 - `molecule/rocky8` validates the baseline repository workflow on Rocky Linux
   8, including PGDG enablement, `powertools`, and PostgreSQL module disablement
 - `molecule/rhel8` validates the same baseline repository workflow on Red Hat
@@ -126,6 +129,12 @@ Run the bind guardrail scenario only:
 
 ```bash
 molecule test -s bind_guardrails
+```
+
+Run the pg_hba guardrail scenario only:
+
+```bash
+molecule test -s hba_guardrails
 ```
 
 Run the Rocky Linux 10 scenario:
