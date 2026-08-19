@@ -99,3 +99,15 @@ pg_lc_collate: "{{ pg_lang | lower }}_{{ pg_locale | upper }}.{{ pg_encoding | u
 ###############################################################################
 
 pg_shared_preload_libraries: []
+
+###############################################################################
+# REPLICATION
+###############################################################################
+
+pg_replication_wal_level: "replica"
+pg_replication_max_wal_senders: 10
+pg_replication_max_replication_slots: 10
+pg_replication_wal_keep_size: "1GB"
+pg_replication_hba_type: "host"
+pg_replication_hba_method: "scram-sha-256"
+pg_replication_reinitialize: false

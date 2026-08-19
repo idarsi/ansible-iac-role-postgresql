@@ -32,6 +32,7 @@ Remove PostgreSQL instances     | instances_absent    |
 Start PostgreSQL instances      | instances_started   |
 Stop PostgreSQL instances       | instances_stopped   |
 Restart PostgreSQL instances    | instances_restarted |
+Ensure replication is present   | replication_present |
 Create databases                | databases_present   |
 Remove databases                | databases_absent    |
 Create database users           | roles_present       |
@@ -103,6 +104,9 @@ This role includes baseline Molecule scenarios:
   PostgreSQL module disablement
 - `molecule/rhel9` validates the default multi-instance, bind, git, and
   repository workflow on Red Hat Enterprise Linux 9 UBI
+- `molecule/replication` validates optional physical primary/standby
+  replication between two Rocky Linux 9 containers, including standby
+  bootstrap with `pg_basebackup` and replicated test data visibility
 - `molecule/rocky10` validates the same baseline behavior on Rocky Linux 10
 - `molecule/rhel10` validates the same baseline behavior on Red Hat Enterprise
   Linux 10 UBI
@@ -159,6 +163,12 @@ Run the Red Hat Enterprise Linux 9 UBI scenario:
 
 ```bash
 molecule test -s rhel9
+```
+
+Run the replication scenario:
+
+```bash
+molecule test -s replication
 ```
 
 Run the Red Hat Enterprise Linux 10 UBI scenario:
@@ -230,6 +240,9 @@ The above example is equivalent to the example below in practical use.
 
   - role: ansible-iac-role-postgresql
     state: databases_present
+
+  - role: ansible-iac-role-postgresql
+    state: replication_present
 ```
 
 To aggressively remove PostgreSQL from a host, including repository
@@ -343,6 +356,17 @@ iac_blueprint:
             ...
             -----END CERTIFICATE-----
           client_certificate_authority_src: <path> # optional controller-side CA PEM path for client certificate auth
+          replication:                        # optional physical primary/standby replication settings
+            role: <primary|standby>
+            replication_user: <username>
+            replication_password: <cleartext password>
+            allowed_standby_addresses:        # primary only
+              - <CIDR>
+            primary_host: <hostname or IP>    # standby only
+            primary_port: <port>              # standby only, default 5432
+            slot_name: <slot name>            # optional
+            application_name: <name>          # optional, standby only
+            reinitialize: true|false          # optional, standby only
           maprole:                            # optional pg_ident.conf mappings, also used by certificate auth
             - mapname: <map name>
               system_username: <system user or certificate CN/DN>
@@ -421,6 +445,141 @@ iac_blueprint:
                   clientname: CN
                   map: app_cert_map
 ```
+
+Primary/standby physical replication example
+--------------------------------------------
+
+Primary host inventory:
+
+```yaml
+iac_blueprint:
+  postgresql:
+    - version: 17
+      instances:
+        - name: main
+          security_profile: safe
+          replication:
+            role: primary
+            replication_user: replicator
+            replication_password: changeme
+            allowed_standby_addresses:
+              - 192.168.1.11/32
+            slot_name: standby1
+          roles:
+            - name: app_user
+              password: changeme
+          databases:
+            - name: appdb
+              owner: app_user
+```
+
+Standby host inventory:
+
+```yaml
+iac_blueprint:
+  postgresql:
+    - version: 17
+      instances:
+        - name: main
+          security_profile: safe
+          replication:
+            role: standby
+            primary_host: 192.168.1.10
+            primary_port: 5432
+            replication_user: replicator
+            replication_password: changeme
+            slot_name: standby1
+            application_name: pg-standby-1
+          databases:
+            - name: appdb
+              extensions:
+                - name: plpython3u
+```
+
+If the primary database uses extensions that require operating system packages,
+define the same `databases[].extensions` metadata on the standby host as well.
+The standby must have the extension packages installed locally even though
+`CREATE EXTENSION` runs only on the primary and reaches the standby through
+physical replication.
+
+Complete two-host inventory example:
+
+```yaml
+postgres_primary:
+  hosts:
+    pg-primary.example.org:
+  vars:
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: main
+              security_profile: safe
+              configuration:
+                listen_addresses: "*"
+                port: 5432
+              replication:
+                role: primary
+                replication_user: replicator
+                replication_password: changeme
+                allowed_standby_addresses:
+                  - 192.168.1.11/32
+                slot_name: standby1
+              roles:
+                - name: app_user
+                  password: changeme
+                  login: true
+              databases:
+                - name: appdb
+                  extensions:
+                    - name: plpython3u
+                  owner: app_user
+                  access:
+                    - name: app_user
+                      address: 192.168.1.0/24
+                      type: host
+                      method: scram-sha-256
+
+postgres_secondary:
+  hosts:
+    pg-standby.example.org:
+  vars:
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: main
+              security_profile: safe
+              configuration:
+                listen_addresses: "*"
+                port: 5432
+              replication:
+                role: standby
+                primary_host: 192.168.1.10
+                primary_port: 5432
+                replication_user: replicator
+                replication_password: changeme
+                slot_name: standby1
+                application_name: pg-standby-1
+              databases:
+                - name: appdb
+                  extensions:
+                    - name: plpython3u
+```
+
+Recommended execution order for a basic two-host setup:
+
+1. Run `present`, `instances_present`, `instances_started`, `roles_present`,
+   and `databases_present` on the primary host.
+2. Run `replication_present` on the primary host so the replication role and
+   optional slot exist.
+3. Run `present` and `replication_present` on the standby host to bootstrap
+   it with `pg_basebackup`.
+4. Run `instances_present` and `instances_started` on the standby host to
+   render local overrides and start the replicated instance.
+
+The standby host should not be the target for `roles_present` or
+`databases_present`; those write operations belong on the primary host.
 
 Minimal example: just install PostgreSQL with one instance
 

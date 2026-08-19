@@ -1,0 +1,8 @@
+{% if pg_replication_role == 'primary' %}
+wal_level = '{{ pg_replication_wal_level_effective }}'
+max_wal_senders = {{ pg_replication_max_wal_senders_effective }}
+max_replication_slots = {{ pg_replication_max_replication_slots_effective }}
+wal_keep_size = '{{ pg_replication_wal_keep_size_effective }}'
+{% elif pg_replication_role == 'standby' %}
+hot_standby = 'on'
+{% endif %}

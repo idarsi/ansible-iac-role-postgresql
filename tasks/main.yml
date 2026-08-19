@@ -131,6 +131,12 @@
     pg_state: "{{ state }}"
   when: state == 'instances_restarted'
 
+- name: "STATE: Ensure PostgreSQL replication is present"
+  ansible.builtin.include_tasks: loop_instances.yml
+  vars:
+    pg_state: "{{ state }}"
+  when: state == 'replication_present'
+
 - name: "STATE: Ensure PostgreSQL database roles are present"
   ansible.builtin.include_tasks: loop_instances.yml
   vars:

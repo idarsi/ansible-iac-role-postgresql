@@ -1,0 +1,167 @@
+---
+- name: Converge primary
+  hosts: instance-idarsi-rl9-primary
+  become: false
+  vars:
+    ansible_become_method: su
+    state: present
+    pg_lang: "en"
+    pg_locale: "US"
+    pg_disable_postgresql_module: false
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: main
+              security_profile: safe
+              configuration:
+                listen_addresses: "*"
+                port: 5432
+                max_connections: 50
+              replication:
+                role: primary
+                replication_user: replicator
+                replication_password: replicate_me
+                allowed_standby_addresses:
+                  - 0.0.0.0/0
+                slot_name: standby1
+              roles:
+                - name: app_user
+                  password: app_password
+                  login: true
+              databases:
+                - name: appdb
+                  owner: app_user
+                  extensions:
+                    - name: plpython3u
+                  access:
+                    - name: app_user
+                      address: 10.0.0.1/32
+                      type: host
+                      method: scram-sha-256
+  roles:
+    - role: ansible-iac-role-postgresql
+
+- name: Configure and start primary instance
+  hosts: instance-idarsi-rl9-primary
+  become: false
+  vars:
+    ansible_become_method: su
+    pg_lang: "en"
+    pg_locale: "US"
+    pg_disable_postgresql_module: false
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: main
+              security_profile: safe
+              configuration:
+                listen_addresses: "*"
+                port: 5432
+                max_connections: 50
+              replication:
+                role: primary
+                replication_user: replicator
+                replication_password: replicate_me
+                allowed_standby_addresses:
+                  - 0.0.0.0/0
+                slot_name: standby1
+              roles:
+                - name: app_user
+                  password: app_password
+                  login: true
+              databases:
+                - name: appdb
+                  owner: app_user
+                  extensions:
+                    - name: plpython3u
+  roles:
+    - role: ansible-iac-role-postgresql
+      state: instances_present
+    - role: ansible-iac-role-postgresql
+      state: instances_started
+    - role: ansible-iac-role-postgresql
+      state: roles_present
+    - role: ansible-iac-role-postgresql
+      state: databases_present
+    - role: ansible-iac-role-postgresql
+      state: replication_present
+
+- name: Converge standby base packages
+  hosts: instance-idarsi-rl9-standby
+  become: false
+  pre_tasks:
+    - name: "Building standby blueprint"
+      ansible.builtin.set_fact:
+        iac_blueprint:
+          postgresql:
+            - version: 17
+              instances:
+                - name: main
+                  security_profile: safe
+                  configuration:
+                    listen_addresses: "*"
+                    port: 5432
+                    max_connections: 50
+                  replication:
+                    role: standby
+                    primary_host: host.containers.internal
+                    primary_port: 15432
+                    replication_user: replicator
+                    replication_password: replicate_me
+                    slot_name: standby1
+                    application_name: molecule-standby
+                  databases:
+                    - name: appdb
+                      extensions:
+                        - name: plpython3u
+  vars:
+    ansible_become_method: su
+    state: present
+    pg_lang: "en"
+    pg_locale: "US"
+    pg_disable_postgresql_module: false
+  roles:
+    - role: ansible-iac-role-postgresql
+
+- name: Bootstrap and start standby
+  hosts: instance-idarsi-rl9-standby
+  become: false
+  pre_tasks:
+    - name: "Building standby bootstrap blueprint"
+      ansible.builtin.set_fact:
+        iac_blueprint:
+          postgresql:
+            - version: 17
+              instances:
+                - name: main
+                  security_profile: safe
+                  configuration:
+                    listen_addresses: "*"
+                    port: 5432
+                    max_connections: 50
+                  replication:
+                    role: standby
+                    primary_host: host.containers.internal
+                    primary_port: 15432
+                    replication_user: replicator
+                    replication_password: replicate_me
+                    slot_name: standby1
+                    application_name: molecule-standby
+                  databases:
+                    - name: appdb
+                      extensions:
+                        - name: plpython3u
+  vars:
+    ansible_become_method: su
+    pg_lang: "en"
+    pg_locale: "US"
+    pg_disable_postgresql_module: false
+  roles:
+    - role: ansible-iac-role-postgresql
+      state: replication_present
+    - role: ansible-iac-role-postgresql
+      state: instances_present
+    - role: ansible-iac-role-postgresql
+      state: instances_started

@@ -1,0 +1,156 @@
+---
+- name: Verify primary/standby replication
+  hosts: instance-idarsi-rl9-primary
+  become: false
+  vars:
+    ansible_become_method: su
+  tasks:
+    - name: "Checking primary PostgreSQL service is active"
+      ansible.builtin.command: "systemctl is-active postgresql-17-main.service"
+      register: pg_primary_service_check
+      changed_when: false
+
+    - name: "Checking primary replication configuration file"
+      ansible.builtin.command: >-
+        grep -F "wal_level = 'replica'" /var/lib/pgsql/17/main/conf.d/44-replication.conf
+      register: pg_primary_replication_config_check
+      changed_when: false
+
+    - name: "Checking primary replication slot exists"
+      become: true
+      become_user: postgres
+      ansible.builtin.command: >-
+        /usr/pgsql-17/bin/psql postgres -p 5432
+        -tXAc "SELECT 1 FROM pg_replication_slots WHERE slot_name='standby1'"
+      register: pg_primary_slot_check
+      changed_when: false
+
+    - name: "Checking primary sees standby in pg_stat_replication"
+      become: true
+      become_user: postgres
+      ansible.builtin.command: >-
+        /usr/pgsql-17/bin/psql postgres -p 5432
+        -tXAc "SELECT 1 FROM pg_stat_replication WHERE application_name='molecule-standby'"
+      register: pg_primary_replication_check
+      changed_when: false
+      retries: 10
+      delay: 3
+      until: pg_primary_replication_check.stdout == '1'
+
+    - name: "Checking primary PL/Python package is installed"
+      ansible.builtin.command: "rpm -q postgresql17-plpython3"
+      register: pg_primary_plpython_package_check
+      changed_when: false
+
+    - name: "Checking primary extension exists"
+      become: true
+      become_user: postgres
+      ansible.builtin.command: >-
+        /usr/pgsql-17/bin/psql appdb -p 5432
+        -tXAc "SELECT 1 FROM pg_extension WHERE extname='plpython3u'"
+      register: pg_primary_extension_check
+      changed_when: false
+
+    - name: "Creating replication test table"
+      become: true
+      become_user: postgres
+      ansible.builtin.command: >-
+        /usr/pgsql-17/bin/psql appdb -p 5432
+        -c "CREATE TABLE IF NOT EXISTS molecule_replication_check (id integer primary key, note text)"
+      register: pg_primary_create_table
+      changed_when: "'CREATE TABLE' in pg_primary_create_table.stdout"
+
+    - name: "Inserting replication test row"
+      become: true
+      become_user: postgres
+      ansible.builtin.command: >-
+        /usr/pgsql-17/bin/psql appdb -p 5432
+        -c "INSERT INTO molecule_replication_check (id, note) VALUES (1, 'replicated') ON CONFLICT (id) DO UPDATE SET note = EXCLUDED.note"
+      register: pg_primary_insert_row
+      changed_when: "'INSERT 0 1' in pg_primary_insert_row.stdout"
+
+    - name: "Verifying primary replication state"
+      ansible.builtin.assert:
+        that:
+          - pg_primary_service_check.stdout == 'active'
+          - pg_primary_replication_config_check.rc == 0
+          - pg_primary_slot_check.stdout == '1'
+          - pg_primary_replication_check.stdout == '1'
+          - pg_primary_plpython_package_check.rc == 0
+          - pg_primary_extension_check.stdout == '1'
+        fail_msg: "PostgreSQL primary replication verification failed"
+
+- name: Verify standby state and replicated data
+  hosts: instance-idarsi-rl9-standby
+  become: false
+  vars:
+    ansible_become_method: su
+  tasks:
+    - name: "Checking standby PostgreSQL service is active"
+      ansible.builtin.command: "systemctl is-active postgresql-17-main.service"
+      register: pg_standby_service_check
+      changed_when: false
+
+    - name: "Checking standby is in recovery mode"
+      become: true
+      become_user: postgres
+      ansible.builtin.command: >-
+        /usr/pgsql-17/bin/psql postgres -p 5432
+        -tXAc "SELECT pg_is_in_recovery()::int"
+      register: pg_standby_recovery_check
+      changed_when: false
+      retries: 10
+      delay: 3
+      until: pg_standby_recovery_check.stdout == '1'
+
+    - name: "Checking standby.signal exists"
+      ansible.builtin.stat:
+        path: /var/lib/pgsql/17/main/standby.signal
+      register: pg_standby_signal_check
+
+    - name: "Checking standby primary_conninfo exists"
+      ansible.builtin.command: >-
+        grep -F "primary_conninfo" /var/lib/pgsql/17/main/postgresql.auto.conf
+      register: pg_standby_primary_conninfo_check
+      changed_when: false
+
+    - name: "Checking standby PL/Python package is installed"
+      ansible.builtin.command: "rpm -q postgresql17-plpython3"
+      register: pg_standby_plpython_package_check
+      changed_when: false
+
+    - name: "Checking replicated extension exists on standby"
+      become: true
+      become_user: postgres
+      ansible.builtin.command: >-
+        /usr/pgsql-17/bin/psql appdb -p 5432
+        -tXAc "SELECT 1 FROM pg_extension WHERE extname='plpython3u'"
+      register: pg_standby_extension_check
+      changed_when: false
+      retries: 10
+      delay: 3
+      until: pg_standby_extension_check.stdout == '1'
+
+    - name: "Checking replicated row on standby"
+      become: true
+      become_user: postgres
+      ansible.builtin.command: >-
+        /usr/pgsql-17/bin/psql appdb -p 5432
+        -tXAc "SELECT note FROM molecule_replication_check WHERE id=1"
+      register: pg_standby_replicated_row_check
+      changed_when: false
+      retries: 10
+      delay: 3
+      until: pg_standby_replicated_row_check.stdout == 'replicated'
+
+    - name: "Verifying standby replication state"
+      ansible.builtin.assert:
+        that:
+          - pg_standby_service_check.stdout == 'active'
+          - pg_standby_recovery_check.stdout == '1'
+          - pg_standby_signal_check.stat.exists
+          - pg_standby_primary_conninfo_check.rc == 0
+          - pg_standby_plpython_package_check.rc == 0
+          - pg_standby_extension_check.stdout == '1'
+          - pg_standby_replicated_row_check.stdout == 'replicated'
+        fail_msg: "PostgreSQL standby replication verification failed"

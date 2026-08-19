@@ -31,6 +31,13 @@ servers:
               cron_file: pg_backup
           instances:
             - name: data
+              replication:
+                role: primary
+                replication_user: replicator
+                replication_password: changeme
+                allowed_standby_addresses:
+                  - 10.89.0.2/32
+                slot_name: standby1
               databases:
                 - name: mydatabase
                   owner: myadmin
@@ -57,3 +64,62 @@ servers:
               configuration:
                 max_connections: 50
                 shared_preload_libraries: citus,pgaudit
+
+postgres_primary:
+  hosts:
+    pg-primary.example.org:
+  vars:
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: main
+              security_profile: safe
+              configuration:
+                listen_addresses: "*"
+                port: 5432
+              replication:
+                role: primary
+                replication_user: replicator
+                replication_password: changeme
+                allowed_standby_addresses:
+                  - 192.168.1.11/32
+                slot_name: standby1
+              roles:
+                - name: app_user
+                  password: changeme
+                  login: true
+              databases:
+                - name: appdb
+                  owner: app_user
+                  access:
+                    - name: app_user
+                      address: 192.168.1.0/24
+                      type: host
+                      method: scram-sha-256
+
+postgres_secondary:
+  hosts:
+    pg-standby.example.org:
+  vars:
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: main
+              security_profile: safe
+              configuration:
+                listen_addresses: "*"
+                port: 5432
+              replication:
+                role: standby
+                primary_host: 192.168.1.10
+                primary_port: 5432
+                replication_user: replicator
+                replication_password: changeme
+                slot_name: standby1
+                application_name: pg-standby-1
+              databases:
+                - name: appdb
+                  extensions:
+                    - name: plpython3u
