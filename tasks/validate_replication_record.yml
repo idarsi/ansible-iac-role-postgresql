@@ -1,0 +1,27 @@
+---
+- name: "Checking replication role"
+  ansible.builtin.assert:
+    that:
+      - pg_replication_role in ['primary', 'standby']
+    fail_msg: "PostgreSQL replication.role must be either 'primary' or 'standby'"
+
+- name: "Checking primary replication configuration"
+  ansible.builtin.assert:
+    that:
+      - pg_replication_user | length > 0
+      - pg_replication_password | length > 0
+      - (pg_replication_allowed_standby_addresses | length) > 0
+      - pg_replication_hba_type_effective in ['host', 'hostssl']
+      - pg_replication_hba_method_effective in ['scram-sha-256', 'md5']
+    fail_msg: "PostgreSQL primary replication configuration requires replication_user, replication_password, allowed_standby_addresses, and supported hba settings"
+  when: pg_replication_role == 'primary'
+
+- name: "Checking standby replication configuration"
+  ansible.builtin.assert:
+    that:
+      - pg_replication_primary_host | length > 0
+      - pg_replication_primary_port is defined
+      - pg_replication_user | length > 0
+      - pg_replication_password | length > 0
+    fail_msg: "PostgreSQL standby replication configuration requires primary_host, primary_port, replication_user, and replication_password"
+  when: pg_replication_role == 'standby'

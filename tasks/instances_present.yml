@@ -25,6 +25,7 @@
     pg_port: "{{ pg_instance_record.1.configuration.port | default(pg_default_port) }}"
     pg_profile: "{{ pg_instance_record.1.configuration_profile | default(omit) }}"
     pg_maprole: "{{ pg_instance_record.1.maprole | default([]) }}"
+    pg_replication: "{{ pg_instance_record.1.replication | default({}) }}"
     pg_security: "{{ pg_instance_record.1.security_profile | default('off') }}"
     pg_version: "{{ pg_instance_record.0.version | string }}"
   when: pg_instance_record is defined
@@ -41,6 +42,29 @@
     pg_security_ssl: "{{ pg_instance_record.1.security_ssl | default(pg_security) }}"
     pg_security_syslog: "{{ pg_instance_record.1.security_syslog | default(pg_security) }}"
   when: pg_security is defined
+
+- name: "Setting replication variables if defined"
+  ansible.builtin.set_fact:
+    pg_replication_enabled: "{{ (pg_replication | length) > 0 }}"
+    pg_replication_role: "{{ pg_replication.role | default('off') }}"
+    pg_replication_primary_host: "{{ pg_replication.primary_host | default('') }}"
+    pg_replication_primary_port: "{{ pg_replication.primary_port | default(pg_default_port) }}"
+    pg_replication_user: "{{ pg_replication.replication_user | default('') }}"
+    pg_replication_password: "{{ pg_replication.replication_password | default('') }}"
+    pg_replication_slot_name: "{{ pg_replication.slot_name | default('') }}"
+    pg_replication_application_name: "{{ pg_replication.application_name | default(inventory_hostname) }}"
+    pg_replication_allowed_standby_addresses: "{{ pg_replication.allowed_standby_addresses | default([]) }}"
+    pg_replication_hba_type_effective: "{{ pg_replication.hba_type | default(pg_replication_hba_type) }}"
+    pg_replication_hba_method_effective: "{{ pg_replication.hba_method | default(pg_replication_hba_method) }}"
+    pg_replication_wal_level_effective: "{{ pg_replication.wal_level | default(pg_replication_wal_level) }}"
+    pg_replication_max_wal_senders_effective: "{{ pg_replication.max_wal_senders | default(pg_replication_max_wal_senders) }}"
+    pg_replication_max_replication_slots_effective: "{{ pg_replication.max_replication_slots | default(pg_replication_max_replication_slots) }}"
+    pg_replication_wal_keep_size_effective: "{{ pg_replication.wal_keep_size | default(pg_replication_wal_keep_size) }}"
+  when: pg_replication is defined
+
+- name: "Validating replication configuration if defined"
+  ansible.builtin.include_tasks: validate_replication_record.yml
+  when: pg_replication_enabled | default(false)
 
 - name: "Setting certificate variables if security_ssl is not off"
   ansible.builtin.set_fact:
@@ -308,6 +332,31 @@
   vars:
     iac_log_write: "Created {{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/conf.d/43-autotuned.conf"
   when: pg_autotuning is defined
+
+###############################################################################
+# ENSURING REPLICATION CONFIGURATION EXISTS IF NEEDED
+###############################################################################
+
+- name: "Rendering replication configuration from selected template"
+  ansible.builtin.template:
+    src: "replication.conf.j2"
+    dest: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/conf.d/44-replication.conf"
+    mode: "0640"
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+  when: pg_replication_enabled | default(false)
+
+- name: "Removing replication configuration when not configured"
+  ansible.builtin.file:
+    path: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/conf.d/44-replication.conf"
+    state: absent
+  when: not (pg_replication_enabled | default(false))
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    iac_log_write: "Created {{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/conf.d/44-replication.conf"
+  when: pg_replication_enabled | default(false)
 
 ###############################################################################
 # ENSURING DEFAULT PG_HBA.CONF IS DELETED AND NEW WRITTEN

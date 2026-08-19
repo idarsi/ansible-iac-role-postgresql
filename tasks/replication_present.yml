@@ -1,0 +1,261 @@
+---
+###############################################################################
+#
+# replication_present.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+###############################################################################
+# SETTING VARIABLES
+###############################################################################
+
+- name: "Setting what replication variables are configured"
+  ansible.builtin.set_fact:
+    pg_instance: "{{ pg_instance_record.1.name }}"
+    pg_port: "{{ pg_instance_record.1.configuration.port | default(pg_default_port) }}"
+    pg_replication: "{{ pg_instance_record.1.replication | default({}) }}"
+    pg_version: "{{ pg_instance_record.0.version | string }}"
+  when: pg_instance_record is defined
+
+- name: "Setting detailed replication variables if defined"
+  ansible.builtin.set_fact:
+    pg_replication_enabled: "{{ (pg_replication | length) > 0 }}"
+    pg_replication_role: "{{ pg_replication.role | default('off') }}"
+    pg_replication_primary_host: "{{ pg_replication.primary_host | default('') }}"
+    pg_replication_primary_port: "{{ pg_replication.primary_port | default(pg_default_port) }}"
+    pg_replication_user: "{{ pg_replication.replication_user | default('') }}"
+    pg_replication_password: "{{ pg_replication.replication_password | default('') }}"
+    pg_replication_password_sql: "{{ pg_replication.replication_password | replace(\"'\", \"''\") }}"
+    pg_replication_slot_name: "{{ pg_replication.slot_name | default('') }}"
+    pg_replication_application_name: "{{ pg_replication.application_name | default(inventory_hostname) }}"
+    pg_replication_hba_type_effective: "{{ pg_replication.hba_type | default(pg_replication_hba_type) }}"
+    pg_replication_hba_method_effective: "{{ pg_replication.hba_method | default(pg_replication_hba_method) }}"
+    pg_replication_wal_level_effective: "{{ pg_replication.wal_level | default(pg_replication_wal_level) }}"
+    pg_replication_max_wal_senders_effective: "{{ pg_replication.max_wal_senders | default(pg_replication_max_wal_senders) }}"
+    pg_replication_max_replication_slots_effective: "{{ pg_replication.max_replication_slots | default(pg_replication_max_replication_slots) }}"
+    pg_replication_wal_keep_size_effective: "{{ pg_replication.wal_keep_size | default(pg_replication_wal_keep_size) }}"
+    pg_replication_allowed_standby_addresses: "{{ pg_replication.allowed_standby_addresses | default([]) }}"
+    pg_replication_reinitialize_effective: "{{ pg_replication.reinitialize | default(pg_replication_reinitialize) | bool }}"
+    pg_data_directory: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}"
+    pg_service_name: "postgresql-{{ pg_version }}-{{ pg_instance }}.service"
+  when: pg_replication is defined
+
+- name: "Checking if required replication variables are defined"
+  ansible.builtin.assert:
+    that:
+      - pg_bind_dir is defined
+      - pg_instance is defined
+      - pg_port is defined
+      - pg_version is defined
+    fail_msg: "PostgreSQL replication state is missing required instance variables"
+
+- name: "Validating replication configuration if defined"
+  ansible.builtin.include_tasks: validate_replication_record.yml
+  when: pg_replication_enabled | default(false)
+
+###############################################################################
+# PRIMARY REPLICATION PREREQUISITES
+###############################################################################
+
+- name: "Checking primary PostgreSQL service state before replication setup"
+  ansible.builtin.command: "systemctl is-active {{ pg_service_name }}"
+  register: pg_primary_service_check
+  changed_when: false
+  failed_when: false
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'primary'
+
+- name: "Checking primary service is running for replication setup"
+  ansible.builtin.assert:
+    that:
+      - pg_primary_service_check.stdout == 'active'
+    fail_msg: "PostgreSQL primary replication setup requires the instance service to be running"
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'primary'
+
+- name: "Checking whether replication role already exists"
+  become: true
+  become_user: "{{ pg_os_user }}"
+  ansible.builtin.command: >-
+    /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
+    -tXAc "SELECT 1 FROM pg_roles WHERE rolname='{{ pg_replication_user }}'"
+  register: pg_replication_role_exists
+  changed_when: false
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'primary'
+
+- name: "Creating replication role if needed"
+  become: true
+  become_user: "{{ pg_os_user }}"
+  ansible.builtin.command: >-
+    /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
+    -c "CREATE ROLE \"{{ pg_replication_user }}\" WITH LOGIN REPLICATION PASSWORD '{{ pg_replication_password_sql }}'"
+  register: pg_replication_role_create
+  changed_when: pg_replication_role_create.rc == 0
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'primary'
+    - pg_replication_role_exists.stdout != '1'
+
+- name: "Altering replication role if it already exists"
+  become: true
+  become_user: "{{ pg_os_user }}"
+  ansible.builtin.command: >-
+    /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
+    -c "ALTER ROLE \"{{ pg_replication_user }}\" WITH LOGIN REPLICATION PASSWORD '{{ pg_replication_password_sql }}'"
+  register: pg_replication_role_alter
+  changed_when: false
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'primary'
+    - pg_replication_role_exists.stdout == '1'
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    iac_log_write: "Ensured replication role {{ pg_version }}/{{ pg_instance }}/{{ pg_replication_user }}"
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'primary'
+
+- name: "Checking whether replication slot already exists"
+  become: true
+  become_user: "{{ pg_os_user }}"
+  ansible.builtin.command: >-
+    /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
+    -tXAc "SELECT 1 FROM pg_replication_slots WHERE slot_name='{{ pg_replication_slot_name }}'"
+  register: pg_replication_slot_exists
+  changed_when: false
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'primary'
+    - pg_replication_slot_name | length > 0
+
+- name: "Creating physical replication slot if needed"
+  become: true
+  become_user: "{{ pg_os_user }}"
+  ansible.builtin.command: >-
+    /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
+    -c "SELECT * FROM pg_create_physical_replication_slot('{{ pg_replication_slot_name }}')"
+  register: pg_replication_slot_create
+  changed_when: pg_replication_slot_create.rc == 0
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'primary'
+    - pg_replication_slot_name | length > 0
+    - pg_replication_slot_exists.stdout != '1'
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    iac_log_write: "Ensured replication slot {{ pg_version }}/{{ pg_instance }}/{{ pg_replication_slot_name }}"
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'primary'
+    - pg_replication_slot_name | length > 0
+
+###############################################################################
+# STANDBY REPLICATION BOOTSTRAP
+###############################################################################
+
+- name: "Checking whether standby data directory is initialized"
+  ansible.builtin.stat:
+    path: "{{ pg_data_directory }}/PG_VERSION"
+  register: pg_standby_data_directory
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
+
+- name: "Stopping standby service before basebackup when needed"
+  ansible.builtin.systemd_service:
+    name: "{{ pg_service_name }}"
+    state: stopped
+    enabled: true
+    masked: false
+  failed_when: false
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
+    - pg_replication_reinitialize_effective or not pg_standby_data_directory.stat.exists
+
+- name: "Removing standby data directory before basebackup when needed"
+  ansible.builtin.file:
+    path: "{{ pg_data_directory }}"
+    state: absent
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
+    - pg_replication_reinitialize_effective or not pg_standby_data_directory.stat.exists
+
+- name: "Ensuring standby data directory exists before basebackup"
+  ansible.builtin.file:
+    path: "{{ pg_data_directory }}"
+    state: directory
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0700"
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
+    - pg_replication_reinitialize_effective or not pg_standby_data_directory.stat.exists
+
+- name: "Setting pg_basebackup command"
+  ansible.builtin.set_fact:
+    pg_cli_command: >-
+      /usr/pgsql-{{ pg_version }}/bin/pg_basebackup
+      -h {{ pg_replication_primary_host }}
+      -p {{ pg_replication_primary_port }}
+      -D {{ pg_data_directory }}
+      -U {{ pg_replication_user }}
+      -X stream
+      -R
+      {% if pg_replication_slot_name | length > 0 %}-S {{ pg_replication_slot_name }}{% endif %}
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
+    - pg_replication_reinitialize_effective or not pg_standby_data_directory.stat.exists
+
+- name: "Running pg_basebackup for standby"
+  become: true
+  become_user: "{{ pg_os_user }}"
+  ansible.builtin.command: "{{ pg_cli_command }}"
+  environment:
+    PGAPPNAME: "{{ pg_replication_application_name }}"
+    PGPASSWORD: "{{ pg_replication_password }}"
+  register: pg_basebackup_result
+  changed_when: pg_basebackup_result.rc == 0
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
+    - pg_replication_reinitialize_effective or not pg_standby_data_directory.stat.exists
+
+- name: "Ensuring standby.signal exists after basebackup"
+  ansible.builtin.stat:
+    path: "{{ pg_data_directory }}/standby.signal"
+  register: pg_standby_signal
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
+
+- name: "Checking standby bootstrap result"
+  ansible.builtin.assert:
+    that:
+      - pg_standby_signal.stat.exists
+    fail_msg: "PostgreSQL standby bootstrap did not create standby.signal"
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
+    - pg_replication_reinitialize_effective or not pg_standby_data_directory.stat.exists
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    iac_log_write: "Ensured standby replication bootstrap {{ pg_version }}/{{ pg_instance }}"
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'

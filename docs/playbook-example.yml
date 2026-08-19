@@ -1,7 +1,30 @@
 ---
-- hosts: servers
+- hosts: postgres_primary
   become: true
 
   roles:
   - role: ansible-iac-role-postgresql
-    state: install
+    state: present
+  - role: ansible-iac-role-postgresql
+    state: instances_present
+  - role: ansible-iac-role-postgresql
+    state: instances_started
+  - role: ansible-iac-role-postgresql
+    state: roles_present
+  - role: ansible-iac-role-postgresql
+    state: databases_present
+  - role: ansible-iac-role-postgresql
+    state: replication_present
+
+- hosts: postgres_secondary
+  become: true
+
+  roles:
+  - role: ansible-iac-role-postgresql
+    state: present
+  - role: ansible-iac-role-postgresql
+    state: replication_present
+  - role: ansible-iac-role-postgresql
+    state: instances_present
+  - role: ansible-iac-role-postgresql
+    state: instances_started

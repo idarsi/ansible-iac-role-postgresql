@@ -5,6 +5,11 @@ local all postgres peer
 {% for item in pg_global_access %}
 {{ render_hba_record('all', item) }}
 {% endfor %}
+{% if pg_replication_enabled | default(false) and pg_replication_role == 'primary' %}
+{% for address in pg_replication_allowed_standby_addresses %}
+{{ pg_replication_hba_type_effective }} replication {{ pg_replication_user }} {{ address }} {{ pg_replication_hba_method_effective }}
+{% endfor %}
+{% endif %}
 {% for database in pg_databases %}
 {% for item in database.access | default([]) %}
 {{ render_hba_record(database.name, item) }}

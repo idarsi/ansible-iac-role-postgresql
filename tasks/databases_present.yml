@@ -15,6 +15,7 @@
   ansible.builtin.set_fact:
     pg_databases: "{{ pg_instance_record.1.databases | default([]) }}"
     pg_instance: "{{ pg_instance_record.1.name }}"
+    pg_replication_role: "{{ pg_instance_record.1.replication.role | default('off') }}"
     pg_version: "{{ pg_instance_record.0.version | string }}"
     pg_port: "{{ pg_instance_record.1.configuration.port | default(pg_default_port) }}"
   when: pg_instance_record is defined
@@ -27,6 +28,12 @@
       - pg_version is defined
       - pg_port is defined
     fail_msg: "All tests did not pass"
+
+- name: "Checking databases are not managed on standby replication instances"
+  ansible.builtin.assert:
+    that:
+      - pg_replication_role != 'standby'
+    fail_msg: "PostgreSQL databases_present must not be run for standby replication instances"
 
 ###############################################################################
 # LOOPING THROUGH DATABASES

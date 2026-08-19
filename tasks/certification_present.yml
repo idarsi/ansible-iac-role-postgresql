@@ -46,13 +46,14 @@
     state: directory
     owner: "{{ pg_os_user }}"
     group: "{{ pg_os_group }}"
-    mode: "0750"
+    mode: "0700"
 
 - name: "Ensuring certificate private key exists if needed"
   ansible.builtin.command: "{{ pg_cli_command }}"
+  args:
+    creates: "{{ pg_certificate_private_key_fullpath }}"
   register: my_output
   failed_when: my_output.rc != 0
-  changed_when: my_output.rc == 0
 
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
@@ -70,9 +71,10 @@
 
 - name: "Ensuring certificate public key exists if needed"
   ansible.builtin.command: "{{ pg_cli_command }}"
+  args:
+    creates: "{{ pg_certificate_public_key_fullpath }}"
   register: my_output
   failed_when: my_output.rc != 0
-  changed_when: my_output.rc == 0
 
 - name: "Ensuring trusted client CA certificate from inline content is present"
   ansible.builtin.copy:
@@ -92,13 +94,21 @@
     mode: "0600"
   when: pg_client_certificate_authority_src is defined
 
-- name: "Ensuring files are set to 0600"
-  ansible.builtin.file:
+- name: "Collecting SSL directory entries"
+  ansible.builtin.find:
     path: "{{ pg_default_dir }}/{{ pg_version }}/{{ pg_instance }}/ssl/"
+    file_type: file
+  register: pg_ssl_directory_files
+
+- name: "Ensuring SSL files are set to 0600"
+  ansible.builtin.file:
+    path: "{{ item.path }}"
     owner: "{{ pg_os_user }}"
     group: "{{ pg_os_group }}"
     mode: "0600"
-    recurse: true
+  loop: "{{ pg_ssl_directory_files.files }}"
+  loop_control:
+    label: "{{ item.path }}"
 
 - name: "Ensuring directory is set 0700"
   ansible.builtin.file:
