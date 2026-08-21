@@ -152,6 +152,34 @@
   vars:
     ansible_become_method: su
   pre_tasks:
+    - name: "Checking whether bind target is mounted before baseline installation"
+      ansible.builtin.command: "findmnt -n -M /var/lib/pgsql -o SOURCE"
+      register: pg_molecule_baseline_bind_mount
+      changed_when: false
+      failed_when: false
+
+    - name: "Unmounting bind target before baseline installation"
+      ansible.builtin.command: "umount /var/lib/pgsql"
+      register: pg_molecule_baseline_umount_result
+      changed_when: pg_molecule_baseline_umount_result.rc == 0
+      failed_when: false
+      when: pg_molecule_baseline_bind_mount.rc == 0
+
+    - name: "Lazy-unmounting busy bind target before baseline installation"
+      ansible.builtin.command: "umount -l /var/lib/pgsql"
+      changed_when: true
+      when:
+        - pg_molecule_baseline_bind_mount.rc == 0
+        - pg_molecule_baseline_umount_result.rc is defined
+        - pg_molecule_baseline_umount_result.rc != 0
+
+    - name: "Removing stale PostgreSQL bind mount fstab entries"
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        regexp: "^\\S+\\s+/var/lib/pgsql\\s+none\\s+bind\\s+0\\s+0$"
+        state: absent
+      failed_when: false
+
     - name: "Removing conflicting bind source data before active service test"
       ansible.builtin.file:
         path: /srv/data/pgsql
