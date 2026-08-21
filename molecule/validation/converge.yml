@@ -1,0 +1,190 @@
+---
+- name: "Validate a valid PostgreSQL blueprint"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 16
+          instances:
+            - name: apache
+              databases:
+                - name: metrics
+                  extensions:
+                    - name: timescaledb
+        - version: 17
+          instances:
+            - name: community
+              databases:
+                - name: metrics
+                  extensions:
+                    - name: timescaledb
+                      source: community
+                    - name: pgcrypto
+  tasks:
+    - name: "Running validation for a valid blueprint"
+      ansible.builtin.include_role:
+        name: ansible-iac-role-postgresql
+
+    - name: "Writing valid blueprint marker"
+      ansible.builtin.copy:
+        dest: /tmp/postgresql-validation-valid.ok
+        content: "ok\n"
+        mode: "0644"
+
+- name: "Reject an unsupported TimescaleDB source"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: main
+              databases:
+                - name: metrics
+                  extensions:
+                    - name: timescaledb
+                      source: unsupported
+  tasks:
+    - name: "Running validation expecting an invalid source failure"
+      block:
+        - name: "Applying invalid TimescaleDB source"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if invalid source was accepted"
+          ansible.builtin.fail:
+            msg: "Unsupported TimescaleDB source was accepted"
+      rescue:
+        - name: "Checking invalid source failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("TimescaleDB source must be either 'pgdg' or 'community'")
+        - name: "Writing invalid source marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-invalid-source.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject conflicting TimescaleDB sources for one PostgreSQL version"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: pgdg
+              databases:
+                - name: metrics
+                  extensions:
+                    - name: timescaledb
+            - name: community
+              databases:
+                - name: metrics
+                  extensions:
+                    - name: timescaledb
+                      source: community
+  tasks:
+    - name: "Running validation expecting a source conflict failure"
+      block:
+        - name: "Applying conflicting TimescaleDB sources"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if conflicting sources were accepted"
+          ansible.builtin.fail:
+            msg: "Conflicting TimescaleDB sources were accepted"
+      rescue:
+        - name: "Checking source conflict failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("requests multiple TimescaleDB sources")
+        - name: "Writing source conflict marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-source-conflict.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject duplicate PostgreSQL instance names"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: duplicate
+            - name: duplicate
+  tasks:
+    - name: "Running validation expecting duplicate instance failure"
+      block:
+        - name: "Applying duplicate PostgreSQL instance names"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if duplicate instance names were accepted"
+          ansible.builtin.fail:
+            msg: "Duplicate PostgreSQL instance names were accepted"
+      rescue:
+        - name: "Checking duplicate instance failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("PostgreSQL instance names must be unique")
+        - name: "Writing duplicate instance marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-duplicate-instance.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject a standby that preloads TimescaleDB without package metadata"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: standby
+              replication:
+                role: standby
+                primary_host: primary.example.org
+                primary_port: 5432
+                replication_user: replicator
+                replication_password: changeme
+              configuration:
+                shared_preload_libraries: "timescaledb"
+  tasks:
+    - name: "Running validation expecting missing TimescaleDB metadata failure"
+      block:
+        - name: "Applying invalid standby TimescaleDB configuration"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if missing TimescaleDB metadata was accepted"
+          ansible.builtin.fail:
+            msg: "Standby TimescaleDB metadata omission was accepted"
+      rescue:
+        - name: "Checking missing TimescaleDB metadata failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("Standby instances that preload TimescaleDB")
+        - name: "Writing missing TimescaleDB metadata marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-standby-timescaledb.ok
+            content: "ok\n"
+            mode: "0644"

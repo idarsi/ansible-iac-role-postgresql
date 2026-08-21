@@ -1,0 +1,47 @@
+---
+###############################################################################
+#
+# validate_version.yml
+#
+###############################################################################
+
+- name: "Checking PostgreSQL version record"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_version_record | type_debug == 'dict'
+      - pg_validation_version_record.version is defined
+      - (pg_validation_version_record.version | string) in ['16', '17', '18']
+    fail_msg: "Each PostgreSQL version record must define a supported version: 16, 17, or 18"
+
+- name: "Checking PostgreSQL version-scoped record types"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_version_record.instances is not defined or pg_validation_version_record.instances | type_debug == 'list'
+      - pg_validation_version_record.directories is not defined or pg_validation_version_record.directories | type_debug == 'list'
+      - pg_validation_version_record.files is not defined or pg_validation_version_record.files | type_debug == 'list'
+      - pg_validation_version_record.git is not defined or pg_validation_version_record.git | type_debug == 'list'
+      - pg_validation_version_record.cron is not defined or pg_validation_version_record.cron | type_debug == 'list'
+    fail_msg: "PostgreSQL version-scoped inventory records must use lists"
+
+- name: "Checking PostgreSQL instance names are unique"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          pg_validation_version_record.instances | default([])
+          | map(attribute='name')
+          | list
+          | unique
+          | length
+        ) == (pg_validation_version_record.instances | default([]) | length)
+    fail_msg: >-
+      PostgreSQL instance names must be unique for version
+      {{ pg_validation_version_record.version }}
+
+- name: "Validating PostgreSQL instance records"
+  ansible.builtin.include_tasks: validate_instance.yml
+  loop: "{{ pg_validation_version_record.instances | default([]) }}"
+  loop_control:
+    loop_var: pg_validation_instance_record
+  vars:
+    pg_validation_version: "{{ pg_validation_version_record.version | string }}"

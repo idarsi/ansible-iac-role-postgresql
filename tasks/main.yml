@@ -53,6 +53,17 @@
     pg_instances: "{{ iac_blueprint.postgresql | subelements('instances', skip_missing=True) }}"
   when: iac_blueprint.postgresql | selectattr('instances', 'defined') | list | length > 0
 
+###############################################################################
+# VALIDATING INVENTORY
+###############################################################################
+
+- name: "Validating PostgreSQL inventory"
+  ansible.builtin.include_tasks: validate/validate_inventory.yml
+
+###############################################################################
+# CHECKING PROXY
+###############################################################################
+
 - name: "Checking proxy address if it's defined"
   ansible.builtin.set_fact:
     proxy_host: "{{ (http_proxy | regex_replace('^https?://', '')).split(':')[0] }}"
@@ -63,6 +74,7 @@
       or (https_proxy is defined and https_proxy != "")
     )
     and (inventory_hostname not in (no_proxy | default("") | split(",")))
+    and state != 'validate'
 
 - name: "Checking that proxy connection is working if it's defined"
   ansible.builtin.wait_for:
@@ -76,6 +88,7 @@
       or (https_proxy is defined and https_proxy != "")
     )
     and (inventory_hostname not in (no_proxy | default("") | split(",")))
+    and state != 'validate'
 
 ###############################################################################
 # CHECKING STATES
@@ -160,3 +173,8 @@
   vars:
     pg_state: "{{ state }}"
   when: state == 'post_installs_present'
+
+- name: "STATE: Validate PostgreSQL inventory"
+  ansible.builtin.debug:
+    msg: "PostgreSQL inventory validation completed successfully"
+  when: state == 'validate'

@@ -1,0 +1,36 @@
+---
+###############################################################################
+#
+# validate_replication.yml
+#
+###############################################################################
+
+- name: "Checking PostgreSQL replication role"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_replication.role is defined
+      - pg_validation_replication.role in ['primary', 'standby']
+    fail_msg: "PostgreSQL replication.role must be either 'primary' or 'standby'"
+
+- name: "Checking primary replication configuration"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_replication.replication_user is defined
+      - pg_validation_replication.replication_password is defined
+      - pg_validation_replication.allowed_standby_addresses is defined
+      - pg_validation_replication.allowed_standby_addresses | type_debug == 'list'
+      - pg_validation_replication.allowed_standby_addresses | length > 0
+    fail_msg: "Primary replication requires replication_user, replication_password, and allowed_standby_addresses"
+  when: pg_validation_replication.role == 'primary'
+
+- name: "Checking standby replication configuration"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_replication.primary_host is defined
+      - pg_validation_replication.primary_port is defined
+      - pg_validation_replication.replication_user is defined
+      - pg_validation_replication.replication_password is defined
+      - pg_validation_replication.primary_port | string is match('^[0-9]+$')
+      - (pg_validation_replication.primary_port | int) in range(1, 65536)
+    fail_msg: "Standby replication requires primary_host, primary_port, replication_user, and replication_password"
+  when: pg_validation_replication.role == 'standby'

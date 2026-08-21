@@ -1,0 +1,65 @@
+---
+###############################################################################
+#
+# validate_inventory.yml
+#
+# Validate the complete PostgreSQL blueprint before any state task changes the
+# target host.
+#
+###############################################################################
+
+- name: "Checking PostgreSQL blueprint type"
+  ansible.builtin.assert:
+    that:
+      - iac_blueprint.postgresql is defined
+      - iac_blueprint.postgresql | type_debug == 'list'
+    fail_msg: "iac_blueprint.postgresql must be a list"
+
+- name: "Checking PostgreSQL role state"
+  ansible.builtin.assert:
+    that:
+      - state is defined
+      - state in
+        [
+          'install', 'uninstall', 'all_absent', 'present', 'absent',
+          'validate', 'instances_present', 'instances_absent',
+          'instances_started', 'instances_stopped', 'instances_restarted',
+          'replication_present', 'roles_present', 'roles_absent',
+          'databases_present', 'post_installs_present'
+        ]
+    fail_msg: "Unsupported PostgreSQL role state: {{ state | default('undefined') }}"
+
+- name: "Checking PostgreSQL version records are unique"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          pg_versions | map(attribute='version') | map('string') | list | unique | length
+        ) == (pg_versions | length)
+    fail_msg: "Each PostgreSQL major version must be defined only once"
+
+- name: "Initializing TimescaleDB validation records"
+  ansible.builtin.set_fact:
+    pg_validation_timescaledb_requests: []
+
+- name: "Validating PostgreSQL version records"
+  ansible.builtin.include_tasks: validate_version.yml
+  loop: "{{ pg_versions }}"
+  loop_control:
+    loop_var: pg_validation_version_record
+
+- name: "Collecting PostgreSQL versions that use TimescaleDB"
+  ansible.builtin.set_fact:
+    pg_validation_timescaledb_versions: >-
+      {{
+        pg_validation_timescaledb_requests
+        | map(attribute='version')
+        | unique
+        | list
+      }}
+
+- name: "Validating TimescaleDB source consistency per PostgreSQL version"
+  ansible.builtin.include_tasks: validate_timescaledb_sources.yml
+  loop: "{{ pg_validation_timescaledb_versions }}"
+  loop_control:
+    loop_var: pg_validation_timescaledb_version

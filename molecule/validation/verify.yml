@@ -1,0 +1,22 @@
+---
+- name: "Verify validation markers"
+  hosts: all
+  become: false
+  tasks:
+    - name: "Checking validation markers"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /tmp/postgresql-validation-valid.ok
+        - /tmp/postgresql-validation-invalid-source.ok
+        - /tmp/postgresql-validation-source-conflict.ok
+        - /tmp/postgresql-validation-duplicate-instance.ok
+        - /tmp/postgresql-validation-standby-timescaledb.ok
+      register: pg_validation_markers
+
+    - name: "Checking all validation cases completed"
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+        fail_msg: "Validation marker is missing: {{ item.item }}"
+      loop: "{{ pg_validation_markers.results }}"

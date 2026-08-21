@@ -41,6 +41,17 @@ pg_el8_dnf_interpreter: "/usr/libexec/platform-python"
 pg_dnf_repo_path: "/etc/yum.repos.d/pgdg-redhat-all.repo"
 
 ###############################################################################
+# TIMESCALEDB COMMUNITY REPOSITORY
+###############################################################################
+
+pg_timescaledb_repo_file: "/etc/yum.repos.d/timescale_timescaledb.repo"
+pg_timescaledb_repo_id: "timescale_timescaledb"
+pg_timescaledb_repo_name: "TimescaleDB Community repository"
+pg_timescaledb_repo_baseurl: "https://packagecloud.io/timescale/timescaledb/el/$releasever/$basearch"
+pg_timescaledb_repo_gpgkey: "https://packagecloud.io/timescale/timescaledb/gpgkey"
+pg_timescaledb_repo_metadata_expire: "300"
+
+###############################################################################
 # ANSIBLE LOG
 ###############################################################################
 

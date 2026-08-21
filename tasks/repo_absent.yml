@@ -60,7 +60,13 @@
     path: "{{ pg_dnf_repo_path }}"
     state: absent
 
+- name: "Removing TimescaleDB Community repository file"
+  ansible.builtin.file:
+    path: "{{ pg_timescaledb_repo_file }}"
+    state: absent
+  when: pg_timescaledb_repo_file is defined
+
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
   vars:
-    iac_log_write: "Removed file {{ pg_dnf_repo_path }}"
+    iac_log_write: "Removed PostgreSQL repository files"

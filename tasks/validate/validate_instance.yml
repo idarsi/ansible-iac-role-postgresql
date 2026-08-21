@@ -1,0 +1,102 @@
+---
+###############################################################################
+#
+# validate_instance.yml
+#
+###############################################################################
+
+- name: "Checking PostgreSQL instance record"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_instance_record | type_debug == 'dict'
+      - pg_validation_instance_record.name is defined
+      - pg_validation_instance_record.name | string | length > 0
+    fail_msg: "Each PostgreSQL instance must define a non-empty name"
+
+- name: "Checking PostgreSQL instance record types"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_instance_record.databases is not defined or pg_validation_instance_record.databases | type_debug == 'list'
+      - pg_validation_instance_record.roles is not defined or pg_validation_instance_record.roles | type_debug == 'list'
+      - pg_validation_instance_record.configuration is not defined or pg_validation_instance_record.configuration | type_debug == 'dict'
+      - pg_validation_instance_record.replication is not defined or pg_validation_instance_record.replication | type_debug == 'dict'
+      - >-
+        pg_validation_instance_record.configuration is not defined
+        or pg_validation_instance_record.configuration.shared_preload_libraries is not defined
+        or pg_validation_instance_record.configuration.shared_preload_libraries | type_debug in ['str', 'list']
+    fail_msg: "PostgreSQL instance databases, roles, configuration, and replication must use the expected types"
+
+- name: "Checking whether standby declares TimescaleDB package metadata"
+  ansible.builtin.set_fact:
+    pg_validation_instance_has_timescaledb: |-
+      {% set ns = namespace(found=false) %}
+      {% for database in pg_validation_instance_record.databases | default([]) %}
+      {% for extension in database.extensions | default([]) %}
+      {% if extension.name | default('') == 'timescaledb' %}
+      {% set ns.found = true %}
+      {% endif %}
+      {% endfor %}
+      {% endfor %}
+      {{ ns.found }}
+
+- name: "Checking standby TimescaleDB package metadata"
+  ansible.builtin.assert:
+    that:
+      - >-
+        pg_validation_instance_record.replication is not defined
+        or pg_validation_instance_record.replication.role != 'standby'
+        or pg_validation_instance_record.configuration is not defined
+        or pg_validation_instance_record.configuration.shared_preload_libraries is not defined
+        or (
+          (
+            pg_validation_instance_record.configuration.shared_preload_libraries
+            if pg_validation_instance_record.configuration.shared_preload_libraries is iterable
+            and pg_validation_instance_record.configuration.shared_preload_libraries is not string
+            else pg_validation_instance_record.configuration.shared_preload_libraries.split(',')
+          )
+          | map('trim')
+          | select('equalto', 'timescaledb')
+          | list
+          | length == 0
+        )
+        or pg_validation_instance_has_timescaledb | bool
+    fail_msg: >-
+      Standby instances that preload TimescaleDB must declare a timescaledb
+      extension in their database metadata so the package is installed locally
+
+- name: "Checking PostgreSQL instance port"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_instance_record.configuration.port | string is match('^[0-9]+$')
+      - (pg_validation_instance_record.configuration.port | int) in range(1, 65536)
+    fail_msg: "PostgreSQL instance port must be an integer between 1 and 65535"
+  when:
+    - pg_validation_instance_record.configuration is defined
+    - pg_validation_instance_record.configuration.port is defined
+
+- name: "Checking PostgreSQL database names are unique"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          pg_validation_instance_record.databases | default([])
+          | map(attribute='name')
+          | list
+          | unique
+          | length
+        ) == (pg_validation_instance_record.databases | default([]) | length)
+    fail_msg: >-
+      PostgreSQL database names must be unique for instance
+      {{ pg_validation_instance_record.name }}
+
+- name: "Validating PostgreSQL replication configuration"
+  ansible.builtin.include_tasks: validate_replication.yml
+  vars:
+    pg_validation_replication: "{{ pg_validation_instance_record.replication }}"
+  when: pg_validation_instance_record.replication is defined
+
+- name: "Validating PostgreSQL database records"
+  ansible.builtin.include_tasks: validate_database.yml
+  loop: "{{ pg_validation_instance_record.databases | default([]) }}"
+  loop_control:
+    loop_var: pg_validation_database_record

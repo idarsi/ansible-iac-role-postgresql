@@ -420,7 +420,7 @@
           - pg_bind_fixture_stat.stat.exists
           - (pg_bind_fixture_content.content | b64decode) == 'legacy bind data\n'
           - pg_bind_source_fixture_stat.stat.exists
-          - (pg_bind_source_fixture_content.content | b64decode) == 'source fixture\n'
+          - (pg_bind_source_fixture_content.content | b64decode) == 'source fixture\numask 077\n'
           - (pg_bind_mount_source.stdout | trim) is search(pg_bind_source)
           - pg_bind_fstab_check.rc == 0
           - pg_version_bind_source_stat.stat.exists

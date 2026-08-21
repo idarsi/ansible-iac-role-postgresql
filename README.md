@@ -25,6 +25,7 @@ Operation                       | State               |
 Installing and configuring all  | install             |
 Uninstalling all                | uninstall           |
 Removing PostgreSQL completely  | all_absent          |
+Validating inventory             | validate             |
 Installing PostgreSQL           | present             |
 Uninstalling PostgreSQL         | absent              |
 Create PostgreSQL instances     | instances_present   |
@@ -97,6 +98,10 @@ This role includes baseline Molecule scenarios:
 - `molecule/hba_guardrails` validates that pg_hba validation failures report
   specific root causes for invalid address usage, missing client CA
   configuration, and undefined certificate-auth map references
+- `molecule/validation` validates valid and invalid PostgreSQL blueprints
+  without installing PostgreSQL packages
+- `molecule/timescaledb` validates TimescaleDB installation from both PGDG and
+  the Timescale Community repository on Rocky Linux 9
 - `molecule/rocky8` validates the baseline repository workflow on Rocky Linux
   8, including PGDG enablement, `powertools`, and PostgreSQL module disablement
 - `molecule/rhel8` validates the same baseline repository workflow on Red Hat
@@ -139,6 +144,18 @@ Run the pg_hba guardrail scenario only:
 
 ```bash
 molecule test -s hba_guardrails
+```
+
+Run the inventory validation scenario only:
+
+```bash
+molecule test -s validation
+```
+
+Run the TimescaleDB package-source scenario only:
+
+```bash
+molecule test -s timescaledb
 ```
 
 Run the Rocky Linux 10 scenario:
@@ -244,6 +261,27 @@ The above example is equivalent to the example below in practical use.
   - role: ansible-iac-role-postgresql
     state: replication_present
 ```
+
+To validate the complete PostgreSQL inventory without applying a PostgreSQL
+state, run the role with the `validate` state:
+
+```yaml
+---
+- hosts: postgres
+  become: true
+
+  roles:
+  - role: ansible-iac-role-postgresql
+    state: validate
+```
+
+All other role states run the same inventory validation automatically before
+performing their state-specific work.
+
+When an instance uses TimescaleDB, `instances_started` ensures the selected
+TimescaleDB package and repository are present before starting the PostgreSQL
+service. This prevents PostgreSQL from starting before its configured preload
+library has been installed.
 
 To aggressively remove PostgreSQL from a host, including repository
 configuration, the operating system user, and PostgreSQL-owned data
@@ -378,6 +416,7 @@ iac_blueprint:
               owner: <username>
               extensions:                      # Installs required OS package and runs CREATE EXTENSION in the database
                 - name: <extension>
+                  source: <pgdg|community>     # timescaledb only; defaults to pgdg
               access:                          # optional pg_hba.conf entries for this database
                 - name: <username>
                   address: <CIDR>
@@ -396,6 +435,28 @@ iac_blueprint:
               login: true|false                # optional
               description: <role comment>      # optional
 ```
+
+For TimescaleDB, omitting `source` installs the Apache-licensed package from
+the PostgreSQL PGDG repository. Set `source: community` to use the Timescale
+Community repository and package:
+
+```yaml
+extensions:
+  - name: timescaledb
+    source: community
+```
+
+The TimescaleDB Community repository is managed directly by the role with a
+repository file and its GPG key; the vendor installation script is not used.
+TimescaleDB is added automatically to `shared_preload_libraries` while
+preserving other configured preload libraries.
+
+For physical primary/standby replication, declare the same TimescaleDB
+extension and `source` on both hosts. The package must be installed locally on
+the standby even though `CREATE EXTENSION` and other database writes are run
+only on the primary. A standby configuration that explicitly preloads
+TimescaleDB without declaring the extension metadata fails inventory
+validation.
 
 A minimal working iac_blueprint that installs PostgreSQL 17 with one instance and allows user app to 
 connect to database appdb from a specific network:

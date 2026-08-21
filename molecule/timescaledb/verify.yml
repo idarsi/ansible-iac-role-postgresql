@@ -1,0 +1,46 @@
+---
+- name: "Verify TimescaleDB package and extension installation"
+  hosts: all
+  become: false
+  vars:
+    ansible_become_method: su
+  tasks:
+    - name: "Checking TimescaleDB extension package"
+      become: true
+      ansible.builtin.command: >-
+        rpm -q
+        {{ 'timescaledb-2-postgresql-17' if 'community' in inventory_hostname else 'timescaledb_17' }}
+      register: pg_timescaledb_package
+      changed_when: false
+
+    - name: "Checking TimescaleDB extension in the database"
+      become: true
+      become_user: postgres
+      ansible.builtin.command: >-
+        /usr/pgsql-17/bin/psql metrics -p 5417
+        -tXAc "SELECT extname FROM pg_extension WHERE extname='timescaledb'"
+      register: pg_timescaledb_extension
+      changed_when: false
+
+    - name: "Checking TimescaleDB preload configuration"
+      ansible.builtin.command: >-
+        grep -F "shared_preload_libraries = 'timescaledb'"
+        /var/lib/pgsql/17/main/conf.d/42-inventory.conf
+      register: pg_timescaledb_preload
+      changed_when: false
+
+    - name: "Checking Community repository file"
+      ansible.builtin.stat:
+        path: /etc/yum.repos.d/timescale_timescaledb.repo
+      register: pg_timescaledb_repo
+
+    - name: "Verifying TimescaleDB installation"
+      ansible.builtin.assert:
+        that:
+          - pg_timescaledb_package.rc == 0
+          - pg_timescaledb_extension.stdout | trim == 'timescaledb'
+          - pg_timescaledb_preload.rc == 0
+          - >-
+            ('community' not in inventory_hostname)
+            or pg_timescaledb_repo.stat.exists
+        fail_msg: "TimescaleDB package, extension, preload, or repository verification failed"

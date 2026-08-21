@@ -14,6 +14,7 @@
 - name: "Setting what variables are configured"
   ansible.builtin.set_fact:
     pg_extension: "{{ pg_extension_record.name | default(omit) }}"
+    pg_timescaledb_source: "{{ pg_extension_record.source | default('pgdg') }}"
     pg_instance: "{{ pg_instance_record.1.name }}"
     pg_version: "{{ pg_instance_record.0.version | string }}"
     pg_port: "{{ pg_instance_record.1.configuration.port | default(pg_default_port) }}"
@@ -23,6 +24,12 @@
     that:
       - pg_version is defined
     fail_msg: "All tests did not pass"
+
+- name: "Ensuring TimescaleDB Community repository is present"
+  ansible.builtin.include_tasks: timescaledb_repo_present.yml
+  when:
+    - pg_extension == 'timescaledb'
+    - pg_timescaledb_source == 'community'
 
 ###############################################################################
 # ENSURING EXTENSIONS ARE PRESENT
@@ -44,7 +51,12 @@
     - name: set_user
       package: "set_user_{{ pg_version }}"
     - name: timescaledb
-      package: "timescaledb_{{ pg_version }}"
+      package: >-
+        {{
+          'timescaledb-2-postgresql-' ~ pg_version
+          if pg_timescaledb_source == 'community'
+          else 'timescaledb_' ~ pg_version
+        }}
     - name: plpython3u
       package: "postgresql{{ pg_version }}-plpython3"
   loop_control:
