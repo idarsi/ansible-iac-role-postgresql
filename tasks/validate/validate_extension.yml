@@ -1,0 +1,42 @@
+---
+###############################################################################
+#
+# validate_extension.yml
+#
+###############################################################################
+
+- name: "Checking PostgreSQL extension record"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_extension_record | type_debug == 'dict'
+      - pg_validation_extension_record.name is defined
+      - pg_validation_extension_record.name | string | length > 0
+    fail_msg: "Each PostgreSQL extension must define a non-empty name"
+
+- name: "Checking TimescaleDB source"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_extension_record.source | default('pgdg') in ['pgdg', 'community']
+    fail_msg: "TimescaleDB source must be either 'pgdg' or 'community'"
+  when: pg_validation_extension_record.name == 'timescaledb'
+
+- name: "Rejecting unsupported extension source overrides"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_extension_record.source is not defined
+    fail_msg: "The source field is currently supported only for the timescaledb extension"
+  when: pg_validation_extension_record.name != 'timescaledb'
+
+- name: "Recording TimescaleDB source request"
+  ansible.builtin.set_fact:
+    pg_validation_timescaledb_requests: >-
+      {{
+        pg_validation_timescaledb_requests +
+        [
+          {
+            'version': pg_validation_version | string,
+            'source': pg_validation_extension_record.source | default('pgdg')
+          }
+        ]
+      }}
+  when: pg_validation_extension_record.name == 'timescaledb'

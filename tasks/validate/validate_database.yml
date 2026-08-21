@@ -1,0 +1,40 @@
+---
+###############################################################################
+#
+# validate_database.yml
+#
+###############################################################################
+
+- name: "Checking PostgreSQL database record"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_database_record | type_debug == 'dict'
+      - pg_validation_database_record.name is defined
+      - pg_validation_database_record.name | string | length > 0
+    fail_msg: "Each PostgreSQL database must define a non-empty name"
+
+- name: "Checking PostgreSQL database record types"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_database_record.extensions is not defined or pg_validation_database_record.extensions | type_debug == 'list'
+      - pg_validation_database_record.access is not defined or pg_validation_database_record.access | type_debug == 'list'
+    fail_msg: "PostgreSQL database extensions and access records must use lists"
+
+- name: "Checking PostgreSQL database extension names are unique"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          pg_validation_database_record.extensions | default([])
+          | map(attribute='name')
+          | list
+          | unique
+          | length
+        ) == (pg_validation_database_record.extensions | default([]) | length)
+    fail_msg: "PostgreSQL database extension names must be unique"
+
+- name: "Validating PostgreSQL extension records"
+  ansible.builtin.include_tasks: validate_extension.yml
+  loop: "{{ pg_validation_database_record.extensions | default([]) }}"
+  loop_control:
+    loop_var: pg_validation_extension_record

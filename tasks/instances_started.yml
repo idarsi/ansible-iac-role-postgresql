@@ -29,6 +29,13 @@
     fail_msg: "All tests did not pass"
 
 ###############################################################################
+# ENSURING EXTENSION PACKAGES ARE PRESENT BEFORE STARTUP
+###############################################################################
+
+- name: "Ensuring extension packages are installed before PostgreSQL startup"
+  ansible.builtin.include_tasks: loop_databases.yml
+
+###############################################################################
 # ENSURING SYSTEMD SERVICE IS STARTED
 ###############################################################################
 

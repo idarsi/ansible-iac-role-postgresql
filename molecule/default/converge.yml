@@ -211,6 +211,8 @@
 
     - name: "Unmounting previous PostgreSQL bind mount from failed test runs"
       ansible.builtin.command: "umount /var/lib/pgsql"
+      tags:
+        - molecule-idempotence-notest
       register: pg_molecule_umount_result
       failed_when: false
       changed_when: pg_molecule_umount_result.rc == 0
@@ -220,6 +222,8 @@
 
     - name: "Lazy-unmounting previous busy PostgreSQL bind mount from failed test runs"
       ansible.builtin.command: "umount -l /var/lib/pgsql"
+      tags:
+        - molecule-idempotence-notest
       when:
         - pg_molecule_existing_bind_mount.rc == 0
         - (pg_molecule_active_service_units.stdout | default('') | trim) == ""
@@ -234,6 +238,8 @@
 
     - name: "Unmounting previous version-scoped bind mount from failed test runs"
       ansible.builtin.command: "umount /tmp/pgsql16-shared"
+      tags:
+        - molecule-idempotence-notest
       register: pg_molecule_version_bind_umount_result
       failed_when: false
       changed_when: pg_molecule_version_bind_umount_result.rc == 0
@@ -243,6 +249,8 @@
 
     - name: "Lazy-unmounting previous busy version-scoped bind mount from failed test runs"
       ansible.builtin.command: "umount -l /tmp/pgsql16-shared"
+      tags:
+        - molecule-idempotence-notest
       when:
         - pg_molecule_existing_version_bind_mount.rc == 0
         - (pg_molecule_active_service_units.stdout | default('') | trim) == ""
@@ -255,6 +263,8 @@
         regexp: "^/srv/data/pgsql\\s+/var/lib/pgsql\\s+none\\s+bind\\s+0\\s+0$"
         state: absent
       failed_when: false
+      tags:
+        - molecule-idempotence-notest
 
     - name: "Removing previous version-scoped bind mount fstab entry from failed test runs"
       ansible.builtin.lineinfile:
@@ -262,6 +272,8 @@
         regexp: "^/srv/data/pgsql16-shared\\s+/tmp/pgsql16-shared\\s+none\\s+bind\\s+0\\s+0$"
         state: absent
       failed_when: false
+      tags:
+        - molecule-idempotence-notest
 
     - name: "Generating Molecule client CA private key"
       delegate_to: localhost
@@ -286,24 +298,32 @@
       ansible.builtin.file:
         path: /srv/data/pgsql
         state: absent
+      tags:
+        - molecule-idempotence-notest
       when: (pg_molecule_active_service_units.stdout | default('') | trim) == ""
 
     - name: "Removing previous version-scoped bind source directory from failed test runs"
       ansible.builtin.file:
         path: /srv/data/pgsql16-shared
         state: absent
+      tags:
+        - molecule-idempotence-notest
       when: (pg_molecule_active_service_units.stdout | default('') | trim) == ""
 
     - name: "Removing previous version-scoped bind target directory from failed test runs"
       ansible.builtin.file:
         path: /tmp/pgsql16-shared
         state: absent
+      tags:
+        - molecule-idempotence-notest
       when: (pg_molecule_active_service_units.stdout | default('') | trim) == ""
 
     - name: "Removing previous legacy PostgreSQL directory from failed test runs"
       ansible.builtin.file:
         path: /var/lib/pgsql
         state: absent
+      tags:
+        - molecule-idempotence-notest
       when: (pg_molecule_active_service_units.stdout | default('') | trim) == ""
 
     - name: "Ensuring /etc/fstab exists for bind mount test in container image"
@@ -322,6 +342,8 @@
         owner: root
         group: root
         mode: "0700"
+      tags:
+        - molecule-idempotence-notest
 
     - name: "Writing bind migration fixture into legacy PostgreSQL directory"
       ansible.builtin.copy:
@@ -330,6 +352,8 @@
         group: root
         mode: "0600"
         content: "legacy bind data\n"
+      tags:
+        - molecule-idempotence-notest
 
     - name: "Ensuring git is installed for Molecule git fixture"
       ansible.builtin.package:
@@ -419,7 +443,9 @@
     - name: "Writing source fixture after bind migration completes"
       ansible.builtin.copy:
         dest: /srv/data/pgsql/.bash_profile
-        owner: root
-        group: root
+        owner: postgres
+        group: postgres
         mode: "0600"
-        content: "source fixture\n"
+        content: "source fixture\numask 077\n"
+      tags:
+        - molecule-idempotence-notest

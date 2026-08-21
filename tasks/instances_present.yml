@@ -43,6 +43,46 @@
     pg_security_syslog: "{{ pg_instance_record.1.security_syslog | default(pg_security) }}"
   when: pg_security is defined
 
+- name: "Determining requested shared preload libraries"
+  ansible.builtin.set_fact:
+    pg_shared_preload_libraries_requested: |-
+      {% set ns = namespace(libraries=[]) %}
+      {% set configured = pg_configuration.shared_preload_libraries | default([]) if pg_configuration is defined else [] %}
+      {% if configured is string %}
+      {% set configured = configured.split(',') %}
+      {% endif %}
+      {% for library in pg_shared_preload_libraries | default([]) %}
+      {% if library | string | trim | length > 0 %}
+      {% set ns.libraries = ns.libraries + [library | string | trim] %}
+      {% endif %}
+      {% endfor %}
+      {% for library in configured %}
+      {% if library | string | trim | length > 0 %}
+      {% set ns.libraries = ns.libraries + [library | string | trim] %}
+      {% endif %}
+      {% endfor %}
+      {% for database in pg_databases %}
+      {% for extension in database.extensions | default([]) %}
+      {% if extension.name == 'timescaledb' and 'timescaledb' not in ns.libraries %}
+      {% set ns.libraries = ns.libraries + ['timescaledb'] %}
+      {% endif %}
+      {% endfor %}
+      {% endfor %}
+      {{ ns.libraries | unique | join(',') }}
+
+- name: "Preparing effective PostgreSQL configuration"
+  ansible.builtin.set_fact:
+    pg_configuration_effective: >-
+      {{
+        (pg_configuration | default({}))
+        | combine(
+            {'shared_preload_libraries': pg_shared_preload_libraries_requested},
+            recursive=false
+          )
+        if pg_shared_preload_libraries_requested | trim | length > 0
+        else (pg_configuration | default({}))
+      }}
+
 - name: "Setting replication variables if defined"
   ansible.builtin.set_fact:
     pg_replication_enabled: "{{ (pg_replication | length) > 0 }}"
@@ -63,7 +103,7 @@
   when: pg_replication is defined
 
 - name: "Validating replication configuration if defined"
-  ansible.builtin.include_tasks: validate_replication_record.yml
+  ansible.builtin.include_tasks: validate/validate_replication_record.yml
   when: pg_replication_enabled | default(false)
 
 - name: "Setting certificate variables if security_ssl is not off"
@@ -129,7 +169,7 @@
   when: pg_maprole | length > 0
 
 - name: "Checking global pg_hba access records"
-  ansible.builtin.include_tasks: validate_hba_access_record.yml
+  ansible.builtin.include_tasks: validate/validate_hba_access_record.yml
   loop: "{{ pg_global_access }}"
   loop_control:
     loop_var: pg_hba_access_record
@@ -147,7 +187,7 @@
       }}
 
 - name: "Checking database-specific pg_hba access records"
-  ansible.builtin.include_tasks: validate_hba_access_record.yml
+  ansible.builtin.include_tasks: validate/validate_hba_access_record.yml
   loop: "{{ pg_databases | subelements('access', skip_missing=True) }}"
   loop_control:
     loop_var: pg_hba_database_access_record
@@ -290,14 +330,15 @@
 - name: "Rendering configuration lines"
   ansible.builtin.set_fact:
     rendered_lines: |
-      {% for item in pg_configuration | dict2items if item.value is not none %}
+      {% for item in pg_configuration_effective | dict2items if item.value is not none %}
       {% if item.value is string %}
       {{ item.key }} = '{{ item.value }}'
       {% else %}
       {{ item.key }} = {{ item.value }}
       {% endif %}
       {% endfor %}
-  when: pg_configuration is defined
+  when:
+    - pg_configuration is defined or pg_shared_preload_libraries_requested | trim | length > 0
 
 - name: "Ensuring PostgreSQL configuration in changes.conf matches template"
   ansible.builtin.copy:
@@ -378,6 +419,7 @@
   ansible.builtin.file:
     path: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/pg_ident.conf"
     state: absent
+  when: pg_maprole | length == 0
 
 - name: "Ensure pg_ident.conf access rules are present"
   ansible.builtin.template:

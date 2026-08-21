@@ -1,0 +1,63 @@
+---
+###############################################################################
+#
+# timescaledb_repo_present.yml
+#
+# Manage the TimescaleDB Community repository without using the vendor
+# installation script.
+#
+###############################################################################
+
+- name: "Checking TimescaleDB Community repository variables"
+  ansible.builtin.assert:
+    that:
+      - pg_timescaledb_repo_file is defined
+      - pg_timescaledb_repo_id is defined
+      - pg_timescaledb_repo_name is defined
+      - pg_timescaledb_repo_baseurl is defined
+      - pg_timescaledb_repo_gpgkey is defined
+      - dnf_sslverify is defined
+      - dnf_validate_certs is defined
+      - dnf_disable_gpg_check is defined
+    fail_msg: "TimescaleDB Community repository configuration is incomplete"
+
+- name: "Ensuring TimescaleDB Community repository GPG key is present"
+  ansible.builtin.rpm_key:
+    key: "{{ pg_timescaledb_repo_gpgkey }}"
+    state: present
+  vars:
+    ansible_python_interpreter: "{{ pg_package_module_interpreter }}"
+  environment:
+    http_proxy: "{{ http_proxy }}"
+    https_proxy: "{{ https_proxy }}"
+    no_proxy: "{{ no_proxy }}"
+  register: pg_timescaledb_repo_gpgkey_result
+  retries: "{{ pg_repo_network_retries | default(1) }}"
+  delay: "{{ pg_repo_network_delay | default(0) }}"
+  until: pg_timescaledb_repo_gpgkey_result is succeeded
+
+- name: "Ensuring TimescaleDB Community repository file is present"
+  ansible.builtin.yum_repository:
+    name: "{{ pg_timescaledb_repo_id }}"
+    description: "{{ pg_timescaledb_repo_name }}"
+    file: "{{ pg_timescaledb_repo_file | basename | regex_replace('\\.repo$', '') }}"
+    baseurl: "{{ pg_timescaledb_repo_baseurl }}"
+    enabled: true
+    gpgcheck: false
+    repo_gpgcheck: "{{ not dnf_disable_gpg_check }}"
+    gpgkey: "{{ pg_timescaledb_repo_gpgkey }}"
+    sslverify: "{{ dnf_sslverify }}"
+    metadata_expire: "{{ pg_timescaledb_repo_metadata_expire | default(300) }}"
+    proxy: "{{ http_proxy if http_proxy | length > 0 else omit }}"
+  vars:
+    ansible_python_interpreter: "{{ pg_package_module_interpreter }}"
+  environment:
+    http_proxy: "{{ http_proxy }}"
+    https_proxy: "{{ https_proxy }}"
+    no_proxy: "{{ no_proxy }}"
+  register: pg_timescaledb_repo_result
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    iac_log_write: "Ensured TimescaleDB Community repository {{ pg_timescaledb_repo_id }} is present"

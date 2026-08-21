@@ -1,0 +1,22 @@
+---
+###############################################################################
+#
+# validate_timescaledb_sources.yml
+#
+###############################################################################
+
+- name: "Checking TimescaleDB source consistency"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          pg_validation_timescaledb_requests
+          | selectattr('version', 'equalto', pg_validation_timescaledb_version)
+          | map(attribute='source')
+          | unique
+          | list
+          | length
+        ) == 1
+    fail_msg: >-
+      PostgreSQL version {{ pg_validation_timescaledb_version }} requests multiple
+      TimescaleDB sources. Use one source for all timescaledb extensions of this version.

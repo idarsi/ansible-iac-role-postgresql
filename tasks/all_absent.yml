@@ -27,6 +27,7 @@
       - pg_os_user is defined
       - pg_real_dir is defined
       - pg_systemd_service_dir is defined
+      - pg_timescaledb_repo_file is defined
     fail_msg: "All tests did not pass"
 
 ###############################################################################
@@ -89,7 +90,9 @@
 
 - name: "Ensuring all PostgreSQL packages are absent"
   ansible.builtin.dnf:
-    name: "postgresql*"
+    name:
+      - "postgresql*"
+      - "timescaledb*"
     sslverify: "{{ dnf_sslverify }}"
     validate_certs: "{{ dnf_validate_certs }}"
     disable_gpg_check: "{{ dnf_disable_gpg_check }}"

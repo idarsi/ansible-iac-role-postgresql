@@ -52,7 +52,7 @@
     fail_msg: "PostgreSQL replication state is missing required instance variables"
 
 - name: "Validating replication configuration if defined"
-  ansible.builtin.include_tasks: validate_replication_record.yml
+  ansible.builtin.include_tasks: validate/validate_replication_record.yml
   when: pg_replication_enabled | default(false)
 
 ###############################################################################
