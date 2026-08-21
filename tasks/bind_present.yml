@@ -110,7 +110,7 @@
       {{
         pg_bind_expected_service_states.results | default([])
         | selectattr('stdout', 'defined')
-        | selectattr('stdout', 'search', '^\\s*active\\s*$')
+        | selectattr('stdout', 'search', '^\s*active\s*$')
         | map(attribute='pg_bind_service_name')
         | list
       }}

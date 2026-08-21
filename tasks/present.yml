@@ -95,6 +95,14 @@
     - pg_bind_dir is defined
     - pg_real_dir != pg_bind_dir
 
+- name: "Clearing PostgreSQL bind mount variables when bind migration is disabled"
+  ansible.builtin.set_fact:
+    iac_fs_binds: []
+  when:
+    - pg_real_dir is defined
+    - pg_bind_dir is defined
+    - pg_real_dir == pg_bind_dir
+
 - name: "Ensuring PostgreSQL bind mount configuration is present"
   ansible.builtin.include_tasks: bind_present.yml
   when:
