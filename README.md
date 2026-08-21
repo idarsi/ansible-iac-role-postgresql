@@ -9,14 +9,39 @@ ANSIBLE-IAC-ROLE-POSTGRESQL
 Overview
 ========
 
-This Ansible role is designed to simplify and enhance the flexibility of PostgreSQL management.
+This Ansible role provides a declarative way to deploy and manage PostgreSQL
+environments with multiple major versions, instances, databases, roles,
+extensions, and supporting infrastructure.
 
-This role uses only ansible.builtin.* ansible modules.
+Its development goal is to make complex PostgreSQL installations possible to
+roll out and maintain across large environments with as little manual work as
+possible. The role is also intended to evolve toward continuously verifying
+that the deployed PostgreSQL configuration remains aligned with the desired
+blueprint and organizational compliance requirements.
 
-Supported PostgreSQL versions (from PostgreSQL repository):
-- PostgreSQL 18
-- PostgreSQL 17
-- PostgreSQL 16
+The role uses the `iac_blueprint` model to keep the desired state in one
+structured inventory while Ansible handles the host-specific implementation.
+
+Supported PostgreSQL major versions:
+- PostgreSQL 18 — supported until 14 November 2030
+- PostgreSQL 17 — supported until 8 November 2029
+- PostgreSQL 16 — supported until 9 November 2028
+
+These versions are installed from the PostgreSQL Global Development Group
+(PGDG) repositories. PGDG follows the PostgreSQL project's policy of
+supporting each major version for five years after its initial release. The
+PGDG repository provides packages and updates for supported PostgreSQL
+versions throughout their support lifetime.
+
+On Red Hat Enterprise Linux (including UBI) and Rocky Linux, the role uses the
+PGDG repository for PostgreSQL packages. It does not install PostgreSQL from
+Red Hat's distribution PostgreSQL packages. The host's Red Hat or Rocky Linux
+base repositories remain platform prerequisites; the role only manages the
+additional Rocky Linux repositories needed by its package workflow.
+
+See the [PostgreSQL versioning policy](https://www.postgresql.org/support/versioning/)
+and the [PGDG Red Hat family platform documentation](https://www.postgresql.org/download/linux/redhat/)
+for the current lifecycle and repository support information.
 
 These operations are supported:
 
@@ -25,7 +50,7 @@ Operation                       | State               |
 Installing and configuring all  | install             |
 Uninstalling all                | uninstall           |
 Removing PostgreSQL completely  | all_absent          |
-Validating inventory             | validate             |
+Validating inventory            | validate             |
 Installing PostgreSQL           | present             |
 Uninstalling PostgreSQL         | absent              |
 Create PostgreSQL instances     | instances_present   |
@@ -39,176 +64,51 @@ Remove databases                | databases_absent    |
 Create database users           | roles_present       |
 Remove database users           | roles_absent        |
 
+Quick start
+-----------
+
+Install PostgreSQL 17 with one instance:
+
+```yaml
+---
+- hosts: postgres
+  become: true
+  roles:
+    - role: ansible-iac-role-postgresql
+      state: install
+  vars:
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: main
+```
+
+The role validates the complete inventory before applying the selected state.
+Run only the validation when checking a blueprint without changing the host:
+
+```yaml
+- hosts: postgres
+  become: true
+  roles:
+    - role: ansible-iac-role-postgresql
+      state: validate
+```
+
+The `all_absent` state is intentionally destructive: it removes PostgreSQL
+packages, repository configuration, service files, data, logs, and the
+PostgreSQL operating system user. Use it only when the host should be reset to
+a clean pre-PostgreSQL baseline.
+
 Requirements
 ------------
 
-- Operating system (tested on)
-  - Red Hat Enterprise Linux 10
-  - Fedora Linux 42
-  - Fedora Linux 41
-  - Red Hat Enterprise Linux 9
-  - Red Hat Enterprise Linux 8
-  - Rocky Linux 10
-  - Rocky Linux 9
-  - Rocky Linux 8
+- Operating systems covered by the automated Molecule test matrix are listed
+  in [TESTING.md](TESTING.md). Fedora is not included in the current automated
+  test coverage.
 
 - Other components
   - Ansible 2.15 or higher
-
-Repository checkout
--------------------
-
-This role includes the shared task library as a Git submodule under
-`tasks/shared`.
-
-Clone the repository with submodules:
-
-```bash
-git clone --recurse-submodules https://github.com/idarsi/ansible-iac-role-postgresql.git
-```
-
-If you already cloned the repository without submodules, initialize them with:
-
-```bash
-git submodule update --init --recursive
-```
-
-Code Quality
-------------
-
-This project adheres to the [Ansible Lint](https://ansible-lint.readthedocs.io)
-**production** profile, ensuring high-quality and production-ready
-configuration management.
-
-Role Testing
-------------
-
-This role includes baseline Molecule scenarios:
-
-- `molecule/default` validates package installation, multi-instance startup,
-  version-scoped managed filesystem resources including `binds:`, cron
-  entries, role/database provisioning, extension creation, and generated
-  access configuration on Rocky Linux 9
-- `molecule/all_absent` validates destructive cleanup of packages,
-  repositories, bind mounts, service files, managed resources, and the
-  PostgreSQL operating system user on Rocky Linux 9
-- `molecule/bind_guardrails` validates that bind-mount migration fails safely
-  when source and target both contain data or when PostgreSQL services are
-  still running against the target directory
-- `molecule/hba_guardrails` validates that pg_hba validation failures report
-  specific root causes for invalid address usage, missing client CA
-  configuration, and undefined certificate-auth map references
-- `molecule/validation` validates valid and invalid PostgreSQL blueprints
-  without installing PostgreSQL packages
-- `molecule/timescaledb` validates TimescaleDB installation from both PGDG and
-  the Timescale Community repository on Rocky Linux 9
-- `molecule/rocky8` validates the baseline repository workflow on Rocky Linux
-  8, including PGDG enablement, `powertools`, and PostgreSQL module disablement
-- `molecule/rhel8` validates the same baseline repository workflow on Red Hat
-  Enterprise Linux 8 UBI, including PGDG enablement, CodeReady Builder, and
-  PostgreSQL module disablement
-- `molecule/rhel9` validates the default multi-instance, bind, git, and
-  repository workflow on Red Hat Enterprise Linux 9 UBI
-- `molecule/replication` validates optional physical primary/standby
-  replication between two Rocky Linux 9 containers, including standby
-  bootstrap with `pg_basebackup` and replicated test data visibility
-- `molecule/rocky10` validates the same baseline behavior on Rocky Linux 10
-- `molecule/rhel10` validates the same baseline behavior on Red Hat Enterprise
-  Linux 10 UBI
-
-Run locally from the role directory:
-
-```bash
-molecule test
-```
-
-Run the default scenario only:
-
-```bash
-molecule test -s default
-```
-
-Run the `all_absent` scenario only:
-
-```bash
-molecule test -s all_absent
-```
-
-Run the bind guardrail scenario only:
-
-```bash
-molecule test -s bind_guardrails
-```
-
-Run the pg_hba guardrail scenario only:
-
-```bash
-molecule test -s hba_guardrails
-```
-
-Run the inventory validation scenario only:
-
-```bash
-molecule test -s validation
-```
-
-Run the TimescaleDB package-source scenario only:
-
-```bash
-molecule test -s timescaledb
-```
-
-Run the Rocky Linux 10 scenario:
-
-```bash
-molecule test -s rocky10
-```
-
-Run the Rocky Linux 8 repository scenario:
-
-```bash
-molecule test -s rocky8
-```
-
-Run the Red Hat Enterprise Linux 8 repository scenario:
-
-```bash
-molecule test -s rhel8
-```
-
-Run the Red Hat Enterprise Linux 9 UBI scenario:
-
-```bash
-molecule test -s rhel9
-```
-
-Run the replication scenario:
-
-```bash
-molecule test -s replication
-```
-
-Run the Red Hat Enterprise Linux 10 UBI scenario:
-
-```bash
-molecule test -s rhel10
-```
-
-Definitions
------------
-
-In PostgreSQL documentation, the term cluster refers to a collection of databases. However, this can be 
-misleading, as cluster is more commonly used to describe a group of servers. In this document, the term 
-cluster has been replaced with instance for clarity. A single host may run one or more PostgreSQL 
-instances on different ports.
-
-Architecture
-------------
-
-This Ansible role uses the iac_blueprint declarative inventory structure. It defines the desired end 
-state of services — such as service versions, instances, configuration profiles, and users — in a clear, 
-structured format. The role is responsible for interpreting this blueprint and applying the necessary 
-changes, separating the what from the how.
 
 Usage
 =====
@@ -683,3 +583,42 @@ iac_blueprint:
           cron_file: pg_backup
       instances:
         - name: data
+
+Definitions
+-----------
+
+In PostgreSQL documentation the term cluster refers to a collection of
+databases. Because cluster is also commonly used for a group of servers, this
+document uses instance for a PostgreSQL server-local cluster. A single host
+may run one or more PostgreSQL instances on different ports.
+
+Architecture
+------------
+
+This Ansible role uses the `iac_blueprint` declarative inventory structure. It
+defines the desired end state of services — such as service versions,
+instances, configuration profiles, and users — in a structured format. The
+role interprets this blueprint and applies the necessary changes.
+
+Repository checkout
+-------------------
+
+The shared task library is included as a Git submodule under `tasks/shared`.
+Clone the repository with submodules:
+
+```bash
+git clone --recurse-submodules https://github.com/idarsi/ansible-iac-role-postgresql.git
+```
+
+If the repository was already cloned without submodules, initialize them with:
+
+```bash
+git submodule update --init --recursive
+```
+
+Static analysis and Molecule testing
+------------------------------------
+
+Ansible Lint is not currently configured or run as part of this repository's
+automated test matrix. See [TESTING.md](TESTING.md) for the current Molecule
+test matrix, scenario coverage, and test commands.
