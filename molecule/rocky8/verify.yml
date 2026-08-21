@@ -5,13 +5,9 @@
   vars:
     ansible_become_method: su
     pg_repo_file: "/etc/yum.repos.d/pgdg-redhat-all.repo"
-    pg_version: "17"
-    pg_instance: "main"
-    pg_port: 5417
-    pg_database: "appdb17"
-    pg_config_file: "/var/lib/pgsql/17/main/conf.d/42-inventory.conf"
-    pg_profile_file: "/var/lib/pgsql/17/main/conf.d/40-profile.conf"
-    pg_service_file: "/usr/lib/systemd/system/postgresql-17-main.service"
+    pg_molecule_versions:
+      - { version: "17", port: 5417, database: appdb17, directory: /tmp/pgsql17, file: /tmp/pgsql17/example.txt, cron_file: /etc/cron.d/pg17_heartbeat, config_file: /var/lib/pgsql/17/main/conf.d/42-inventory.conf }
+      - { version: "18", port: 5418, database: appdb18, directory: /tmp/pgsql18, file: /tmp/pgsql18/example.txt, cron_file: /etc/cron.d/pg18_heartbeat, config_file: /var/lib/pgsql/18/main/conf.d/42-inventory.conf }
   tasks:
     - name: "Checking PostgreSQL operating system user"
       ansible.builtin.command: "getent passwd postgres"
@@ -39,122 +35,112 @@
       changed_when: false
       failed_when: false
 
-    - name: "Checking PostgreSQL server package"
-      ansible.builtin.command: "rpm -q postgresql{{ pg_version }}-server"
-      register: pg_package_check
+    - name: "Checking PostgreSQL server packages"
+      ansible.builtin.command: "rpm -q postgresql{{ item.version }}-server"
+      loop: "{{ pg_molecule_versions }}"
+      register: pg_package_checks
       changed_when: false
 
-    - name: "Checking PostgreSQL service is active"
-      ansible.builtin.command: "systemctl is-active postgresql-{{ pg_version }}-{{ pg_instance }}.service"
-      register: pg_service_check
+    - name: "Checking PostgreSQL services"
+      ansible.builtin.command: "systemctl is-active postgresql-{{ item.version }}-main.service"
+      loop: "{{ pg_molecule_versions }}"
+      register: pg_service_checks
       changed_when: false
 
-    - name: "Checking PostgreSQL service is enabled"
-      ansible.builtin.command: "systemctl is-enabled postgresql-{{ pg_version }}-{{ pg_instance }}.service"
-      register: pg_service_enabled_check
+    - name: "Checking PostgreSQL service enablement"
+      ansible.builtin.command: "systemctl is-enabled postgresql-{{ item.version }}-main.service"
+      loop: "{{ pg_molecule_versions }}"
+      register: pg_service_enabled_checks
       changed_when: false
 
-    - name: "Checking managed file"
+    - name: "Checking managed directories and files"
       ansible.builtin.stat:
-        path: /tmp/pgsql17/example.txt
-      register: pg_file_check
+        path: "{{ item.1 }}"
+      loop: "{{ pg_molecule_versions | map(attribute='directory') | zip(pg_molecule_versions | map(attribute='file')) | list }}"
+      register: pg_managed_path_checks
 
-    - name: "Reading managed file"
-      ansible.builtin.slurp:
-        path: /tmp/pgsql17/example.txt
-      register: pg_file_content
-
-    - name: "Checking managed cron file"
+    - name: "Checking managed cron files"
       ansible.builtin.stat:
-        path: /etc/cron.d/pg17_heartbeat
-      register: pg_cron_check
+        path: "{{ item.cron_file }}"
+      loop: "{{ pg_molecule_versions }}"
+      register: pg_cron_checks
 
-    - name: "Checking inventory configuration file"
+    - name: "Checking inventory configuration"
+      ansible.builtin.command: "grep -F 'max_connections = 50' {{ item.config_file }}"
+      loop: "{{ pg_molecule_versions }}"
+      register: pg_config_checks
+      changed_when: false
+
+    - name: "Checking generated systemd service files"
       ansible.builtin.stat:
-        path: "{{ pg_config_file }}"
-      register: pg_config_check
+        path: "/usr/lib/systemd/system/postgresql-{{ item.version }}-main.service"
+      loop: "{{ pg_molecule_versions }}"
+      register: pg_service_file_checks
 
-    - name: "Reading inventory configuration file"
-      ansible.builtin.slurp:
-        path: "{{ pg_config_file }}"
-      register: pg_config_content
-
-    - name: "Checking profile configuration file"
-      ansible.builtin.stat:
-        path: "{{ pg_profile_file }}"
-      register: pg_profile_check
-
-    - name: "Checking generated systemd service file"
-      ansible.builtin.stat:
-        path: "{{ pg_service_file }}"
-      register: pg_service_file_check
-
-    - name: "Checking database exists"
+    - name: "Checking databases exist"
       become: true
       become_user: postgres
       ansible.builtin.command: >-
-        /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
-        -tXAc "SELECT 1 FROM pg_database WHERE datname='{{ pg_database }}'"
-      register: pg_database_check
+        /usr/pgsql-{{ item.version }}/bin/psql postgres -p {{ item.port }}
+        -tXAc "SELECT 1 FROM pg_database WHERE datname='{{ item.database }}'"
+      loop: "{{ pg_molecule_versions }}"
+      register: pg_database_checks
       changed_when: false
 
-    - name: "Checking primary application roles exist"
+    - name: "Checking application roles exist"
       become: true
       become_user: postgres
       ansible.builtin.command: >-
-        /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
-        -tXAc "SELECT 1 FROM pg_roles WHERE rolname='{{ item }}'"
-      loop:
-        - app_user
-        - app_admin
+        /usr/pgsql-{{ item.0.version }}/bin/psql postgres -p {{ item.0.port }}
+        -tXAc "SELECT 1 FROM pg_roles WHERE rolname='{{ item.1 }}'"
+      loop: "{{ pg_molecule_versions | product(['app_user', 'app_admin']) | list }}"
       register: pg_role_checks
       changed_when: false
 
-    - name: "Checking pgcrypto extension is installed"
+    - name: "Checking pgcrypto extensions exist"
       become: true
       become_user: postgres
       ansible.builtin.command: >-
-        /usr/pgsql-{{ pg_version }}/bin/psql {{ pg_database }} -p {{ pg_port }}
+        /usr/pgsql-{{ item.version }}/bin/psql {{ item.database }} -p {{ item.port }}
         -tXAc "SELECT 1 FROM pg_extension WHERE extname='pgcrypto'"
-      register: pg_extension_check
+      loop: "{{ pg_molecule_versions }}"
+      register: pg_extension_checks
       changed_when: false
 
-    - name: "Checking pg_hba access rule"
+    - name: "Checking pg_hba rules"
       ansible.builtin.command: >-
-        grep -F "host {{ pg_database }} app_user 10.0.0.1/32 scram-sha-256"
-        /var/lib/pgsql/{{ pg_version }}/{{ pg_instance }}/pg_hba.conf
-      register: pg_hba_check
+        grep -F "host {{ item.database }} app_user 10.0.0.1/32 scram-sha-256"
+        /var/lib/pgsql/{{ item.version }}/main/pg_hba.conf
+      loop: "{{ pg_molecule_versions }}"
+      register: pg_hba_checks
       changed_when: false
 
-    - name: "Verifying Rocky 8 PostgreSQL repository workflow"
+    - name: "Checking PostgreSQL 17 profile configuration"
+      ansible.builtin.stat:
+        path: /var/lib/pgsql/17/main/conf.d/40-profile.conf
+      register: pg_profile_check
+
+    - name: "Verifying Rocky 8 PostgreSQL versions and repository workflow"
       ansible.builtin.assert:
         that:
           - pg_os_user_check.rc == 0
           - pg_repo_file_check.stat.exists
           - "'pgdg17' in pg_enabled_repos.stdout"
+          - "'pgdg18' in pg_enabled_repos.stdout"
           - pg_powertools_repo_check.rc == 0
           - >-
-            (
-              pg_module_disabled_check.rc == 0
-              and (pg_module_disabled_check.stdout is search('postgresql'))
-            )
-            or
-            (
-              pg_module_disabled_check.stderr is search('No matching Modules to list')
-            )
-          - pg_package_check.rc == 0
-          - pg_service_check.stdout == 'active'
-          - pg_service_enabled_check.stdout == 'enabled'
-          - pg_file_check.stat.exists
-          - (pg_file_content.content | b64decode) == 'molecule\n'
-          - pg_cron_check.stat.exists
-          - pg_config_check.stat.exists
-          - (pg_config_content.content | b64decode) is search('max_connections = 50')
-          - (pg_config_content.content | b64decode) is search('port = 5417')
+            (pg_module_disabled_check.rc == 0 and pg_module_disabled_check.stdout is search('postgresql'))
+            or pg_module_disabled_check.stderr is search('No matching Modules to list')
+          - pg_package_checks.results | map(attribute='rc') | list == [0, 0]
+          - pg_service_checks.results | map(attribute='stdout') | list == ['active', 'active']
+          - pg_service_enabled_checks.results | map(attribute='stdout') | list == ['enabled', 'enabled']
+          - pg_managed_path_checks.results | map(attribute='stat.exists') | list == [true, true]
+          - pg_cron_checks.results | map(attribute='stat.exists') | list == [true, true]
+          - pg_config_checks.results | map(attribute='rc') | list == [0, 0]
+          - pg_service_file_checks.results | map(attribute='stat.exists') | list == [true, true]
+          - pg_database_checks.results | map(attribute='stdout') | list == ['1', '1']
+          - pg_role_checks.results | map(attribute='stdout') | list == ['1', '1', '1', '1']
+          - pg_extension_checks.results | map(attribute='stdout') | list == ['1', '1']
+          - pg_hba_checks.results | map(attribute='rc') | list == [0, 0]
           - pg_profile_check.stat.exists
-          - pg_service_file_check.stat.exists
-          - pg_database_check.stdout == '1'
-          - pg_role_checks.results | map(attribute='stdout') | list == ['1', '1']
-          - pg_extension_check.stdout == '1'
-          - pg_hba_check.rc == 0
         fail_msg: "PostgreSQL Rocky 8 repository Molecule verification failed"

@@ -9,14 +9,17 @@ may work on.
 
 Platform/image                  | PostgreSQL versions | Molecule scenarios | Main coverage
 --------------------------------|---------------------|--------------------|--------------
-Rocky Linux 8 UBI               | 17                  | `rocky8`            | PGDG repository and baseline installation
-Red Hat Enterprise Linux 8 UBI | 17                  | `rhel8`             | PGDG repository and baseline installation
+Rocky Linux 8 UBI               | 17, 18              | `rocky8`             | PGDG repository and multi-version baseline installation
+Red Hat Enterprise Linux 8 UBI | 17, 18              | `rhel8`              | PGDG repository and multi-version baseline installation
 Rocky Linux 9 UBI               | 16, 17, 18          | `default`, `all_absent`, `bind_guardrails`, `hba_guardrails`, `replication`, `timescaledb`, `validation` | Full baseline, cleanup, guardrails, physical replication, inventory validation, and TimescaleDB sources
 Red Hat Enterprise Linux 9 UBI | 16, 17, 18          | `rhel9`             | Full baseline, bind, git, and repository workflow
 Rocky Linux 10 UBI              | 16, 17, 18          | `rocky10`           | Baseline installation and multi-version coverage
 Red Hat Enterprise Linux 10 UBI| 16, 17, 18          | `rhel10`            | Baseline installation and multi-version coverage
 
 Fedora is not included in the current automated test matrix.
+
+The 8-series scenarios cover PostgreSQL 17 and 18. The Rocky Linux 9 and 10
+and RHEL 9 and 10 scenarios already cover PostgreSQL 16, 17, and 18.
 
 ## Scenario coverage
 
@@ -36,13 +39,15 @@ Fedora is not included in the current automated test matrix.
 - `molecule/validation` validates valid and invalid PostgreSQL blueprints
   without installing PostgreSQL packages.
 - `molecule/timescaledb` validates TimescaleDB installation from both PGDG and
-  the Timescale Community repository on Rocky Linux 9.
-- `molecule/rocky8` validates the baseline repository workflow on Rocky Linux
-  8, including PGDG enablement, `powertools`, and PostgreSQL module
-  disablement.
+  the Timescale Community repository on Rocky Linux 9 and 10 and Red Hat
+  Enterprise Linux 9 and 10 UBI.
+- `molecule/rocky8` validates PostgreSQL 17 and 18 with the baseline repository
+  workflow on Rocky Linux 8, including PGDG enablement, `powertools`, and
+  PostgreSQL module disablement.
 - `molecule/rhel8` validates the same baseline repository workflow on Red Hat
-  Enterprise Linux 8 UBI, including PGDG enablement and PostgreSQL module
-  disablement. The role does not configure Red Hat subscription repositories.
+  Enterprise Linux 8 UBI for PostgreSQL 17 and 18, including PGDG enablement
+  and PostgreSQL module disablement. The role does not configure Red Hat
+  subscription repositories.
 - `molecule/rhel9` validates the default multi-instance, bind, git, and
   repository workflow on Red Hat Enterprise Linux 9 UBI.
 - `molecule/replication` validates optional physical primary/standby
@@ -52,7 +57,26 @@ Fedora is not included in the current automated test matrix.
 - `molecule/rhel10` validates the same baseline behavior on Red Hat Enterprise
   Linux 10 UBI.
 
+The GitHub Actions workflow runs the production-profile lint check and the
+Molecule scenarios as separate jobs. Molecule scenarios run in parallel by
+scenario, while the lint job is shared by all pull requests.
+
+The workflow currently uses Ansible Core 2.16, ansible-lint 25.x, Molecule 6.x,
+and molecule-plugins 23.x–24.x. These versions are compatible with the
+repository's existing Molecule scenario configuration.
+
 ## Running tests
+
+Run the production-profile Ansible Lint check before the Molecule scenarios:
+
+```bash
+ANSIBLE_ROLES_PATH=.. ansible-lint --profile production
+```
+
+Molecule's current releases do not provide Ansible Lint as a built-in
+scenario phase, so this is a separate static-analysis gate in the same test
+workflow. The repository's `.ansible-lint` file keeps the profile and shared
+exclusions in version control.
 
 Run all scenarios from the role directory:
 

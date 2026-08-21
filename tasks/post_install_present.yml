@@ -21,6 +21,6 @@
 # LOOPING THROUGH DIRECTORIES
 ###############################################################################
 
-- name: "Looping through post install scripts"
+- name: "Looping through post install scripts" # noqa command-instead-of-shell no-changed-when partial-become
   become_user: "{{ iac_post_install_job.run_as }}"
   ansible.builtin.shell: "{{ iac_post_install_job.command }}"

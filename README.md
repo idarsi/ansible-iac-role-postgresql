@@ -110,6 +110,11 @@ Requirements
 - Other components
   - Ansible 2.15 or higher
 
+The versions used by the automated CI test environment are documented in
+[TESTING.md](TESTING.md). The CI currently pins Ansible Core 2.16,
+ansible-lint 25.x, Molecule 6.x, and molecule-plugins 23.x–24.x for
+repeatable test runs.
+
 Usage
 =====
 
@@ -619,6 +624,6 @@ git submodule update --init --recursive
 Static analysis and Molecule testing
 ------------------------------------
 
-Ansible Lint is not currently configured or run as part of this repository's
-automated test matrix. See [TESTING.md](TESTING.md) for the current Molecule
-test matrix, scenario coverage, and test commands.
+The repository runs Ansible Lint with the `production` profile as a separate
+static-analysis gate before the Molecule scenarios. See [TESTING.md](TESTING.md)
+for the current test matrix, scenario coverage, and test commands.

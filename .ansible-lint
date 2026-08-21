@@ -1,0 +1,9 @@
+---
+profile: production
+exclude_paths:
+  - .cache/
+  - .git/
+  - .molecule/
+  - docs/
+  - molecule/
+  - tasks/shared/

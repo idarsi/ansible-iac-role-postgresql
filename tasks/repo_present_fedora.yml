@@ -73,7 +73,10 @@
 - name: "Ensuring PostgreSQL repository package is present for Fedora"
   ansible.builtin.include_tasks: package_present.yml
   vars:
-    pg_package: "https://download.postgresql.org/pub/repos/yum/reporpms/F-{{ ansible_facts['distribution_major_version'] }}-x86_64/pgdg-fedora-repo-latest.noarch.rpm"
+    pg_package: >-
+      {{ 'https://download.postgresql.org/pub/repos/yum/reporpms/F-' ~
+      ansible_facts['distribution_major_version'] ~
+      '-x86_64/pgdg-fedora-repo-latest.noarch.rpm' }}
   when:
     - pg_files_available is false
     - pg_repofile_available is false
@@ -96,7 +99,7 @@
     pg_repofile_available: true
   when: repo_file.stat.exists
 
-- name: "Adding proxy settings to PostgreSQL repo file if needed"
+- name: "Adding proxy settings to PostgreSQL repo file if needed" # noqa command-instead-of-shell command-instead-of-module
   ansible.builtin.shell: |
     sed -i -E -e '/^proxy=/d' -e '/^\[.*\]$/a proxy={{ http_proxy }}' {{ pg_dnf_repo_path }}
   changed_when: false

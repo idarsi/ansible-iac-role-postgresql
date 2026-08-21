@@ -37,7 +37,7 @@
     - (pg_bind_home_records | default([])) | length > 0
     - (pg_instances | default([])) | length > 0
 
-- name: "Checking active expected PostgreSQL services for bind migration checks"
+- name: "Checking active expected PostgreSQL services for bind migration checks" # noqa command-instead-of-module
   ansible.builtin.command: >-
     systemctl is-active {{ pg_bind_service_name }}
   register: pg_bind_expected_service_states
@@ -99,18 +99,20 @@
             and (
               pg_bind_live_mount_source == iac_fs_bind_record.source
               or pg_bind_live_mount_source.endswith('[' ~ iac_fs_bind_record.source ~ ']')
+              or pg_bind_live_mount_source.endswith('/' ~ (iac_fs_bind_record.source | regex_replace('^/', '')) ~ ']')
             )
           )
           or
           pg_bind_live_mount_source == iac_fs_bind_record.source
           or pg_bind_live_mount_source.endswith('[' ~ iac_fs_bind_record.source ~ ']')
+          or pg_bind_live_mount_source.endswith('/' ~ (iac_fs_bind_record.source | regex_replace('^/', '')) ~ ']')
         )
       }}
     pg_bind_active_expected_services: >-
       {{
         pg_bind_expected_service_states.results | default([])
         | selectattr('stdout', 'defined')
-        | selectattr('stdout', 'equalto', 'active')
+        | selectattr('stdout', 'search', '^\s*active\s*$')
         | map(attribute='pg_bind_service_name')
         | list
       }}

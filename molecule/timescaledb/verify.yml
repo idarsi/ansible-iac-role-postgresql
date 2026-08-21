@@ -9,7 +9,7 @@
       become: true
       ansible.builtin.command: >-
         rpm -q
-        {{ 'timescaledb-2-postgresql-17' if 'community' in inventory_hostname else 'timescaledb_17' }}
+        {{ 'timescaledb-2-postgresql-17' if timescaledb_source == 'community' else 'timescaledb_17' }}
       register: pg_timescaledb_package
       changed_when: false
 
@@ -41,6 +41,6 @@
           - pg_timescaledb_extension.stdout | trim == 'timescaledb'
           - pg_timescaledb_preload.rc == 0
           - >-
-            ('community' not in inventory_hostname)
+            (timescaledb_source != 'community')
             or pg_timescaledb_repo.stat.exists
         fail_msg: "TimescaleDB package, extension, preload, or repository verification failed"

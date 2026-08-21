@@ -460,7 +460,7 @@
   vars:
     iac_log_write: "Ensured {{ pg_systemd_service_dir }}/postgresql-{{ pg_version }}-{{ pg_instance }}.service"
 
-- name: "Executing systemd daemon-reload"
+- name: "Executing systemd daemon-reload" # noqa no-handler
   ansible.builtin.systemd:
     daemon_reload: true
   when: pg_systemd_service_template.changed

@@ -51,5 +51,46 @@
               configuration:
                 port: 5417
                 max_connections: 50
+        - version: "18"
+          directories:
+            - path: /tmp/pgsql18
+              owner: root
+              group: root
+              mode: "0750"
+          files:
+            - path: /tmp/pgsql18/example.txt
+              content: "molecule\n"
+              owner: root
+              group: root
+              mode: "0640"
+          cron:
+            - name: pg18_heartbeat
+              user: root
+              minute: "0"
+              hour: "3"
+              job: "/bin/true"
+              cron_file: pg18_heartbeat
+          instances:
+            - name: main
+              roles:
+                - name: app_user
+                  password: app_password
+                  createdb: false
+                - name: app_admin
+                  password: admin_password
+                  createdb: true
+              databases:
+                - name: appdb18
+                  owner: app_admin
+                  extensions:
+                    - name: pgcrypto
+                  access:
+                    - name: app_user
+                      address: 10.0.0.1/32
+                      type: host
+                      method: scram-sha-256
+              configuration:
+                port: 5418
+                max_connections: 50
   roles:
     - role: ansible-iac-role-postgresql

@@ -59,7 +59,7 @@
 # PRIMARY REPLICATION PREREQUISITES
 ###############################################################################
 
-- name: "Checking primary PostgreSQL service state before replication setup"
+- name: "Checking primary PostgreSQL service state before replication setup" # noqa command-instead-of-module
   ansible.builtin.command: "systemctl is-active {{ pg_service_name }}"
   register: pg_primary_service_check
   changed_when: false

@@ -1,0 +1,90 @@
+name: Tests
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  ansible-lint:
+    name: Ansible Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Ansible Lint
+        run: >-
+          python -m pip install
+          'ansible-core>=2.16,<2.17'
+          'ansible-lint>=25,<26'
+
+      - name: Run production-profile Ansible Lint
+        env:
+          ANSIBLE_ROLES_PATH: ..
+        run: ansible-lint --profile production
+
+  molecule:
+    name: Molecule (${{ matrix.scenario }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario:
+          - default
+          - validation
+          - rocky8
+          - rhel8
+          - rhel9
+          - rocky10
+          - rhel10
+          - timescaledb
+          - replication
+          - all_absent
+          - bind_guardrails
+          - hba_guardrails
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes podman
+
+      - name: Configure Podman storage for GitHub runner
+        run: |
+          mkdir -p "$HOME/.config/containers"
+          printf '%s\n' '[storage]' 'driver = "vfs"' > "$HOME/.config/containers/storage.conf"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Molecule and Ansible
+        run: >-
+          python -m pip install
+          'ansible-core>=2.15,<2.18'
+          'molecule>=6,<7'
+          'molecule-plugins[podman]>=23,<25'
+
+      - name: Run Molecule scenario
+        env:
+          ANSIBLE_ROLES_PATH: ..
+        run: molecule test -s "${{ matrix.scenario }}"

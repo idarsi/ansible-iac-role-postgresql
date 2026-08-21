@@ -338,10 +338,10 @@
           - pg_expected_config_checks.results | map(attribute='rc') | list == [0, 0, 0, 0]
           - pg_expected_port_checks.results | map(attribute='rc') | list == [0, 0, 0, 0]
           - pg_git_fixture_file.stat.exists
-          - (pg_git_fixture_content.content | default('') | b64decode) is search('pg-molecule-source')
+          - (pg_git_fixture_content.content | default('') | b64decode) == 'postgres molecule git fixture\n'
           - pg_bind_fixture_file_check.stat.exists
-          - pg_bind_mount_check.stdout == pg_bind_source
-          - pg_version_bind_mount_check.stdout == pg_version_bind_source
+          - (pg_bind_mount_check.stdout | trim) is search(pg_bind_source)
+          - (pg_version_bind_mount_check.stdout | trim) is search(pg_version_bind_source)
           - pg_database_checks.results | map(attribute='stdout') | list == ['1', '1', '1', '1']
           - pg_role_checks.results | map(attribute='stdout') | list == ['1', '1', '1', '1', '1', '1', '1', '1']
           - pg_extension_checks.results | map(attribute='stdout') | list == ['1', '1', '1', '1']
