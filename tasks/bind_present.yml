@@ -99,11 +99,13 @@
             and (
               pg_bind_live_mount_source == iac_fs_bind_record.source
               or pg_bind_live_mount_source.endswith('[' ~ iac_fs_bind_record.source ~ ']')
+              or pg_bind_live_mount_source.endswith('/' ~ (iac_fs_bind_record.source | regex_replace('^/', '')) ~ ']')
             )
           )
           or
           pg_bind_live_mount_source == iac_fs_bind_record.source
           or pg_bind_live_mount_source.endswith('[' ~ iac_fs_bind_record.source ~ ']')
+          or pg_bind_live_mount_source.endswith('/' ~ (iac_fs_bind_record.source | regex_replace('^/', '')) ~ ']')
         )
       }}
     pg_bind_active_expected_services: >-
