@@ -1,6 +1,6 @@
 ---
-- name: "Install TimescaleDB from PGDG"
-  hosts: instance-idarsi-timescaledb-pgdg
+- name: "Install TimescaleDB"
+  hosts: all
   become: false
   vars:
     state: install
@@ -17,30 +17,7 @@
                 - name: metrics
                   extensions:
                     - name: timescaledb
-              configuration:
-                port: 5417
-  roles:
-    - ansible-iac-role-postgresql
-
-- name: "Install TimescaleDB from the Community repository"
-  hosts: instance-idarsi-timescaledb-community
-  become: false
-  vars:
-    state: install
-    pg_lang: "en"
-    pg_locale: "US"
-    pg_disable_postgresql_module: false
-    ansible_become_method: su
-    iac_blueprint:
-      postgresql:
-        - version: 17
-          instances:
-            - name: main
-              databases:
-                - name: metrics
-                  extensions:
-                    - name: timescaledb
-                      source: community
+                      source: "{{ timescaledb_source }}"
               configuration:
                 port: 5417
   roles:

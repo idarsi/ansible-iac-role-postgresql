@@ -67,6 +67,7 @@
   when: database_is_present | bool
 
 - name: "Preparing CREATE DATABASE command if database does not exist"
+  when: not database_is_present
   block:
     - name: "Setting optional attributes for CREATE DATABASE"
       ansible.builtin.set_fact:
@@ -80,9 +81,8 @@
           /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
           -c "CREATE DATABASE \"{{ pg_database }}\" {{ pg_database_owner_str }}
           {{ pg_database_encoding_str }}"
-  when: not database_is_present
-
 - name: "Preparing ALTER DATABASE command if database does not exist"
+  when: database_is_present
   block:
     - name: "Setting optional attributes for ALTER DATABASE"
       ansible.builtin.set_fact:
@@ -93,8 +93,6 @@
         pg_cli_command: >-
           /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
           -c "ALTER DATABASE \"{{ pg_database }}\" {{ pg_database_owner_str }}"
-  when: database_is_present
-
 - name: "Ensuring database is present with correct parameters"
   become: true
   become_user: "{{ pg_os_user }}"

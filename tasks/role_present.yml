@@ -58,7 +58,18 @@
 - name: "Deciding if existing role needs changes"
   ansible.builtin.set_fact:
     role_current_fields: "{{ role_current.stdout.split('|') }}"
-    role_needs_update: "{{ (pg_role_record.createdb is defined and ((pg_role_record.createdb | bool) | ternary('1', '0')) != role_current.stdout.split('|')[0]) or (pg_role_record.createrole is defined and ((pg_role_record.createrole | bool) | ternary('1', '0')) != role_current.stdout.split('|')[1]) or (pg_role_record.superuser is defined and ((pg_role_record.superuser | bool) | ternary('1', '0')) != role_current.stdout.split('|')[2]) or (pg_role_record.login is defined and ((pg_role_record.login | bool) | ternary('1', '0')) != role_current.stdout.split('|')[3]) or (pg_role_record.description is defined and (pg_role_record.description | string) != role_current.stdout.split('|')[4]) or (pg_role_record.encrypted_password is defined and (pg_role_record.encrypted_password | string) != role_current.stdout.split('|')[5]) }}"
+    role_needs_update: >-
+      {{ (pg_role_record.createdb is defined and ((pg_role_record.createdb | bool) |
+      ternary('1', '0')) != role_current.stdout.split('|')[0]) or
+      (pg_role_record.createrole is defined and ((pg_role_record.createrole | bool) |
+      ternary('1', '0')) != role_current.stdout.split('|')[1]) or
+      (pg_role_record.superuser is defined and ((pg_role_record.superuser | bool) |
+      ternary('1', '0')) != role_current.stdout.split('|')[2]) or
+      (pg_role_record.login is defined and ((pg_role_record.login | bool) |
+      ternary('1', '0')) != role_current.stdout.split('|')[3]) or
+      (pg_role_record.description is defined and (pg_role_record.description | string) !=
+      role_current.stdout.split('|')[4]) or (pg_role_record.encrypted_password is defined and
+      (pg_role_record.encrypted_password | string) != role_current.stdout.split('|')[5]) }}
   when: role_exists.stdout == '1'
 
 - name: "Preparing CREATE ROLE command if user does not exist"

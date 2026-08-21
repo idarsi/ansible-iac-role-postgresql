@@ -37,7 +37,7 @@
     - (pg_bind_home_records | default([])) | length > 0
     - (pg_instances | default([])) | length > 0
 
-- name: "Checking active expected PostgreSQL services for bind migration checks"
+- name: "Checking active expected PostgreSQL services for bind migration checks" # noqa command-instead-of-module
   ansible.builtin.command: >-
     systemctl is-active {{ pg_bind_service_name }}
   register: pg_bind_expected_service_states
