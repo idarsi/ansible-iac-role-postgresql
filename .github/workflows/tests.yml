@@ -67,6 +67,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes podman
 
+      - name: Configure Podman storage for GitHub runner
+        run: |
+          mkdir -p "$HOME/.config/containers"
+          printf '%s\n' '[storage]' 'driver = "vfs"' > "$HOME/.config/containers/storage.conf"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
