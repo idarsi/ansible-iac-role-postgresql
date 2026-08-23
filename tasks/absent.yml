@@ -19,7 +19,7 @@
       - dnf_disable_gpg_check is defined
       - pg_lang is defined
       - pg_versions is defined
-    fail_msg: "All tests did not pass"
+    fail_msg: "PostgreSQL absent state is missing one or more required variables"
 
 ###############################################################################
 # LOOPING THROUGH VERSIONS TO BE REMOVED

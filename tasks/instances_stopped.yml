@@ -26,7 +26,7 @@
       - pg_bind_dir is defined
       - pg_version is defined
       - pg_instance is defined
-    fail_msg: "All tests did not pass"
+    fail_msg: "PostgreSQL instances_stopped state is missing one or more required variables"
 
 ###############################################################################
 # ENSURING SYSTEMD SERVICE IS STOPPED

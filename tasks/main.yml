@@ -24,8 +24,7 @@
   ansible.builtin.fail:
     msg: "iac_blueprint or iac_blueprint.postgresql is not defined"
   when:
-    - iac_blueprint is not defined
-    - iac_blueprint.postgresql is not defined
+    - iac_blueprint is not defined or iac_blueprint.postgresql is not defined
 
 ###############################################################################
 # SETTING VARIABLES
@@ -66,8 +65,21 @@
 
 - name: "Checking proxy address if it's defined"
   ansible.builtin.set_fact:
-    proxy_host: "{{ (http_proxy | regex_replace('^https?://', '')).split(':')[0] }}"
-    proxy_port: "{{ (http_proxy | regex_replace('^https?://', '')).split(':')[1] | int }}"
+    pg_proxy_url: "{{ http_proxy if http_proxy | default('') | length > 0 else https_proxy }}"
+  when: >
+    (
+      (http_proxy is defined and http_proxy != "")
+      or (https_proxy is defined and https_proxy != "")
+    )
+    and (inventory_hostname not in (no_proxy | default("") | split(",")))
+    and state != 'validate'
+
+- name: "Deriving proxy connection details"
+  ansible.builtin.set_fact:
+    proxy_host: >-
+      {{ (pg_proxy_url | regex_replace('^https?://', '')).rsplit(':', 1)[0] }}
+    proxy_port: >-
+      {{ (pg_proxy_url | regex_replace('^https?://', '')).rsplit(':', 1)[1] | int }}
   when: >
     (
       (http_proxy is defined and http_proxy != "")
@@ -167,6 +179,12 @@
   vars:
     pg_state: "{{ state }}"
   when: state == 'databases_present'
+
+- name: "STATE: Ensure PostgreSQL databases are absent"
+  ansible.builtin.include_tasks: loop_instances.yml
+  vars:
+    pg_state: "{{ state }}"
+  when: state == 'databases_absent'
 
 - name: "STATE: Ensure post_installs are present"
   ansible.builtin.include_tasks: loop_instances.yml

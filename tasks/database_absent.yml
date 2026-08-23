@@ -1,0 +1,45 @@
+---
+###############################################################################
+#
+# database_absent.yml
+#
+###############################################################################
+
+- name: "Setting database variables"
+  ansible.builtin.set_fact:
+    pg_database: "{{ pg_database_record.name }}"
+    pg_instance: "{{ pg_instance_record.1.name }}"
+    pg_version: "{{ pg_instance_record.0.version | string }}"
+    pg_port: "{{ pg_instance_record.1.configuration.port | default(pg_default_port) }}"
+
+- name: "Checking if database exists"
+  become: true
+  become_user: "{{ pg_os_user }}"
+  ansible.builtin.command:
+    cmd: >-
+      /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
+      -tXAc "SELECT 1 FROM pg_database
+      WHERE datname='{{ pg_database | replace("'", "''") }}'"
+  check_mode: false
+  register: pg_database_exists
+  changed_when: false
+  failed_when: pg_database_exists.rc != 0
+
+- name: "Dropping database when it exists"
+  become: true
+  become_user: "{{ pg_os_user }}"
+  ansible.builtin.command:
+    cmd: >-
+      /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
+    stdin: >-
+      DROP DATABASE IF EXISTS "{{ pg_database | replace('"', '""') }}";
+  register: pg_database_drop
+  changed_when: pg_database_exists.stdout | trim == '1'
+  failed_when: pg_database_drop.rc != 0
+  no_log: true
+  when: pg_database_exists.stdout | trim == '1'
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
+  vars:
+    iac_log_write: "Ensured database {{ pg_version }}/{{ pg_instance }}/{{ pg_database }} was absent"

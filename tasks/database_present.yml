@@ -26,7 +26,7 @@
       - pg_instance is defined
       - pg_port is defined
       - pg_version is defined
-    fail_msg: "All tests did not pass"
+    fail_msg: "PostgreSQL database_present state is missing one or more required variables"
 
 ###############################################################################
 # ENSURING DATABASE ARE PRESENT
@@ -42,6 +42,7 @@
   become: true
   become_user: "{{ pg_os_user }}"
   ansible.builtin.command: "{{ pg_cli_command }}"
+  check_mode: false
   register: database_exists
   changed_when: false
   failed_when: database_exists.rc != 0
@@ -57,6 +58,7 @@
   ansible.builtin.command: >-
     /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
     -tXAc "SELECT pg_catalog.pg_get_userbyid(datdba) FROM pg_database WHERE datname='{{ pg_database }}'"
+  check_mode: false
   register: database_owner
   changed_when: false
   when: database_is_present | bool

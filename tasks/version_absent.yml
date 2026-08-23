@@ -37,7 +37,7 @@
       - https_proxy is defined
       - no_proxy is defined
       - pg_version is defined
-    fail_msg: "All tests did not pass"
+    fail_msg: "PostgreSQL version removal is missing one or more required variables"
 
 - name: "Checking PostgreSQL version-scoped bind records type"
   ansible.builtin.assert:

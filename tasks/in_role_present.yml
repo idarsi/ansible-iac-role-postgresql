@@ -24,24 +24,47 @@
       - pg_instance is defined
       - pg_port is defined
       - pg_version is defined
-    fail_msg: "All tests did not pass"
+    fail_msg: "PostgreSQL role grant state is missing one or more required variables"
 
 ###############################################################################
 # GRANTING ROLE
 ###############################################################################
 
-- name: "Assembling psql command"
+- name: "Assembling role membership check command"
   ansible.builtin.set_fact:
     pg_cli_command: >-
-      /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }} -c "GRANT \"{{ pg_grant_role }}\" TO \"{{ pg_db_role }}\""
+      /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
+      -tXAc "SELECT 1 FROM pg_auth_members m
+      JOIN pg_roles granted_role ON granted_role.oid = m.roleid
+      JOIN pg_roles member_role ON member_role.oid = m.member
+      WHERE granted_role.rolname='{{ pg_grant_role }}'
+      AND member_role.rolname='{{ pg_db_role }}'"
 
-- name: "Ensuring roles are granted to role"
+- name: "Checking whether role membership exists"
   become: true
   become_user: "{{ pg_os_user }}"
   ansible.builtin.command: "{{ pg_cli_command }}"
+  check_mode: false
+  register: pg_grant_exists
+  changed_when: false
+  failed_when: pg_grant_exists.rc != 0
+
+- name: "Assembling role grant command"
+  ansible.builtin.set_fact:
+    pg_cli_command: >-
+      /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
+    pg_cli_sql: "GRANT \"{{ pg_grant_role }}\" TO \"{{ pg_db_role }}\""
+
+- name: "Ensuring role is granted to role"
+  become: true
+  become_user: "{{ pg_os_user }}"
+  ansible.builtin.command:
+    cmd: "{{ pg_cli_command }}"
+    stdin: "{{ pg_cli_sql }}"
   register: cli_changed
   changed_when: "cli_changed.rc == 0"
-  failed_when: false
+  failed_when: "cli_changed.rc != 0"
+  when: pg_grant_exists.stdout | trim != '1'
 
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml

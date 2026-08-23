@@ -26,7 +26,7 @@
       - pg_instance is defined
       - pg_version is defined
       - pg_port is defined
-    fail_msg: "All tests did not pass"
+    fail_msg: "PostgreSQL roles_absent state is missing one or more required variables"
 
 ###############################################################################
 # LOOPING THROUGH USERS TO BE REMOVED

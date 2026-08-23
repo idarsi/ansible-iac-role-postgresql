@@ -28,7 +28,7 @@
       - pg_os_user is defined
       - pg_systemd_service_dir is defined
       - pg_version is defined
-    fail_msg: "All tests did not pass"
+    fail_msg: "PostgreSQL instances_absent state is missing one or more required variables"
 
 ###############################################################################
 # ENSURING INSTANCE IS STOPPED
@@ -41,16 +41,11 @@
 # ENSURING INSTANCE IS ABSENT
 ###############################################################################
 
-- name: "Setting variables"
-  ansible.builtin.set_fact:
-    pg_cli_command: "rm -rf {{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}"
-
 - name: "Ensuring instance is absent"
   become: true
-  ansible.builtin.command: "{{ pg_cli_command }}"
-  register: my_output
-  failed_when: my_output.rc != 0
-  changed_when: my_output.rc == 0
+  ansible.builtin.file:
+    path: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}"
+    state: absent
 
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml

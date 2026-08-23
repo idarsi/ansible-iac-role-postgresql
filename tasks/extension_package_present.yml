@@ -23,7 +23,7 @@
   ansible.builtin.assert:
     that:
       - pg_version is defined
-    fail_msg: "All tests did not pass"
+    fail_msg: "PostgreSQL extension package state is missing one or more required variables"
 
 - name: "Ensuring TimescaleDB Community repository is present"
   ansible.builtin.include_tasks: timescaledb_repo_present.yml

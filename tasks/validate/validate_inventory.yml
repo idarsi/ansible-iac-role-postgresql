@@ -25,7 +25,7 @@
           'validate', 'instances_present', 'instances_absent',
           'instances_started', 'instances_stopped', 'instances_restarted',
           'replication_present', 'roles_present', 'roles_absent',
-          'databases_present', 'post_installs_present'
+          'databases_present', 'databases_absent', 'post_installs_present'
         ]
     fail_msg: "Unsupported PostgreSQL role state: {{ state | default('undefined') }}"
 

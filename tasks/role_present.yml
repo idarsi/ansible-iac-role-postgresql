@@ -23,7 +23,7 @@
       - pg_instance is defined
       - pg_port is defined
       - pg_version is defined
-    fail_msg: "All tests did not pass"
+    fail_msg: "PostgreSQL role management is missing one or more required variables"
 
 ###############################################################################
 # ENSURING USER IS ADDED IF IT DOESN'T EXIST
@@ -39,6 +39,7 @@
   become: true
   become_user: "{{ pg_os_user }}"
   ansible.builtin.command: "{{ pg_cli_command }}"
+  check_mode: false
   changed_when: false
   register: role_exists
 
@@ -51,8 +52,10 @@
     "SELECT rolcreatedb::int, rolcreaterole::int, rolsuper::int, rolcanlogin::int,
     COALESCE(shobj_description(oid, 'pg_authid'), ''), COALESCE(rolpassword, '')
     FROM pg_authid WHERE rolname='{{ pg_db_role }}'"
+  check_mode: false
   register: role_current
   changed_when: false
+  no_log: true
   when: role_exists.stdout == '1'
 
 - name: "Deciding if existing role needs changes"
@@ -102,10 +105,11 @@
       ansible.builtin.set_fact:
         pg_cli_command: >-
           /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
-          -c "CREATE ROLE \"{{ pg_db_role }}\" {{ pg_db_role_password_str }}
+        pg_cli_sql: >-
+          CREATE ROLE "{{ pg_db_role }}" {{ pg_db_role_password_str }}
           {{ pg_db_role_encrypted_password_str }} {{ pg_db_role_createdb_str }}
           {{ pg_db_role_createrole_str }} {{ pg_db_role_superuser_str }}
-          {{ pg_db_role_login_str }}"
+          {{ pg_db_role_login_str }}
 
 - name: "Preparing ALTER ROLE command if user does exist"
   when:
@@ -137,17 +141,21 @@
       ansible.builtin.set_fact:
         pg_cli_command: >-
           /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
-          -c "ALTER ROLE \"{{ pg_db_role }}\" {{ pg_db_role_password_str }}
+        pg_cli_sql: >-
+          ALTER ROLE "{{ pg_db_role }}" {{ pg_db_role_password_str }}
           {{ pg_db_role_encrypted_password_str }} {{ pg_db_role_createdb_str }}
           {{ pg_db_role_createrole_str }} {{ pg_db_role_superuser_str }}
-          {{ pg_db_role_login_str }}"
+          {{ pg_db_role_login_str }}
 
 - name: "Ensuring role is present"
   become: true
   become_user: "{{ pg_os_user }}"
-  ansible.builtin.command: "{{ pg_cli_command }}"
+  ansible.builtin.command:
+    cmd: "{{ pg_cli_command }}"
+    stdin: "{{ pg_cli_sql }}"
   register: role_changed
   changed_when: "role_exists.stdout != '1' or ((role_needs_update | default(false)) | bool)"
+  no_log: true
   when:
     - role_exists.stdout != '1' or ((role_needs_update | default(false)) | bool)
 
@@ -155,7 +163,8 @@
   ansible.builtin.set_fact:
     pg_cli_comment_command: >-
       /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
-      -c "COMMENT ON ROLE \"{{ pg_db_role }}\" IS '{{ pg_role_record.description | string }}'"
+    pg_cli_comment_sql: >-
+      COMMENT ON ROLE "{{ pg_db_role }}" IS '{{ pg_role_record.description | string }}'
   when:
     - pg_role_record.description is defined
     - pg_role_record.description is not none
@@ -163,9 +172,12 @@
 - name: "Ensuring role description is present"
   become: true
   become_user: "{{ pg_os_user }}"
-  ansible.builtin.command: "{{ pg_cli_comment_command }}"
+  ansible.builtin.command:
+    cmd: "{{ pg_cli_comment_command }}"
+    stdin: "{{ pg_cli_comment_sql }}"
   register: role_comment_changed
   changed_when: false
+  no_log: true
   when:
     - pg_role_record.description is defined
     - pg_role_record.description is not none
