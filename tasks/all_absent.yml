@@ -28,7 +28,7 @@
       - pg_real_dir is defined
       - pg_systemd_service_dir is defined
       - pg_timescaledb_repo_file is defined
-    fail_msg: "All tests did not pass"
+    fail_msg: "PostgreSQL all_absent state is missing one or more required variables"
 
 ###############################################################################
 # STOPPING SERVICES

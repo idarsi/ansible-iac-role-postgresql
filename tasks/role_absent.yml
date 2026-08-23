@@ -23,7 +23,7 @@
       - pg_instance is defined
       - pg_port is defined
       - pg_version is defined
-    fail_msg: "All tests did not pass"
+    fail_msg: "PostgreSQL role removal is missing one or more required variables"
 
 ###############################################################################
 # ENSURING USER IS ABSENT
@@ -39,6 +39,7 @@
   become: true
   become_user: "{{ pg_os_user }}"
   ansible.builtin.command: "{{ pg_cli_command }}"
+  check_mode: false
   changed_when: false
   register: role_exists
 
@@ -46,14 +47,17 @@
   ansible.builtin.set_fact:
     pg_cli_command: >-
       /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
-      -c "DROP ROLE \"{{ pg_db_role }}\""
+    pg_cli_sql: "DROP ROLE \"{{ pg_db_role }}\""
 
 - name: "Ensuring role is absent"
   become: true
   become_user: "{{ pg_os_user }}"
-  ansible.builtin.command: "{{ pg_cli_command }}"
+  ansible.builtin.command:
+    cmd: "{{ pg_cli_command }}"
+    stdin: "{{ pg_cli_sql }}"
   register: role_changed
   changed_when: "role_changed.rc == 0"
+  no_log: true
   when:
     - role_exists.stdout == '1'
 

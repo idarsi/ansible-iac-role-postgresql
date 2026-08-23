@@ -1,17 +1,11 @@
 ---
 ###############################################################################
 #
-# databases_present.yml
-#
-# @author Arsi Atomi
+# databases_absent.yml
 #
 ###############################################################################
 
-###############################################################################
-# SETTING VARIABLES
-###############################################################################
-
-- name: "Setting what variables are configured"
+- name: "Setting database variables"
   ansible.builtin.set_fact:
     pg_databases: "{{ pg_instance_record.1.databases | default([]) }}"
     pg_instance: "{{ pg_instance_record.1.name }}"
@@ -27,20 +21,16 @@
       - pg_instance is defined
       - pg_version is defined
       - pg_port is defined
-    fail_msg: "PostgreSQL databases_present state is missing one or more required variables"
+    fail_msg: "PostgreSQL databases_absent state is missing one or more required variables"
 
 - name: "Checking databases are not managed on standby replication instances"
   ansible.builtin.assert:
     that:
       - pg_replication_role != 'standby'
-    fail_msg: "PostgreSQL databases_present must not be run for standby replication instances"
-
-###############################################################################
-# LOOPING THROUGH DATABASES
-###############################################################################
+    fail_msg: "PostgreSQL databases_absent must not be run for standby replication instances"
 
 - name: "Looping through databases"
-  ansible.builtin.include_tasks: "database_present.yml"
+  ansible.builtin.include_tasks: "database_absent.yml"
   loop: "{{ pg_databases }}"
   loop_control:
     loop_var: pg_database_record

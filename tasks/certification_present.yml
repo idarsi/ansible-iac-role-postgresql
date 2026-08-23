@@ -30,7 +30,7 @@
       - pg_os_user is defined
       - pg_os_group is defined
       - pg_version is defined
-    fail_msg: "All tests did not pass"
+    fail_msg: "PostgreSQL certificate setup is missing one or more required variables"
 
 ###############################################################################
 # ENSURING SSL CERTIFICATE EXISTS IF NEEDED

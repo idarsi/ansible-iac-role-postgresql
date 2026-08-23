@@ -188,3 +188,31 @@
             dest: /tmp/postgresql-validation-standby-timescaledb.ok
             content: "ok\n"
             mode: "0644"
+
+- name: "Reject a missing PostgreSQL blueprint"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+  tasks:
+    - name: "Running validation expecting a missing blueprint failure"
+      block:
+        - name: "Applying a role invocation without a blueprint"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if a missing blueprint was accepted"
+          ansible.builtin.fail:
+            msg: "A missing PostgreSQL blueprint was accepted"
+      rescue:
+        - name: "Checking missing blueprint failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("iac_blueprint or iac_blueprint.postgresql is not defined")
+        - name: "Writing missing blueprint marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-missing-blueprint.ok
+            content: "ok\n"
+            mode: "0644"

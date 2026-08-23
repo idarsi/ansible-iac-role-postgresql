@@ -22,7 +22,7 @@
       - no_proxy is defined
       - pg_lang is defined
       - pg_versions is defined
-    fail_msg: "All tests did not pass"
+    fail_msg: "PostgreSQL present state is missing one or more required variables"
 
 ###############################################################################
 # INSTALLING LANGUAGEPACKS IF NEEDED

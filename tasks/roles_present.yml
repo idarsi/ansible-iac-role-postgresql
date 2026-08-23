@@ -27,7 +27,7 @@
       - pg_instance is defined
       - pg_version is defined
       - pg_port is defined
-    fail_msg: "All tests did not pass"
+    fail_msg: "PostgreSQL roles_present state is missing one or more required variables"
 
 - name: "Checking roles are not managed on standby replication instances"
   ansible.builtin.assert:

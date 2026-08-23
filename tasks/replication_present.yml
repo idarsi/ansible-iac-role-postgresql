@@ -61,6 +61,7 @@
 
 - name: "Checking primary PostgreSQL service state before replication setup" # noqa command-instead-of-module
   ansible.builtin.command: "systemctl is-active {{ pg_service_name }}"
+  check_mode: false
   register: pg_primary_service_check
   changed_when: false
   failed_when: false
@@ -83,6 +84,7 @@
   ansible.builtin.command: >-
     /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
     -tXAc "SELECT 1 FROM pg_roles WHERE rolname='{{ pg_replication_user }}'"
+  check_mode: false
   register: pg_replication_role_exists
   changed_when: false
   when:
@@ -92,11 +94,15 @@
 - name: "Creating replication role if needed"
   become: true
   become_user: "{{ pg_os_user }}"
-  ansible.builtin.command: >-
-    /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
-    -c "CREATE ROLE \"{{ pg_replication_user }}\" WITH LOGIN REPLICATION PASSWORD '{{ pg_replication_password_sql }}'"
+  ansible.builtin.command:
+    cmd: >-
+      /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
+    stdin: >-
+      CREATE ROLE "{{ pg_replication_user }}" WITH LOGIN REPLICATION
+      PASSWORD '{{ pg_replication_password_sql }}'
   register: pg_replication_role_create
   changed_when: pg_replication_role_create.rc == 0
+  no_log: true
   when:
     - pg_replication_enabled | default(false)
     - pg_replication_role == 'primary'
@@ -105,11 +111,15 @@
 - name: "Altering replication role if it already exists"
   become: true
   become_user: "{{ pg_os_user }}"
-  ansible.builtin.command: >-
-    /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
-    -c "ALTER ROLE \"{{ pg_replication_user }}\" WITH LOGIN REPLICATION PASSWORD '{{ pg_replication_password_sql }}'"
+  ansible.builtin.command:
+    cmd: >-
+      /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
+    stdin: >-
+      ALTER ROLE "{{ pg_replication_user }}" WITH LOGIN REPLICATION
+      PASSWORD '{{ pg_replication_password_sql }}'
   register: pg_replication_role_alter
   changed_when: false
+  no_log: true
   when:
     - pg_replication_enabled | default(false)
     - pg_replication_role == 'primary'
@@ -129,6 +139,7 @@
   ansible.builtin.command: >-
     /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
     -tXAc "SELECT 1 FROM pg_replication_slots WHERE slot_name='{{ pg_replication_slot_name }}'"
+  check_mode: false
   register: pg_replication_slot_exists
   changed_when: false
   when:
@@ -229,6 +240,7 @@
     PGPASSWORD: "{{ pg_replication_password }}"
   register: pg_basebackup_result
   changed_when: pg_basebackup_result.rc == 0
+  no_log: true
   when:
     - pg_replication_enabled | default(false)
     - pg_replication_role == 'standby'

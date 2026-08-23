@@ -22,7 +22,7 @@
       - http_proxy is defined
       - https_proxy is defined
       - no_proxy is defined
-    fail_msg: "All tests did not pass"
+    fail_msg: "PostgreSQL repository removal is missing one or more required variables"
 
 ###############################################################################
 # REMOVING REPOSITORY

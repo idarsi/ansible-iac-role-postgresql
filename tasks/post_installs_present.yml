@@ -22,7 +22,7 @@
     that:
       - iac_post_install_jobs is defined
       - pg_version is defined
-    fail_msg: "All tests did not pass"
+    fail_msg: "PostgreSQL post-installs state is missing one or more required variables"
 
 ###############################################################################
 # ENSURING POST_INSTALLS ARE PRESENT

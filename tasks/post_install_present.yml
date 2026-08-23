@@ -15,7 +15,7 @@
   ansible.builtin.assert:
     that:
       - iac_post_install_job is defined
-    fail_msg: "All tests did not pass"
+    fail_msg: "PostgreSQL post-install state is missing one or more required variables"
 
 ###############################################################################
 # LOOPING THROUGH DIRECTORIES
