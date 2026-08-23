@@ -22,6 +22,16 @@ blueprint and organizational compliance requirements.
 The role uses the `iac_blueprint` model to keep the desired state in one
 structured inventory while Ansible handles the host-specific implementation.
 
+> **Maturity Level: Beta**<br>
+> The role's main functionality is complete and covered by extensive Molecule
+> scenarios across supported Enterprise Linux versions. It supports
+> multi-version and multi-instance PostgreSQL deployments, database and role
+> management, extensions, replication, inventory validation, repository
+> workflows, filesystem handling, and destructive cleanup. The role remains at
+> Beta because its interfaces and behavior may still change, Fedora is not part
+> of the automated test matrix, and broader long-term production evidence and
+> backward-compatibility guarantees have not yet been established.
+
 Supported PostgreSQL major versions:
 - PostgreSQL 18 — supported until 14 November 2030
 - PostgreSQL 17 — supported until 8 November 2029
