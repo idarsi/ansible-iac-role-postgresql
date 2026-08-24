@@ -12,6 +12,11 @@ of the following places:
 - Update `README.md` when the inventory structure or supported state surface
   changes.
 
+Cluster records are version-scoped and are intentionally passed unchanged to
+all member hosts. The role derives the host-local Patroni member from
+`inventory_hostname` and the referenced instance name. Do not duplicate or
+partially rewrite the cluster definition per host.
+
 Keep blueprint validation separate from host-state checks. Inventory shape,
 allowed values, cross-record consistency, and impossible combinations belong
 in the preflight validation. Checks that depend on the current host,

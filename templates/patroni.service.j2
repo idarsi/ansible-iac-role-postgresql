@@ -1,0 +1,16 @@
+[Unit]
+Description=Patroni PostgreSQL HA agent for {{ pg_version }}/{{ pg_instance }}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ pg_patroni_user }}
+Group={{ pg_patroni_group }}
+ExecStart=/usr/bin/patroni {{ pg_patroni_config_path }}
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

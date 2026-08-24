@@ -1,0 +1,641 @@
+---
+- name: "Wait for the real etcd service"
+  hosts: pg01:pg02:pg03
+  become: false
+  tasks:
+    - name: "Wait for etcd health endpoint"
+      ansible.builtin.uri:
+        url: http://etcd01:2379/health
+        status_code: 200
+      register: etcd_health
+      retries: 30
+      delay: 2
+      until: etcd_health.status == 200
+
+    - name: "Wait for the other etcd members"
+      ansible.builtin.uri:
+        url: "http://{{ item }}:2379/health"
+        status_code: 200
+      loop:
+        - etcd02
+        - etcd03
+      register: other_etcd_health
+      retries: 30
+      delay: 2
+      until: other_etcd_health is succeeded
+
+- name: "Install PostgreSQL and Patroni on all cluster members"
+  hosts: pg01:pg02:pg03
+  become: false
+  vars:
+    ansible_become_method: su
+    state: install
+    pg_lang: "en"
+    pg_locale: "US"
+    pg_disable_postgresql_module: false
+    pg_patroni_package: patroni
+    pg_patroni_python_packages:
+      - python-etcd
+    pg_patroni_python_interpreter: /usr/bin/python3.12
+    pg_patroni_reinitialize: true
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: molecule-patroni
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints:
+                  - http://etcd01:2379
+                  - http://etcd02:2379
+                  - http://etcd03:2379
+                proxy: http://etcd01:2379
+              patroni:
+                ttl: 30
+                loop_wait: 5
+                retry_timeout: 5
+                maximum_lag_on_failover: 1048576
+                use_pg_rewind: true
+                use_slots: true
+                postgresql:
+                  superuser_password: postgres_password
+                  replication_username: replicator
+                replication_password: replication_password
+                pg_hba:
+                  - local all all trust
+                  - host all postgres 0.0.0.0/0 scram-sha-256
+                  - host replication replicator 0.0.0.0/0 scram-sha-256
+                restapi:
+                  port: 8008
+              members:
+                - host: pg01
+                  instance: main
+                  name: molecule-patroni-pg01
+                - host: pg02
+                  instance: main
+                  name: molecule-patroni-pg02
+                - host: pg03
+                  instance: main
+                  name: molecule-patroni-pg03
+          instances:
+            - name: main
+              cluster: molecule-patroni
+              global_access:
+                - name: postgres
+                  address: 127.0.0.1/32
+                  method: scram-sha-256
+                - name: replicator
+                  address: 127.0.0.1/32
+                  method: scram-sha-256
+                - name: postgres
+                  address: 0.0.0.0/0
+                  method: scram-sha-256
+                - name: replicator
+                  address: 0.0.0.0/0
+                  method: scram-sha-256
+              configuration:
+                listen_addresses: "*"
+                port: 5432
+                max_connections: 50
+  roles:
+    - role: ansible-iac-role-postgresql
+
+  tasks:
+    - name: "Capture Patroni process before idempotency run"
+      ansible.builtin.systemd_service:
+        name: patroni-17-main.service
+        state: started
+      register: patroni_pid_before
+
+    - name: "Run the PostgreSQL role a second time without reinitialization"
+      ansible.builtin.include_role:
+        name: ansible-iac-role-postgresql
+      vars:
+        pg_patroni_reinitialize: false
+
+    - name: "Capture Patroni process after idempotency run"
+      ansible.builtin.systemd_service:
+        name: patroni-17-main.service
+        state: started
+      register: patroni_pid_after
+
+    - name: "Verify idempotent role execution did not restart Patroni"
+      ansible.builtin.assert:
+        that:
+          - patroni_pid_before.status.MainPID == patroni_pid_after.status.MainPID
+        fail_msg: "The second role execution unexpectedly restarted Patroni"
+
+- name: "Restart Patroni after access configuration"
+  hosts: pg01:pg02:pg03
+  become: false
+  tasks:
+    - name: "Restart Patroni to reload PostgreSQL access rules"
+      ansible.builtin.systemd_service:
+        name: patroni-17-main.service
+        state: restarted
+
+- name: "Wait for all Patroni members to register"
+  hosts: pg01:pg02:pg03
+  become: false
+  tasks:
+    - name: "Wait for local Patroni API endpoint"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/patroni
+        status_code: 200
+      register: local_patroni_health
+      retries: 60
+      delay: 2
+      until: local_patroni_health.status == 200
+
+- name: "Verify a single primary and two replicas"
+  hosts: pg01
+  become: false
+  tasks:
+    - name: "Query Patroni cluster members through the REST API"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/cluster
+        return_content: true
+      register: initial_cluster
+
+    - name: "Check cluster has three members and one leader"
+      ansible.builtin.assert:
+        that:
+          - initial_cluster.json.members | length == 3
+          - initial_cluster.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+          - initial_cluster.json.members | selectattr('role', 'equalto', 'replica') | list | length == 2
+
+    - name: "Select the current primary and a failover observer"
+      ansible.builtin.set_fact:
+        current_primary_host: >-
+          {{
+            (initial_cluster.json.members
+             | selectattr('role', 'equalto', 'leader')
+             | list | first).host
+          }}
+        failover_observer_host: >-
+          {{
+            (['pg01', 'pg02', 'pg03']
+             | difference([
+                 (initial_cluster.json.members
+                  | selectattr('role', 'equalto', 'leader')
+                  | list | first).host
+               ])
+             | first)
+          }}
+
+    - name: "Select a replica for the rejoin test"
+      ansible.builtin.set_fact:
+        replica_rejoin_host: >-
+          {{
+            (['pg01', 'pg02', 'pg03']
+             | difference([
+                 hostvars['pg01']['current_primary_host'],
+                 hostvars['pg01']['failover_observer_host']
+               ])
+             | first)
+          }}
+
+    - name: "Select the Patroni member used for membership removal"
+      ansible.builtin.set_fact:
+        removable_member_name: >-
+          {{
+            (initial_cluster.json.members
+             | selectattr('host', 'equalto', replica_rejoin_host)
+             | list | first).name
+          }}
+
+    - name: "Register the current primary and observer host groups"
+      ansible.builtin.add_host:
+        name: "{{ current_primary_host }}"
+        groups: patroni_current_primary
+
+    - name: "Register the failover observer host"
+      ansible.builtin.add_host:
+        name: "{{ failover_observer_host }}"
+        groups: patroni_failover_observer
+
+    - name: "Register a replica for the rejoin test"
+      ansible.builtin.add_host:
+        name: "{{ replica_rejoin_host }}"
+        groups: patroni_rejoin_replica
+
+- name: "Wait for the replicas to finish cloning"
+  hosts: pg01:pg02:pg03
+  become: false
+  any_errors_fatal: true
+  tasks:
+    - name: "Wait for each non-primary member to become a healthy replica"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/replica
+        status_code: 200
+      register: replica_status
+      retries: 90
+      delay: 2
+      until: replica_status.status == 200
+      when: inventory_hostname != hostvars['pg01']['current_primary_host']
+
+- name: "Test Patroni continuity with one etcd member stopped"
+  hosts: pg01
+  become: false
+  any_errors_fatal: true
+  tasks:
+    - name: "Stop the non-proxy etcd member"
+      containers.podman.podman_container:
+        name: etcd02
+        state: stopped
+      delegate_to: localhost
+
+    - name: "Verify the surviving etcd quorum"
+      ansible.builtin.uri:
+        url: http://etcd01:2379/health
+        status_code: 200
+      register: surviving_etcd_health
+      retries: 30
+      delay: 2
+      until: surviving_etcd_health.status == 200
+
+    - name: "Verify Patroni remains healthy during the etcd outage"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/cluster
+        return_content: true
+      register: cluster_during_etcd_outage
+      retries: 30
+      delay: 2
+      until:
+        - cluster_during_etcd_outage.status == 200
+        - cluster_during_etcd_outage.json.members | length == 3
+        - cluster_during_etcd_outage.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+        - cluster_during_etcd_outage.json.members | selectattr('role', 'equalto', 'replica') | list | length == 2
+
+    - name: "Restore the stopped etcd member"
+      containers.podman.podman_container:
+        name: etcd02
+        state: started
+      delegate_to: localhost
+
+    - name: "Wait for the restored etcd member"
+      ansible.builtin.uri:
+        url: http://etcd02:2379/health
+        status_code: 200
+      register: restored_etcd_health
+      retries: 30
+      delay: 2
+      until: restored_etcd_health.status == 200
+
+- name: "Remove one Patroni member from the DCS"
+  hosts: patroni_rejoin_replica
+  become: false
+  tasks:
+    - name: "Stop Patroni on the member being removed"
+      ansible.builtin.systemd_service:
+        name: patroni-17-main.service
+        state: stopped
+
+- name: "Verify Patroni member removal and re-addition"
+  hosts: patroni_current_primary
+  become: false
+  any_errors_fatal: true
+  tasks:
+    - name: "Remove the stopped member from the Patroni DCS"
+      ansible.builtin.command:
+        argv:
+          - podman
+          - exec
+          - etcd01
+          - /usr/local/bin/etcdctl
+          - --endpoints=http://127.0.0.1:2379
+          - del
+          - "/service/molecule-patroni/members/{{ hostvars['pg01']['removable_member_name'] }}"
+      changed_when: true
+      delegate_to: localhost
+
+    - name: "Verify the removed member is absent from the cluster"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/cluster
+        return_content: true
+      register: cluster_after_member_removal
+      retries: 30
+      delay: 2
+      until:
+        - cluster_after_member_removal.status == 200
+        - cluster_after_member_removal.json.members | length == 2
+        - cluster_after_member_removal.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+        - cluster_after_member_removal.json.members | selectattr('role', 'equalto', 'replica') | list | length == 1
+
+- name: "Re-add the removed Patroni member"
+  hosts: patroni_rejoin_replica
+  become: false
+  tasks:
+    - name: "Start Patroni on the removed member"
+      ansible.builtin.systemd_service:
+        name: patroni-17-main.service
+        state: started
+
+    - name: "Wait for the re-added member to become a replica"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/replica
+        status_code: 200
+      register: readded_member_status
+      retries: 90
+      delay: 2
+      until: readded_member_status.status == 200
+
+- name: "Verify the Patroni member was re-added"
+  hosts: patroni_current_primary
+  become: false
+  tasks:
+    - name: "Read the cluster after member re-addition"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/cluster
+        return_content: true
+      register: cluster_after_member_readdition
+      retries: 30
+      delay: 2
+      until:
+        - cluster_after_member_readdition.status == 200
+        - cluster_after_member_readdition.json.members | length == 3
+        - cluster_after_member_readdition.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+        - cluster_after_member_readdition.json.members | selectattr('role', 'equalto', 'replica') | list | length == 2
+
+- name: "Stop the current primary and wait for failover"
+  hosts: patroni_current_primary
+  become: false
+  tasks:
+    - name: "Write a failover data marker on the current primary"
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - postgres
+          - --
+          - psql
+          - -U
+          - postgres
+          - -d
+          - postgres
+          - -v
+          - ON_ERROR_STOP=1
+          - -c
+          - >-
+            CREATE TABLE IF NOT EXISTS patroni_failover_data
+            (id integer PRIMARY KEY, marker text NOT NULL);
+            INSERT INTO patroni_failover_data (id, marker)
+            VALUES (1, 'replicated-before-failover')
+            ON CONFLICT (id) DO UPDATE SET marker = EXCLUDED.marker;
+      register: failover_data_write
+      changed_when: true
+
+- name: "Verify the failover data marker on the current primary"
+  hosts: patroni_current_primary
+  become: false
+  tasks:
+    - name: "Read the failover data marker before stopping the primary"
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - postgres
+          - --
+          - psql
+          - -U
+          - postgres
+          - -d
+          - postgres
+          - -tA
+          - -c
+          - SELECT marker FROM patroni_failover_data WHERE id = 1;
+      register: primary_data_read
+      changed_when: false
+      retries: 10
+      delay: 2
+      until:
+        - primary_data_read.rc == 0
+        - primary_data_read.stdout | trim == 'replicated-before-failover'
+
+- name: "Wait for failover data to reach every replica"
+  hosts: pg01:pg02:pg03
+  become: false
+  any_errors_fatal: true
+  tasks:
+    - name: "Read the failover data marker on each replica"
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - postgres
+          - --
+          - psql
+          - -U
+          - postgres
+          - -d
+          - postgres
+          - -tA
+          - -c
+          - SELECT marker FROM patroni_failover_data WHERE id = 1;
+      register: replica_data_read
+      changed_when: false
+      retries: 60
+      delay: 2
+      until:
+        - replica_data_read.rc == 0
+        - replica_data_read.stdout | trim == 'replicated-before-failover'
+      when: inventory_hostname != hostvars['pg01']['current_primary_host']
+
+- name: "Stop a replica before new writes"
+  hosts: patroni_rejoin_replica
+  become: false
+  tasks:
+    - name: "Stop Patroni on the replica under rejoin test"
+      ansible.builtin.systemd_service:
+        name: patroni-17-main.service
+        state: stopped
+
+- name: "Write data while one replica is offline"
+  hosts: patroni_current_primary
+  become: false
+  tasks:
+    - name: "Write a rejoin data marker on the current primary"
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - postgres
+          - --
+          - psql
+          - -U
+          - postgres
+          - -d
+          - postgres
+          - -v
+          - ON_ERROR_STOP=1
+          - -c
+          - >-
+            INSERT INTO patroni_failover_data (id, marker)
+            VALUES (2, 'replicated-while-replica-down')
+            ON CONFLICT (id) DO UPDATE SET marker = EXCLUDED.marker;
+      register: rejoin_data_write
+      changed_when: true
+
+    - name: "Verify the rejoin marker on the current primary"
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - postgres
+          - --
+          - psql
+          - -U
+          - postgres
+          - -d
+          - postgres
+          - -tA
+          - -c
+          - SELECT marker FROM patroni_failover_data WHERE id = 2;
+      register: rejoin_primary_read
+      changed_when: false
+      retries: 10
+      delay: 2
+      until:
+        - rejoin_primary_read.rc == 0
+        - rejoin_primary_read.stdout | trim == 'replicated-while-replica-down'
+
+- name: "Rejoin the replica after new writes"
+  hosts: patroni_rejoin_replica
+  become: false
+  tasks:
+    - name: "Start Patroni on the replica under rejoin test"
+      ansible.builtin.systemd_service:
+        name: patroni-17-main.service
+        state: started
+
+    - name: "Wait for the rejoined member to become a healthy replica"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/replica
+        status_code: [200, 503]
+      register: rejoined_replica_status
+      retries: 90
+      delay: 2
+      until: rejoined_replica_status.status == 200
+
+    - name: "Verify the rejoined replica received writes made while offline"
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - postgres
+          - --
+          - psql
+          - -U
+          - postgres
+          - -d
+          - postgres
+          - -tA
+          - -c
+          - SELECT marker FROM patroni_failover_data WHERE id = 2;
+      register: rejoined_replica_read
+      changed_when: false
+      retries: 60
+      delay: 2
+      until:
+        - rejoined_replica_read.rc == 0
+        - rejoined_replica_read.stdout | trim == 'replicated-while-replica-down'
+
+- name: "Stop the current primary"
+  hosts: patroni_current_primary
+  become: false
+  tasks:
+    - name: "Stop Patroni on the current primary"
+      ansible.builtin.systemd_service:
+        name: patroni-17-main.service
+        state: stopped
+
+- name: "Verify failover on the remaining members"
+  hosts: patroni_failover_observer
+  become: false
+  tasks:
+    - name: "Wait until the remaining members elect a new primary"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/cluster
+        return_content: true
+      register: failover_cluster
+      retries: 60
+      delay: 2
+      until:
+        - failover_cluster.status == 200
+        - failover_cluster.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+        - failover_cluster.json.members | selectattr('role', 'equalto', 'replica') | list | length == 2
+        - failover_cluster.json.members | selectattr('role', 'equalto', 'leader') | map(attribute='host') | first != hostvars['pg01']['current_primary_host']
+
+    - name: "Verify the failed primary is no longer the leader"
+      ansible.builtin.assert:
+        that:
+          - failover_cluster.json.members | selectattr('role', 'equalto', 'leader') | map(attribute='host') | first != hostvars['pg01']['current_primary_host']
+
+    - name: "Verify the failover data marker on a remaining member"
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - postgres
+          - --
+          - psql
+          - -U
+          - postgres
+          - -d
+          - postgres
+          - -tA
+          - -c
+          - SELECT marker FROM patroni_failover_data WHERE id = 1;
+      register: failover_data_read
+      changed_when: false
+      retries: 30
+      delay: 2
+      until:
+        - failover_data_read.rc == 0
+        - failover_data_read.stdout | trim == 'replicated-before-failover'
+
+- name: "Rejoin the failed member"
+  hosts: patroni_current_primary
+  become: false
+  tasks:
+    - name: "Start Patroni on the failed member"
+      ansible.builtin.systemd_service:
+        name: patroni-17-main.service
+        state: started
+
+    - name: "Wait for the failed member to become a healthy replica"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/replica
+        status_code: [200, 503]
+      register: pg01_replica_status
+      retries: 90
+      delay: 2
+      until: pg01_replica_status.status == 200
+
+- name: "Verify failover data on every rejoined member"
+  hosts: pg01:pg02:pg03
+  become: false
+  tasks:
+    - name: "Read the failover data marker from every member"
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - postgres
+          - --
+          - psql
+          - -U
+          - postgres
+          - -d
+          - postgres
+          - -tA
+          - -c
+          - SELECT marker FROM patroni_failover_data WHERE id = 1;
+      register: final_data_read
+      changed_when: false
+      retries: 30
+      delay: 2
+      until:
+        - final_data_read.rc == 0
+        - final_data_read.stdout | trim == 'replicated-before-failover'

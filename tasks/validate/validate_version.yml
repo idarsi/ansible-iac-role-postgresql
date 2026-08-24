@@ -21,7 +21,26 @@
       - pg_validation_version_record.files is not defined or pg_validation_version_record.files | type_debug == 'list'
       - pg_validation_version_record.git is not defined or pg_validation_version_record.git | type_debug == 'list'
       - pg_validation_version_record.cron is not defined or pg_validation_version_record.cron | type_debug == 'list'
+      - pg_validation_version_record.clusters is not defined or pg_validation_version_record.clusters | type_debug == 'list'
     fail_msg: "PostgreSQL version-scoped inventory records must use lists"
+
+- name: "Checking PostgreSQL cluster names are unique"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          pg_validation_version_record.clusters | default([])
+          | map(attribute='name') | list | unique | length
+        ) == (pg_validation_version_record.clusters | default([]) | length)
+    fail_msg: >-
+      PostgreSQL cluster names must be unique for version
+      {{ pg_validation_version_record.version }}
+
+- name: "Validating PostgreSQL cluster records"
+  ansible.builtin.include_tasks: validate_cluster.yml
+  loop: "{{ pg_validation_version_record.clusters | default([]) }}"
+  loop_control:
+    loop_var: pg_validation_cluster_record
 
 - name: "Checking PostgreSQL instance names are unique"
   ansible.builtin.assert:
@@ -45,3 +64,4 @@
     loop_var: pg_validation_instance_record
   vars:
     pg_validation_version: "{{ pg_validation_version_record.version | string }}"
+    pg_validation_clusters: "{{ pg_validation_version_record.clusters | default([]) }}"

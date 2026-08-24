@@ -1,0 +1,27 @@
+---
+###############################################################################
+#
+# clusters_present.yml
+#
+###############################################################################
+
+- name: "Setting cluster instance variables"
+  ansible.builtin.set_fact:
+    pg_instance: "{{ pg_instance_record.1.name }}"
+    pg_version: "{{ pg_instance_record.0.version | string }}"
+    pg_cluster: >-
+      {{
+        (
+          pg_instance_record.0.clusters | default([])
+          | selectattr('name', 'equalto', pg_instance_record.1.cluster)
+          | list | first
+        ) | default({})
+      }}
+
+- name: "Setting PostgreSQL cluster provider"
+  ansible.builtin.set_fact:
+    pg_cluster_provider: "{{ pg_cluster.provider | default('standalone') }}"
+
+- name: "Ensuring Patroni cluster configuration is present"
+  ansible.builtin.include_tasks: patroni_present.yml
+  when: pg_cluster_provider == 'patroni'

@@ -69,6 +69,7 @@ Start PostgreSQL instances      | instances_started   |
 Stop PostgreSQL instances       | instances_stopped   |
 Restart PostgreSQL instances    | instances_restarted |
 Ensure replication is present   | replication_present |
+Ensure cluster configuration is present | clusters_present |
 Create databases                | databases_present   |
 Remove databases                | databases_absent    |
 Create database users           | roles_present       |
@@ -189,6 +190,72 @@ state, run the role with the `validate` state:
   - role: ansible-iac-role-postgresql
     state: validate
 ```
+
+PostgreSQL clustering
+---------------------
+
+Clustering is modeled separately from a PostgreSQL instance. A version-level
+`clusters` record is shared with every member host, while each instance points
+to its cluster by name. The role selects the local member by matching
+`inventory_hostname` and the instance name. The supported providers are
+`standalone`, `streaming_replication`, and `patroni`.
+
+For Patroni, the DCS is an external dependency. This role installs and
+configures the Patroni agent and its systemd unit, but it does not provision
+etcd, Consul, or Kubernetes. Patroni instances are started through Patroni,
+not through the PostgreSQL systemd unit directly.
+
+Patroni DCS client libraries are configured explicitly with
+`pg_patroni_python_packages`. For an etcd3 DCS with the PGDG Patroni RPM, use
+`python-etcd` and set `pg_patroni_python_interpreter` to the Python interpreter
+used by the Patroni executable when the distribution provides multiple Python
+versions:
+
+```yaml
+pg_patroni_python_packages:
+  - python-etcd
+pg_patroni_python_interpreter: /usr/bin/python3.12
+```
+
+The role installs these packages with that interpreter before starting the
+Patroni service. This keeps DCS client dependencies separate from the
+distribution-specific Patroni RPM package.
+
+```yaml
+iac_blueprint:
+  postgresql:
+    - version: 17
+      clusters:
+        - name: core-db
+          provider: patroni
+          dcs:
+            provider: etcd3
+            endpoints:
+              - https://etcd01.example.org:2379
+              - https://etcd02.example.org:2379
+              - https://etcd03.example.org:2379
+          patroni:
+            ttl: 30
+            loop_wait: 10
+            retry_timeout: 10
+            synchronous_mode: false
+          members:
+            - host: db01.example.org
+              instance: main
+              name: core-db01
+            - host: db02.example.org
+              instance: main
+              name: core-db02
+      instances:
+        - name: main
+          cluster: core-db
+          configuration:
+            port: 5432
+```
+
+Use `state: clusters_present` to render Patroni configuration and its service
+unit without changing PostgreSQL databases or roles. `state: install` also
+handles the cluster configuration as part of the normal installation flow.
 
 All other role states run the same inventory validation automatically before
 performing their state-specific work.

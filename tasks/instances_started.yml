@@ -15,6 +15,19 @@
   ansible.builtin.set_fact:
     pg_instance: "{{ pg_instance_record.1.name }}"
     pg_version: "{{ pg_instance_record.0.version | string }}"
+    pg_cluster: >-
+      {{
+        (
+          pg_instance_record.0.clusters | default([])
+          | selectattr('name', 'equalto', pg_instance_record.1.cluster)
+          | list | first
+        ) | default({})
+      }}
+  when: pg_instance_record is defined
+
+- name: "Setting PostgreSQL cluster provider"
+  ansible.builtin.set_fact:
+    pg_cluster_provider: "{{ pg_cluster.provider | default('standalone') }}"
   when: pg_instance_record is defined
 
 - name: "Checking if required variables are defined"
@@ -49,6 +62,20 @@
     state: started
     enabled: true
     masked: false
+  when: pg_cluster_provider != 'patroni'
+
+- name: "Setting Patroni service name"
+  ansible.builtin.set_fact:
+    pg_patroni_service_name: "patroni-{{ pg_version }}-{{ pg_instance }}.service"
+  when: pg_cluster_provider == 'patroni'
+
+- name: "Ensuring Patroni service is started"
+  ansible.builtin.systemd_service:
+    name: "{{ pg_patroni_service_name }}"
+    state: started
+    enabled: true
+    masked: false
+  when: pg_cluster_provider == 'patroni'
 
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml

@@ -122,3 +122,17 @@ pg_replication_wal_keep_size: "1GB"
 pg_replication_hba_type: "host"
 pg_replication_hba_method: "scram-sha-256"
 pg_replication_reinitialize: false
+
+###############################################################################
+# CLUSTERING
+###############################################################################
+
+pg_patroni_package: "patroni"
+pg_patroni_additional_packages: []
+pg_patroni_python_packages: []
+pg_patroni_python_interpreter: "{{ pg_package_module_interpreter | default('/usr/bin/python3') }}"
+pg_patroni_reinitialize: false
+pg_patroni_config_directory: "/etc/patroni"
+pg_patroni_user: "postgres"
+pg_patroni_group: "postgres"
+pg_patroni_restapi_port: 8008

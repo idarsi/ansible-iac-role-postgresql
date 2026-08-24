@@ -14,8 +14,25 @@
                   extensions:
                     - name: timescaledb
         - version: 17
+          clusters:
+            - name: validation-cluster
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints:
+                  - https://etcd01.example.org:2379
+                  - https://etcd02.example.org:2379
+              patroni:
+                ttl: 30
+                loop_wait: 10
+                retry_timeout: 10
+              members:
+                - host: instance-idarsi-validation
+                  instance: community
+                  name: validation-member
           instances:
             - name: community
+              cluster: validation-cluster
               databases:
                 - name: metrics
                   extensions:
@@ -68,6 +85,101 @@
         - name: "Writing invalid source marker"
           ansible.builtin.copy:
             dest: /tmp/postgresql-validation-invalid-source.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject invalid Patroni timeout values"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: invalid-timeouts
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints:
+                  - https://etcd01.example.org:2379
+              patroni:
+                ttl: 20
+                loop_wait: 10
+                retry_timeout: 10
+              members:
+                - host: instance-idarsi-validation
+                  instance: main
+                  name: invalid-timeout-member
+          instances:
+            - name: main
+              cluster: invalid-timeouts
+  tasks:
+    - name: "Running validation expecting invalid Patroni timeout failure"
+      block:
+        - name: "Applying invalid Patroni timeout configuration"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if invalid Patroni timeouts were accepted"
+          ansible.builtin.fail:
+            msg: "Invalid Patroni timeout values were accepted"
+      rescue:
+        - name: "Checking invalid Patroni timeout failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search('Patroni requires loop_wait')
+        - name: "Writing invalid Patroni timeout marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-patroni-timeout.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject a Patroni instance without a local cluster member"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: missing-member
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints:
+                  - https://etcd01.example.org:2379
+              patroni: {}
+              members:
+                - host: another-host.example.org
+                  instance: main
+                  name: another-member
+          instances:
+            - name: main
+              cluster: missing-member
+  tasks:
+    - name: "Running validation expecting missing local member failure"
+      block:
+        - name: "Applying Patroni configuration without a local member"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if missing local member was accepted"
+          ansible.builtin.fail:
+            msg: "A Patroni instance without a local member was accepted"
+      rescue:
+        - name: "Checking missing local member failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("must reference an existing cluster and have exactly one member")
+        - name: "Writing missing local member marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-patroni-member.ok
             content: "ok\n"
             mode: "0644"
 
@@ -145,6 +257,100 @@
         - name: "Writing duplicate instance marker"
           ansible.builtin.copy:
             dest: /tmp/postgresql-validation-duplicate-instance.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject a Patroni cluster without DCS endpoints"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: missing-dcs-endpoints
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: []
+              patroni: {}
+              members:
+                - host: instance-idarsi-validation
+                  instance: main
+                  name: missing-dcs-endpoints-member
+          instances:
+            - name: main
+              cluster: missing-dcs-endpoints
+  tasks:
+    - name: "Running validation expecting missing DCS endpoints failure"
+      block:
+        - name: "Applying Patroni configuration without DCS endpoints"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if missing DCS endpoints were accepted"
+          ansible.builtin.fail:
+            msg: "A Patroni cluster without DCS endpoints was accepted"
+      rescue:
+        - name: "Checking missing DCS endpoints failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("require a DCS provider, a list of DCS endpoints")
+        - name: "Writing missing DCS endpoints marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-missing-dcs-endpoints.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject duplicate Patroni cluster member names"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: duplicate-patroni-members
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints:
+                  - https://etcd01.example.org:2379
+              patroni: {}
+              members:
+                - host: instance-idarsi-validation
+                  instance: main
+                  name: duplicate-member
+                - host: another-host.example.org
+                  instance: main
+                  name: duplicate-member
+          instances:
+            - name: main
+              cluster: duplicate-patroni-members
+  tasks:
+    - name: "Running validation expecting duplicate Patroni member failure"
+      block:
+        - name: "Applying duplicate Patroni member names"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if duplicate Patroni member names were accepted"
+          ansible.builtin.fail:
+            msg: "Duplicate Patroni cluster member names were accepted"
+      rescue:
+        - name: "Checking duplicate Patroni member failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("PostgreSQL cluster member names must be unique")
+        - name: "Writing duplicate Patroni member marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-duplicate-patroni-member.ok
             content: "ok\n"
             mode: "0644"
 

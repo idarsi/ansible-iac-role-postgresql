@@ -20,11 +20,32 @@
       - pg_validation_instance_record.roles is not defined or pg_validation_instance_record.roles | type_debug == 'list'
       - pg_validation_instance_record.configuration is not defined or pg_validation_instance_record.configuration | type_debug == 'dict'
       - pg_validation_instance_record.replication is not defined or pg_validation_instance_record.replication | type_debug == 'dict'
+      - pg_validation_instance_record.cluster is not defined or pg_validation_instance_record.cluster is string
       - >-
         pg_validation_instance_record.configuration is not defined
         or pg_validation_instance_record.configuration.shared_preload_libraries is not defined
         or pg_validation_instance_record.configuration.shared_preload_libraries | type_debug in ['str', 'list']
     fail_msg: "PostgreSQL instance databases, roles, configuration, and replication must use the expected types"
+
+- name: "Checking PostgreSQL instance cluster reference"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_clusters | selectattr('name', 'equalto', pg_validation_instance_record.cluster) | list | length == 1
+      - >-
+        (
+          (
+            pg_validation_clusters
+            | selectattr('name', 'equalto', pg_validation_instance_record.cluster)
+            | list | first
+          ).members
+          | selectattr('host', 'equalto', inventory_hostname)
+          | selectattr('instance', 'equalto', pg_validation_instance_record.name)
+          | list | length
+        ) == 1
+    fail_msg: >-
+      PostgreSQL instance {{ pg_validation_instance_record.name }} must reference
+      an existing cluster and have exactly one member for host {{ inventory_hostname }}
+  when: pg_validation_instance_record.cluster is defined
 
 - name: "Checking whether standby declares TimescaleDB package metadata"
   ansible.builtin.set_fact:

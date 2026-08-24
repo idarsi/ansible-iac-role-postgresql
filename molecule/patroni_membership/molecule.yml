@@ -1,0 +1,101 @@
+---
+dependency:
+  name: galaxy
+
+driver:
+  name: podman
+
+platforms:
+  - name: etcd01
+    image: quay.io/coreos/etcd:v3.5.15
+    command: >-
+      /usr/local/bin/etcd --name etcd01 --data-dir /etcd-data
+      --listen-client-urls http://0.0.0.0:2379
+      --advertise-client-urls http://etcd01:2379
+      --listen-peer-urls http://0.0.0.0:2380
+      --initial-advertise-peer-urls http://etcd01:2380
+      --initial-cluster etcd01=http://etcd01:2380,etcd02=http://etcd02:2380,etcd03=http://etcd03:2380
+      --initial-cluster-state new
+    network: molecule-patroni-membership
+    published_ports:
+      - "2379:2379"
+    pre_build_image: true
+  - name: etcd02
+    image: quay.io/coreos/etcd:v3.5.15
+    command: >-
+      /usr/local/bin/etcd --name etcd02 --data-dir /etcd-data
+      --listen-client-urls http://0.0.0.0:2379
+      --advertise-client-urls http://etcd02:2379
+      --listen-peer-urls http://0.0.0.0:2380
+      --initial-advertise-peer-urls http://etcd02:2380
+      --initial-cluster etcd01=http://etcd01:2380,etcd02=http://etcd02:2380,etcd03=http://etcd03:2380
+      --initial-cluster-state new
+    network: molecule-patroni-membership
+    pre_build_image: true
+  - name: etcd03
+    image: quay.io/coreos/etcd:v3.5.15
+    command: >-
+      /usr/local/bin/etcd --name etcd03 --data-dir /etcd-data
+      --listen-client-urls http://0.0.0.0:2379
+      --advertise-client-urls http://etcd03:2379
+      --listen-peer-urls http://0.0.0.0:2380
+      --initial-advertise-peer-urls http://etcd03:2380
+      --initial-cluster etcd01=http://etcd01:2380,etcd02=http://etcd02:2380,etcd03=http://etcd03:2380
+      --initial-cluster-state new
+    network: molecule-patroni-membership
+    pre_build_image: true
+  - name: pg01
+    image: docker.io/rockylinux/rockylinux:9-ubi-init
+    command: /sbin/init
+    privileged: true
+    pre_build_image: true
+    network: molecule-patroni-membership
+    systemd: true
+    tty: true
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+  - name: pg02
+    image: docker.io/rockylinux/rockylinux:9-ubi-init
+    command: /sbin/init
+    privileged: true
+    pre_build_image: true
+    network: molecule-patroni-membership
+    systemd: true
+    tty: true
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+  - name: pg03
+    image: docker.io/rockylinux/rockylinux:9-ubi-init
+    command: /sbin/init
+    privileged: true
+    pre_build_image: true
+    network: molecule-patroni-membership
+    systemd: true
+    tty: true
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
+    ANSIBLE_ASYNC_DIR: "${MOLECULE_PROJECT_DIRECTORY}/.ansible_async"
+    ANSIBLE_LOCAL_TEMP: "/tmp/.ansible/tmp"
+    ANSIBLE_REMOTE_TMP: "/tmp"
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/.."
+
+scenario:
+  test_sequence:
+    - dependency
+    - cleanup
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - verify
+    - cleanup
+    - destroy
+
+verifier:
+  name: ansible

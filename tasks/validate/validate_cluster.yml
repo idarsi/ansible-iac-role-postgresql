@@ -1,0 +1,74 @@
+---
+###############################################################################
+#
+# validate_cluster.yml
+#
+###############################################################################
+
+- name: "Checking PostgreSQL cluster record"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_cluster_record | type_debug == 'dict'
+      - pg_validation_cluster_record.name is defined
+      - pg_validation_cluster_record.name | string | length > 0
+      - pg_validation_cluster_record.provider is defined
+      - pg_validation_cluster_record.provider in ['standalone', 'streaming_replication', 'patroni']
+      - pg_validation_cluster_record.members is defined
+      - pg_validation_cluster_record.members | type_debug == 'list'
+      - pg_validation_cluster_record.members | length > 0
+    fail_msg: >-
+      PostgreSQL cluster must define a name, a supported provider, and at least
+      one member
+
+- name: "Checking Patroni cluster configuration"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_cluster_record.dcs is defined
+      - pg_validation_cluster_record.dcs | type_debug == 'dict'
+      - pg_validation_cluster_record.dcs.provider is defined
+      - pg_validation_cluster_record.dcs.provider in ['etcd3', 'consul', 'kubernetes']
+      - pg_validation_cluster_record.dcs.endpoints is defined
+      - pg_validation_cluster_record.dcs.endpoints | type_debug == 'list'
+      - pg_validation_cluster_record.dcs.endpoints | length > 0
+      - pg_validation_cluster_record.patroni is defined
+      - pg_validation_cluster_record.patroni | type_debug == 'dict'
+    fail_msg: >-
+      Patroni clusters require a DCS provider, a list of DCS endpoints, and an
+      Patroni configuration object
+  when: pg_validation_cluster_record.provider == 'patroni'
+
+- name: "Checking Patroni timeout relationship"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (pg_validation_cluster_record.patroni.loop_wait | default(10) | int)
+        + 2 * (pg_validation_cluster_record.patroni.retry_timeout | default(10) | int)
+        <= (pg_validation_cluster_record.patroni.ttl | default(30) | int)
+    fail_msg: "Patroni requires loop_wait + 2 * retry_timeout <= ttl"
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni is defined
+
+- name: "Checking PostgreSQL cluster member records"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_member_record | type_debug == 'dict'
+      - pg_validation_member_record.host is defined
+      - pg_validation_member_record.host | string | length > 0
+      - pg_validation_member_record.instance is defined
+      - pg_validation_member_record.instance | string | length > 0
+      - pg_validation_member_record.name is defined
+      - pg_validation_member_record.name | string | length > 0
+    fail_msg: "Each PostgreSQL cluster member must define host, instance, and name"
+  loop: "{{ pg_validation_cluster_record.members }}"
+  loop_control:
+    loop_var: pg_validation_member_record
+
+- name: "Checking PostgreSQL cluster member names are unique"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          pg_validation_cluster_record.members | map(attribute='name') | list | unique | length
+        ) == (pg_validation_cluster_record.members | length)
+    fail_msg: "PostgreSQL cluster member names must be unique"
