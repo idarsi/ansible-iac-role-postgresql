@@ -15,6 +15,14 @@
   ansible.builtin.set_fact:
     pg_instance: "{{ pg_instance_record.1.name }}"
     pg_version: "{{ pg_instance_record.0.version }}"
+    pg_cluster: >-
+      {{
+        (
+          pg_instance_record.0.clusters | default([])
+          | selectattr('name', 'equalto', pg_instance_record.1.cluster)
+          | list | first
+        ) | default({})
+      }}
   when: pg_instance_record is defined
 
 - name: "Checking if required variables are defined"
@@ -34,7 +42,13 @@
 
 - name: "Setting service name"
   ansible.builtin.set_fact:
-    pg_service_name: "postgresql-{{ pg_version }}-{{ pg_instance }}.service"
+    pg_service_name: >-
+      {{
+        (
+          'patroni-' if pg_cluster.provider | default('standalone') == 'patroni'
+          else 'postgresql-'
+        ) ~ pg_version ~ '-' ~ pg_instance ~ '.service'
+      }}
 
 - name: "Gathering service facts"
   ansible.builtin.service_facts:

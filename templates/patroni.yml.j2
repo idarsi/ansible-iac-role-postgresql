@@ -1,0 +1,65 @@
+scope: {{ pg_cluster.name }}
+name: {{ pg_patroni_name }}
+
+restapi:
+  listen: 0.0.0.0:{{ pg_patroni_restapi_port_effective }}
+  connect_address: {{ pg_patroni_restapi_connect_address_effective }}
+{% if pg_patroni.restapi is defined and pg_patroni.restapi.username is defined %}
+  username: {{ pg_patroni.restapi.username }}
+  password: {{ pg_patroni.restapi.password }}
+{% endif %}
+
+{% if pg_cluster.dcs.provider == 'etcd3' %}
+etcd3:
+  hosts: {{ pg_cluster.dcs.endpoints | join(',') }}
+{% if pg_cluster.dcs.proxy is defined %}
+  proxy: {{ pg_cluster.dcs.proxy }}
+{% endif %}
+{% if pg_cluster.dcs.use_proxies is defined %}
+  use_proxies: {{ pg_cluster.dcs.use_proxies | bool | lower }}
+{% endif %}
+{% elif pg_cluster.dcs.provider == 'consul' %}
+consul:
+  hosts: {{ pg_cluster.dcs.endpoints | join(',') }}
+{% elif pg_cluster.dcs.provider == 'kubernetes' %}
+kubernetes:
+  namespace: {{ pg_cluster.dcs.namespace | default('default') }}
+  labels:
+    app: {{ pg_cluster.name }}
+{% endif %}
+
+bootstrap:
+{% if pg_patroni.pg_hba is defined %}
+  pg_hba:
+{% for pg_hba_line in pg_patroni.pg_hba %}
+    - {{ pg_hba_line }}
+{% endfor %}
+{% endif %}
+  dcs:
+    ttl: {{ pg_patroni.ttl | default(30) }}
+    loop_wait: {{ pg_patroni.loop_wait | default(10) }}
+    retry_timeout: {{ pg_patroni.retry_timeout | default(10) }}
+    maximum_lag_on_failover: {{ pg_patroni.maximum_lag_on_failover | default(1048576) }}
+    synchronous_mode: {{ pg_patroni.synchronous_mode | default(false) | bool | lower }}
+    postgresql:
+      use_pg_rewind: {{ pg_patroni.use_pg_rewind | default(true) | bool | lower }}
+      use_slots: {{ pg_patroni.use_slots | default(true) | bool | lower }}
+      parameters:
+        wal_level: replica
+        hot_standby: 'on'
+        max_wal_senders: {{ pg_replication_max_wal_senders }}
+        max_replication_slots: {{ pg_replication_max_replication_slots }}
+
+postgresql:
+  listen: 0.0.0.0:{{ pg_instance_record.1.configuration.port | default(pg_default_port) }}
+  connect_address: {{ pg_patroni_postgresql_connect_address_effective }}
+  data_dir: {{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}
+  bin_dir: /usr/pgsql-{{ pg_version }}/bin
+  pgpass: {{ pg_bind_dir }}/{{ pg_version }}/.patroni-{{ pg_instance }}.pgpass
+  authentication:
+    superuser:
+      username: postgres
+      password: {{ (pg_patroni.postgresql | default({})).superuser_password | default('') }}
+    replication:
+      username: {{ (pg_patroni.postgresql | default({})).replication_username | default('replicator') }}
+      password: {{ (pg_patroni.postgresql | default({})).replication_password | default(pg_patroni.replication_password | default('')) }}

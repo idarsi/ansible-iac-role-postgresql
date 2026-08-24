@@ -1,0 +1,41 @@
+---
+- name: "Render Patroni configuration from a shared cluster blueprint"
+  hosts: all
+  become: false
+  vars:
+    state: clusters_present
+    pg_patroni_package: bash
+    pg_patroni_user: root
+    pg_patroni_group: root
+    pg_patroni_config_directory: /tmp/patroni
+    pg_systemd_service_dir: /tmp/systemd
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: molecule-cluster
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints:
+                  - https://etcd01.example.org:2379
+                  - https://etcd02.example.org:2379
+              patroni:
+                ttl: 30
+                loop_wait: 10
+                retry_timeout: 10
+                restapi:
+                  port: 18008
+              members:
+                - host: instance-idarsi-patroni
+                  instance: main
+                  name: molecule-member
+          instances:
+            - name: main
+              cluster: molecule-cluster
+              configuration:
+                port: 15432
+  tasks:
+    - name: "Include PostgreSQL role"
+      ansible.builtin.include_role:
+        name: ansible-iac-role-postgresql

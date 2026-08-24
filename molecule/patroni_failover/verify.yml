@@ -1,0 +1,17 @@
+---
+- name: "Verify final Patroni cluster state"
+  hosts: pg01:pg02:pg03
+  become: false
+  tasks:
+    - name: "Read final local cluster state"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/cluster
+        return_content: true
+      register: final_cluster
+
+    - name: "Check all members are visible after failover and rejoin"
+      ansible.builtin.assert:
+        that:
+          - final_cluster.json.members | length == 3
+          - final_cluster.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+          - final_cluster.json.members | selectattr('role', 'equalto', 'replica') | list | length == 2

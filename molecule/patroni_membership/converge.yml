@@ -1,0 +1,161 @@
+---
+- name: "Wait for the real etcd membership DCS"
+  hosts: pg01:pg02:pg03
+  become: false
+  tasks:
+    - name: "Wait for all etcd members"
+      ansible.builtin.uri:
+        url: "http://{{ item }}:2379/health"
+        status_code: 200
+      loop:
+        - etcd01
+        - etcd02
+        - etcd03
+      register: etcd_health
+      retries: 30
+      delay: 2
+      until: etcd_health is succeeded
+
+- name: "Install the three-member Patroni cluster once"
+  hosts: pg01:pg02:pg03
+  become: false
+  vars:
+    ansible_become_method: su
+    state: install
+    pg_lang: "en"
+    pg_locale: "US"
+    pg_disable_postgresql_module: false
+    pg_patroni_package: patroni
+    pg_patroni_python_packages:
+      - python-etcd
+    pg_patroni_python_interpreter: /usr/bin/python3.12
+    pg_patroni_reinitialize: true
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: molecule-patroni-membership
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints:
+                  - http://etcd01:2379
+                  - http://etcd02:2379
+                  - http://etcd03:2379
+                proxy: http://etcd01:2379
+              patroni:
+                ttl: 30
+                loop_wait: 5
+                retry_timeout: 5
+                postgresql:
+                  superuser_password: postgres_password
+                  replication_username: replicator
+                replication_password: replication_password
+                pg_hba:
+                  - local all all trust
+                  - host all postgres 0.0.0.0/0 scram-sha-256
+                  - host replication replicator 0.0.0.0/0 scram-sha-256
+                restapi:
+                  port: 8008
+              members:
+                - host: pg01
+                  instance: main
+                  name: molecule-patroni-membership-pg01
+                - host: pg02
+                  instance: main
+                  name: molecule-patroni-membership-pg02
+                - host: pg03
+                  instance: main
+                  name: molecule-patroni-membership-pg03
+          instances:
+            - name: main
+              cluster: molecule-patroni-membership
+              global_access:
+                - name: postgres
+                  address: 0.0.0.0/0
+                  method: scram-sha-256
+                - name: replicator
+                  address: 0.0.0.0/0
+                  method: scram-sha-256
+              configuration:
+                listen_addresses: "*"
+                port: 5432
+                max_connections: 50
+  roles:
+    - role: ansible-iac-role-postgresql
+
+- name: "Wait for all Patroni members"
+  hosts: pg01:pg02:pg03
+  become: false
+  tasks:
+    - name: "Wait for local Patroni API"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/patroni
+        status_code: 200
+      register: patroni_health
+      retries: 90
+      delay: 2
+      until: patroni_health.status == 200
+
+- name: "Remove one member and verify a two-member cluster"
+  hosts: pg01
+  become: false
+  tasks:
+    - name: "Stop pg03 Patroni"
+      ansible.builtin.systemd_service:
+        name: patroni-17-main.service
+        state: stopped
+      delegate_to: pg03
+
+    - name: "Remove pg03 member key from the real etcd DCS"
+      ansible.builtin.command:
+        argv:
+          - podman
+          - exec
+          - etcd01
+          - /usr/local/bin/etcdctl
+          - --endpoints=http://127.0.0.1:2379
+          - del
+          - /service/molecule-patroni-membership/members/molecule-patroni-membership-pg03
+      delegate_to: localhost
+      changed_when: true
+
+    - name: "Wait for the removed member to disappear"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/cluster
+        return_content: true
+      register: cluster_without_member
+      retries: 30
+      delay: 2
+      until:
+        - cluster_without_member.json.members | length == 2
+        - cluster_without_member.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+        - cluster_without_member.json.members | selectattr('role', 'equalto', 'replica') | list | length == 1
+
+    - name: "Start pg03 Patroni again"
+      ansible.builtin.systemd_service:
+        name: patroni-17-main.service
+        state: started
+      delegate_to: pg03
+
+    - name: "Wait for pg03 to rejoin as a replica"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/replica
+        status_code: 200
+      register: rejoined_member
+      delegate_to: pg03
+      retries: 90
+      delay: 2
+      until: rejoined_member.status == 200
+
+    - name: "Verify the member was added back"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/cluster
+        return_content: true
+      register: cluster_with_member
+      retries: 30
+      delay: 2
+      until:
+        - cluster_with_member.json.members | length == 3
+        - cluster_with_member.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+        - cluster_with_member.json.members | selectattr('role', 'equalto', 'replica') | list | length == 2

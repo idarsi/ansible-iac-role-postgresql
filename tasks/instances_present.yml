@@ -26,8 +26,21 @@
     pg_profile: "{{ pg_instance_record.1.configuration_profile | default(omit) }}"
     pg_maprole: "{{ pg_instance_record.1.maprole | default([]) }}"
     pg_replication: "{{ pg_instance_record.1.replication | default({}) }}"
+    pg_cluster: >-
+      {{
+        (
+          pg_instance_record.0.clusters | default([])
+          | selectattr('name', 'equalto', pg_instance_record.1.cluster)
+          | list | first
+        ) | default({})
+      }}
     pg_security: "{{ pg_instance_record.1.security_profile | default('off') }}"
     pg_version: "{{ pg_instance_record.0.version | string }}"
+  when: pg_instance_record is defined
+
+- name: "Setting PostgreSQL cluster provider"
+  ansible.builtin.set_fact:
+    pg_cluster_provider: "{{ pg_cluster.provider | default('standalone') }}"
   when: pg_instance_record is defined
 
 - name: "Setting tuning profile if tuning is defined"
@@ -105,6 +118,10 @@
 - name: "Validating replication configuration if defined"
   ansible.builtin.include_tasks: validate/validate_replication_record.yml
   when: pg_replication_enabled | default(false)
+
+- name: "Ensuring Patroni configuration is present"
+  ansible.builtin.include_tasks: patroni_present.yml
+  when: pg_cluster_provider == 'patroni'
 
 - name: "Setting certificate variables if security_ssl is not off"
   ansible.builtin.set_fact:
@@ -410,6 +427,61 @@
     owner: "{{ pg_os_user }}"
     group: "{{ pg_os_group }}"
     mode: "0600"
+
+- name: "Initializing Patroni authentication credentials"
+  become: true
+  become_user: "{{ pg_os_user }}"
+  ansible.builtin.shell: |
+    set -e
+    data_dir="{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}"
+    pg_ctl="/usr/pgsql-{{ pg_version }}/bin/pg_ctl"
+    psql="/usr/pgsql-{{ pg_version }}/bin/psql"
+    superuser_password="{{ pg_patroni.postgresql.superuser_password }}"
+    replication_password="{{ pg_patroni.postgresql.replication_password }}"
+    "${pg_ctl}" -D "${data_dir}" -w start
+    "${psql}" postgres -p "{{ pg_instance_record.1.configuration.port | default(pg_default_port) }}" \
+      -v ON_ERROR_STOP=1 <<SQL
+    ALTER ROLE postgres WITH LOGIN SUPERUSER PASSWORD '${superuser_password}';
+    DO \$\$BEGIN
+      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'replicator') THEN
+        CREATE ROLE replicator WITH LOGIN REPLICATION PASSWORD '${replication_password}';
+      ELSE
+        ALTER ROLE replicator WITH LOGIN REPLICATION PASSWORD '${replication_password}';
+      END IF;
+    END\$\$;
+    SQL
+    "${pg_ctl}" -D "${data_dir}" -w stop
+  args:
+    executable: /bin/bash
+  changed_when: not postgres_data.stat.exists
+  no_log: true
+  when:
+    - pg_cluster_provider == 'patroni'
+    - not postgres_data.stat.exists
+    - pg_patroni.postgresql is defined
+    - pg_patroni.postgresql.superuser_password is defined
+    - pg_patroni.postgresql.replication_password is defined
+
+- name: "Removing locally initialized data before Patroni bootstrap"
+  become: true
+  ansible.builtin.file:
+    path: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}"
+    state: absent
+  when:
+    - pg_cluster_provider == 'patroni'
+    - pg_patroni_reinitialize | bool
+
+- name: "Creating empty Patroni data directory"
+  become: true
+  ansible.builtin.file:
+    path: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}"
+    state: directory
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0700"
+  when:
+    - pg_cluster_provider == 'patroni'
+    - pg_patroni_reinitialize | bool
 
 ###############################################################################
 # ENSURING DEFAULT PG_IDENT.CONF IS DELETED AND NEW WRITTEN

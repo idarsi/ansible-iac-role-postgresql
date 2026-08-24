@@ -1,0 +1,23 @@
+---
+- name: "Verify rendered Patroni configuration"
+  hosts: all
+  become: false
+  tasks:
+    - name: "Read Patroni configuration"
+      ansible.builtin.slurp:
+        src: /tmp/patroni/17-main.yml
+      register: patroni_config
+
+    - name: "Read Patroni service"
+      ansible.builtin.slurp:
+        src: /tmp/systemd/patroni-17-main.service
+      register: patroni_service
+
+    - name: "Check host-specific Patroni values"
+      ansible.builtin.assert:
+        that:
+          - "'scope: molecule-cluster' in (patroni_config.content | b64decode)"
+          - "'name: molecule-member' in (patroni_config.content | b64decode)"
+          - "'connect_address: instance-idarsi-patroni:18008' in (patroni_config.content | b64decode)"
+          - "'listen: 0.0.0.0:15432' in (patroni_config.content | b64decode)"
+          - "'ExecStart=/usr/bin/patroni /tmp/patroni/17-main.yml' in (patroni_service.content | b64decode)"

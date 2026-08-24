@@ -1,0 +1,140 @@
+---
+###############################################################################
+#
+# patroni_present.yml
+#
+###############################################################################
+
+- name: "Selecting local Patroni cluster member"
+  ansible.builtin.set_fact:
+    pg_patroni_member: >-
+      {{
+        pg_cluster.members
+        | selectattr('host', 'equalto', inventory_hostname)
+        | selectattr('instance', 'equalto', pg_instance)
+        | list | first
+      }}
+
+- name: "Setting Patroni local configuration"
+  ansible.builtin.set_fact:
+    pg_patroni: "{{ pg_cluster.patroni | default({}) }}"
+    pg_patroni_name: "{{ pg_patroni_member.name }}"
+    pg_patroni_restapi_port_effective: "{{ (pg_cluster.patroni.restapi | default({})).port | default(pg_patroni_restapi_port) }}"
+    pg_patroni_restapi_connect_address_effective: >-
+      {{ (pg_cluster.patroni.restapi | default({})).connect_address
+         | default(inventory_hostname ~ ':' ~ ((pg_cluster.patroni.restapi | default({})).port | default(pg_patroni_restapi_port))) }}
+    pg_patroni_postgresql_connect_address_effective: >-
+      {{ (pg_cluster.patroni.postgresql | default({})).connect_address
+         | default(inventory_hostname ~ ':' ~ (pg_instance_record.1.configuration.port | default(pg_default_port))) }}
+    pg_patroni_config_path: "{{ pg_patroni_config_directory }}/{{ pg_version }}-{{ pg_instance }}.yml"
+    pg_patroni_service_name: "patroni-{{ pg_version }}-{{ pg_instance }}.service"
+
+- name: "Selecting Patroni packages"
+  ansible.builtin.set_fact:
+    pg_patroni_packages: >-
+      {{
+        [pg_patroni_package]
+        + pg_patroni_additional_packages
+      | unique
+      }}
+
+- name: "Selecting Patroni Python DCS dependencies"
+  ansible.builtin.set_fact:
+    pg_patroni_python_packages_effective: "{{ pg_patroni_python_packages | default([]) | list }}"
+
+- name: "Ensuring Patroni package is installed"
+  ansible.builtin.include_tasks: package_present.yml
+  vars:
+    pg_package: "{{ pg_patroni_packages }}"
+
+- name: "Checking whether Python pip is available for Patroni dependencies"
+  ansible.builtin.command:
+    argv:
+      - "{{ pg_patroni_python_interpreter }}"
+      - -m
+      - pip
+      - --version
+  register: pg_patroni_pip_check
+  changed_when: false
+  failed_when: false
+  when: pg_patroni_python_packages_effective | length > 0
+
+- name: "Ensuring Python pip is available for Patroni dependencies"
+  ansible.builtin.command:
+    argv:
+      - "{{ pg_patroni_python_interpreter }}"
+      - -m
+      - ensurepip
+      - --upgrade
+  when:
+    - pg_patroni_python_packages_effective | length > 0
+    - pg_patroni_pip_check.rc != 0
+  changed_when: true
+
+- name: "Checking Patroni Python dependency packages"
+  ansible.builtin.command:
+    argv:
+      - "{{ pg_patroni_python_interpreter }}"
+      - -m
+      - pip
+      - show
+      - "{{ item }}"
+  loop: "{{ pg_patroni_python_packages_effective }}"
+  register: pg_patroni_python_package_checks
+  changed_when: false
+  failed_when: false
+  when: pg_patroni_python_packages_effective | length > 0
+
+- name: "Ensuring Patroni Python dependency packages are installed"
+  ansible.builtin.command:
+    argv:
+      - "{{ pg_patroni_python_interpreter }}"
+      - -m
+      - pip
+      - install
+      - --disable-pip-version-check
+      - --no-cache-dir
+      - "{{ item.item }}"
+  loop: "{{ pg_patroni_python_package_checks.results | default([]) }}"
+  when:
+    - pg_patroni_python_packages_effective | length > 0
+    - item.rc != 0
+  changed_when: true
+
+- name: "Ensuring Patroni configuration directory exists"
+  ansible.builtin.file:
+    path: "{{ pg_patroni_config_directory }}"
+    state: directory
+    owner: root
+    group: "{{ pg_patroni_group }}"
+    mode: "0750"
+
+- name: "Rendering Patroni configuration"
+  ansible.builtin.template:
+    src: patroni.yml.j2
+    dest: "{{ pg_patroni_config_path }}"
+    owner: root
+    group: "{{ pg_patroni_group }}"
+    mode: "0640"
+
+- name: "Ensuring systemd service directory exists"
+  ansible.builtin.file:
+    path: "{{ pg_systemd_service_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: "Rendering Patroni systemd service"
+  ansible.builtin.template:
+    src: patroni.service.j2
+    dest: "{{ pg_systemd_service_dir }}/{{ pg_patroni_service_name }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: pg_patroni_service_template
+
+- name: "Reloading systemd after Patroni service changes" # noqa no-handler
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: pg_patroni_service_template.changed
