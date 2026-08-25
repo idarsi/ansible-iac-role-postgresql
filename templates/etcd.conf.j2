@@ -1,0 +1,20 @@
+{% set etcd_tls = pg_etcd_config.tls | default({}) %}
+ETCD_NAME={{ pg_etcd_member.name }}
+ETCD_DATA_DIR={{ pg_etcd_config.data_dir | default(pg_etcd_data_directory) }}
+ETCD_LISTEN_PEER_URLS={{ pg_etcd_config.listen_peer_urls | default('https://0.0.0.0:2380' if (etcd_tls.enabled | default(false) | bool) else pg_etcd_listen_peer_urls) }}
+ETCD_INITIAL_ADVERTISE_PEER_URLS={{ pg_etcd_member.peer_url }}
+ETCD_LISTEN_CLIENT_URLS={{ pg_etcd_config.listen_client_urls | default('https://0.0.0.0:2379' if (etcd_tls.enabled | default(false) | bool) else pg_etcd_listen_client_urls) }}
+ETCD_ADVERTISE_CLIENT_URLS={{ pg_etcd_member.client_url }}
+ETCD_INITIAL_CLUSTER_TOKEN={{ pg_etcd_config.initial_cluster_token }}
+ETCD_INITIAL_CLUSTER={% for member in pg_etcd_config.members %}{{ member.name }}={{ member.peer_url }}{% if not loop.last %},{% endif %}{% endfor %}{{ '\n' }}
+ETCD_INITIAL_CLUSTER_STATE={{ pg_etcd_config.initial_cluster_state | default(pg_etcd_initial_cluster_state) }}
+{% if etcd_tls.enabled | default(false) | bool %}
+ETCD_CLIENT_CERT_AUTH=true
+ETCD_TRUSTED_CA_FILE={{ etcd_tls.client.ca_file }}
+ETCD_CERT_FILE={{ etcd_tls.client.cert_file }}
+ETCD_KEY_FILE={{ etcd_tls.client.key_file }}
+ETCD_PEER_CLIENT_CERT_AUTH=true
+ETCD_PEER_TRUSTED_CA_FILE={{ etcd_tls.peer.ca_file }}
+ETCD_PEER_CERT_FILE={{ etcd_tls.peer.cert_file }}
+ETCD_PEER_KEY_FILE={{ etcd_tls.peer.key_file }}
+{% endif %}

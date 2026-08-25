@@ -34,9 +34,6 @@
     pg_locale: "US"
     pg_disable_postgresql_module: false
     pg_patroni_package: patroni
-    pg_patroni_python_packages:
-      - python-etcd
-    pg_patroni_python_interpreter: /usr/bin/python3.12
     pg_patroni_reinitialize: true
     iac_blueprint:
       postgresql:

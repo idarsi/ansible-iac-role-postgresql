@@ -6,11 +6,12 @@ driver:
   name: podman
 
 platforms:
-  - name: instance-idarsi-validation
+  - name: etcd01
     image: docker.io/rockylinux/rockylinux:9-ubi-init
     command: /sbin/init
     privileged: true
     pre_build_image: true
+    network: molecule-etcd-tls
     systemd: true
     tty: true
     volumes:
@@ -31,6 +32,7 @@ scenario:
     - destroy
     - syntax
     - create
+    - prepare
     - converge
     - verify
     - destroy

@@ -1,0 +1,13 @@
+---
+###############################################################################
+#
+# handlers/main.yml
+#
+###############################################################################
+
+- name: "Restarting etcd after configuration changes"
+  ansible.builtin.systemd_service:
+    name: etcd.service
+    state: restarted
+    enabled: true
+    daemon_reload: true

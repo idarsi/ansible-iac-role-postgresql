@@ -1,0 +1,270 @@
+---
+- name: "Verify the managed etcd cluster"
+  hosts: all
+  become: false
+  tasks:
+    - name: "Check the PGDG etcd package is installed"
+      ansible.builtin.command: rpm -q etcd
+      changed_when: false
+
+    - name: "Check the PGDG etcd extras repository is enabled"
+      ansible.builtin.command: dnf repolist --enabled pgdg-rhel9-extras
+      changed_when: false
+
+    - name: "Check the etcd service is enabled"
+      ansible.builtin.command: systemctl is-enabled etcd.service
+      changed_when: false
+
+    - name: "Check the etcd service is active"
+      ansible.builtin.command: systemctl is-active etcd.service
+      changed_when: false
+
+    - name: "Check the local etcd configuration"
+      ansible.builtin.stat:
+        path: /etc/etcd/etcd.conf
+      register: etcd_config
+
+    - name: "Assert the local etcd configuration exists"
+      ansible.builtin.assert:
+        that:
+          - etcd_config.stat.exists
+          - etcd_config.stat.mode == '0644'
+
+    - name: "Check etcd data directory ownership and mode"
+      ansible.builtin.stat:
+        path: /var/lib/etcd
+      register: etcd_data
+
+    - name: "Assert etcd data is restricted to the etcd service account"
+      ansible.builtin.assert:
+        that:
+          - etcd_data.stat.pw_name == 'etcd'
+          - etcd_data.stat.gr_name == 'etcd'
+          - etcd_data.stat.mode == '0700'
+
+    - name: "Wait for all etcd client endpoints"
+      ansible.builtin.command:
+        argv:
+          - etcdctl
+          - --endpoints=http://etcd01:2379,http://etcd02:2379,http://etcd03:2379
+          - endpoint
+          - health
+      environment:
+        ETCDCTL_API: "3"
+      register: etcd_health
+      changed_when: false
+      retries: 30
+      delay: 2
+      until: etcd_health.rc == 0
+
+    - name: "Check all three etcd members are present"
+      ansible.builtin.command:
+        argv:
+          - etcdctl
+          - --endpoints=http://etcd01:2379,http://etcd02:2379,http://etcd03:2379
+          - member
+          - list
+      environment:
+        ETCDCTL_API: "3"
+      register: etcd_members
+      changed_when: false
+      retries: 30
+      delay: 2
+      until:
+        - etcd_members.rc == 0
+        - etcd_members.stdout_lines | length == 3
+
+    - name: "Write a test key through the etcd cluster"
+      ansible.builtin.command:
+        argv:
+          - etcdctl
+          - --endpoints=http://etcd01:2379,http://etcd02:2379,http://etcd03:2379
+          - put
+          - /molecule/etcd-server-test
+          - managed-by-postgresql-role
+      environment:
+        ETCDCTL_API: "3"
+      register: etcd_put
+      changed_when: true
+      retries: 10
+      delay: 2
+      until: etcd_put.rc == 0
+
+    - name: "Read the test key through the etcd cluster"
+      ansible.builtin.command:
+        argv:
+          - etcdctl
+          - --endpoints=http://etcd01:2379,http://etcd02:2379,http://etcd03:2379
+          - get
+          - /molecule/etcd-server-test
+      environment:
+        ETCDCTL_API: "3"
+      register: etcd_get
+      changed_when: false
+
+    - name: "Assert the test key round trip succeeded"
+      ansible.builtin.assert:
+        that:
+          - etcd_get.rc == 0
+          - "'managed-by-postgresql-role' in etcd_get.stdout"
+
+    - name: "Check the local Patroni API"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/patroni
+        status_code: 200
+      register: patroni_health
+      retries: 60
+      delay: 2
+      until: patroni_health.status == 200
+
+    - name: "Wait for a stable Patroni cluster state"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/cluster
+        status_code: 200
+      register: patroni_cluster
+      retries: 60
+      delay: 2
+      until:
+        - patroni_cluster.status == 200
+        - patroni_cluster.json.members | length == 3
+        - patroni_cluster.json.members
+          | selectattr('role', 'equalto', 'leader') | list | length == 1
+        - patroni_cluster.json.members
+          | selectattr('role', 'equalto', 'replica') | list | length == 2
+
+    - name: "Assert Patroni is using the managed etcd DCS"
+      ansible.builtin.assert:
+        that:
+          - patroni_cluster.json.members | length == 3
+          - patroni_cluster.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+          - patroni_cluster.json.members | selectattr('role', 'equalto', 'replica') | list | length == 2
+
+- name: "Verify etcd quorum survives one member outage"
+  hosts: etcd01
+  become: false
+  tasks:
+    - name: "Stop one managed etcd member"
+      ansible.builtin.systemd_service:
+        name: etcd.service
+        state: stopped
+      delegate_to: etcd03
+
+    - name: "Check the remaining etcd quorum"
+      ansible.builtin.command:
+        argv:
+          - etcdctl
+          - --endpoints=http://etcd01:2379,http://etcd02:2379
+          - endpoint
+          - health
+      environment:
+        ETCDCTL_API: "3"
+      register: quorum_health
+      changed_when: false
+      retries: 30
+      delay: 2
+      until: quorum_health.rc == 0
+
+    - name: "Write a key while one etcd member is unavailable"
+      ansible.builtin.command:
+        argv:
+          - etcdctl
+          - --endpoints=http://etcd01:2379,http://etcd02:2379
+          - put
+          - /molecule/etcd-quorum-test
+          - quorum-survived
+      environment:
+        ETCDCTL_API: "3"
+      changed_when: true
+
+    - name: "Start the recovered etcd member"
+      ansible.builtin.systemd_service:
+        name: etcd.service
+        state: started
+      delegate_to: etcd03
+
+    - name: "Wait for the recovered etcd member"
+      ansible.builtin.command:
+        argv:
+          - etcdctl
+          - --endpoints=http://etcd01:2379,http://etcd02:2379,http://etcd03:2379
+          - endpoint
+          - health
+      environment:
+        ETCDCTL_API: "3"
+      register: recovered_health
+      changed_when: false
+      retries: 60
+      delay: 2
+      until: recovered_health.rc == 0
+
+    - name: "Read the quorum key after member recovery"
+      ansible.builtin.command:
+        argv:
+          - etcdctl
+          - --endpoints=http://etcd01:2379,http://etcd02:2379,http://etcd03:2379
+          - get
+          - /molecule/etcd-quorum-test
+      environment:
+        ETCDCTL_API: "3"
+      register: recovered_key
+      changed_when: false
+
+    - name: "Assert the quorum key survived member recovery"
+      ansible.builtin.assert:
+        that:
+          - recovered_key.rc == 0
+          - "'quorum-survived' in recovered_key.stdout"
+
+- name: "Verify Patroni failover with managed etcd"
+  hosts: etcd01
+  become: false
+  tasks:
+    - name: "Read the current Patroni cluster state"
+      ansible.builtin.uri:
+        url: http://etcd02:8008/cluster
+        status_code: 200
+      register: failover_cluster
+
+    - name: "Select the current Patroni leader"
+      ansible.builtin.set_fact:
+        patroni_leader_host: >-
+          {{ failover_cluster.json.members
+             | selectattr('role', 'equalto', 'leader')
+             | map(attribute='host') | first }}
+
+    - name: "Stop the current Patroni leader"
+      ansible.builtin.systemd_service:
+        name: patroni-17-main.service
+        state: stopped
+      delegate_to: "{{ patroni_leader_host }}"
+
+    - name: "Wait for Patroni to elect a replacement leader"
+      ansible.builtin.uri:
+        url: http://etcd02:8008/cluster
+        status_code: 200
+        return_content: true
+      register: failover_result
+      retries: 60
+      delay: 2
+      until:
+        - failover_result.json.members | length == 2
+        - failover_result.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+
+    - name: "Start the former Patroni leader"
+      ansible.builtin.systemd_service:
+        name: patroni-17-main.service
+        state: started
+      delegate_to: "{{ patroni_leader_host }}"
+
+    - name: "Wait for all Patroni members after failover recovery"
+      ansible.builtin.uri:
+        url: http://etcd01:8008/cluster
+        status_code: 200
+        return_content: true
+      register: recovered_patroni_cluster
+      retries: 90
+      delay: 2
+      until:
+        - recovered_patroni_cluster.json.members | length == 3
+        - recovered_patroni_cluster.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+        - recovered_patroni_cluster.json.members | selectattr('role', 'equalto', 'replica') | list | length == 2

@@ -3,6 +3,10 @@
   hosts: pg01
   become: false
   tasks:
+    - name: "Check the PGDG Patroni etcd package is installed"
+      ansible.builtin.command: rpm -q patroni-etcd
+      changed_when: false
+
     - name: "Read final cluster state"
       ansible.builtin.uri:
         url: http://127.0.0.1:8008/cluster

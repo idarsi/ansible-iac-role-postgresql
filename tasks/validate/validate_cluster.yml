@@ -37,6 +37,12 @@
       Patroni configuration object
   when: pg_validation_cluster_record.provider == 'patroni'
 
+- name: "Validating managed etcd configuration"
+  ansible.builtin.include_tasks: validate_etcd.yml
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - (pg_validation_cluster_record.dcs.etcd | default({})).enabled | default(false) | bool
+
 - name: "Checking Patroni timeout relationship"
   ansible.builtin.assert:
     that:

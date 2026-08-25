@@ -205,21 +205,21 @@ configures the Patroni agent and its systemd unit, but it does not provision
 etcd, Consul, or Kubernetes. Patroni instances are started through Patroni,
 not through the PostgreSQL systemd unit directly.
 
-Patroni DCS client libraries are configured explicitly with
-`pg_patroni_python_packages`. For an etcd3 DCS with the PGDG Patroni RPM, use
-`python-etcd` and set `pg_patroni_python_interpreter` to the Python interpreter
-used by the Patroni executable when the distribution provides multiple Python
-versions:
+For an `etcd3` DCS, the role automatically installs the PGDG
+`patroni-etcd` package together with Patroni. This follows the PGDG Patroni
+packaging guidance and keeps the Patroni package and its etcd client support
+from the same repository family:
 
 ```yaml
-pg_patroni_python_packages:
-  - python-etcd
-pg_patroni_python_interpreter: /usr/bin/python3.12
+pg_patroni_etcd_package: patroni-etcd
 ```
 
-The role installs these packages with that interpreter before starting the
-Patroni service. This keeps DCS client dependencies separate from the
-distribution-specific Patroni RPM package.
+The package is selected only when the cluster DCS provider is `etcd3`. The
+role does not install or configure the etcd server itself; etcd remains an
+external DCS service managed by its own role or infrastructure layer. The
+default package name can be overridden with `pg_patroni_etcd_package`, while
+additional Patroni packages can be supplied through
+`pg_patroni_additional_packages`.
 
 ```yaml
 iac_blueprint:
@@ -234,6 +234,32 @@ iac_blueprint:
               - https://etcd01.example.org:2379
               - https://etcd02.example.org:2379
               - https://etcd03.example.org:2379
+            etcd:
+              enabled: true
+              initial_cluster_token: core-dcs
+              members:
+                - name: etcd01
+                  host: etcd01.example.org
+                  peer_url: https://etcd01.example.org:2380
+                  client_url: https://etcd01.example.org:2379
+                - name: etcd02
+                  host: etcd02.example.org
+                  peer_url: https://etcd02.example.org:2380
+                  client_url: https://etcd02.example.org:2379
+                - name: etcd03
+                  host: etcd03.example.org
+                  peer_url: https://etcd03.example.org:2380
+                  client_url: https://etcd03.example.org:2379
+              tls:
+                enabled: true
+                client:
+                  ca_file: /etc/etcd/pki/ca.crt
+                  cert_file: /etc/etcd/pki/etcd-client.crt
+                  key_file: /etc/etcd/pki/etcd-client.key
+                peer:
+                  ca_file: /etc/etcd/pki/ca.crt
+                  cert_file: /etc/etcd/pki/etcd-peer.crt
+                  key_file: /etc/etcd/pki/etcd-peer.key
           patroni:
             ttl: 30
             loop_wait: 10
@@ -252,6 +278,13 @@ iac_blueprint:
           configuration:
             port: 5432
 ```
+
+When `dcs.etcd.enabled` is `true`, the role installs the PGDG `etcd` package
+on hosts listed in `dcs.etcd.members`, renders the local member configuration,
+and enables the `etcd` systemd service. The current implementation supports
+static cluster bootstrap. Add/remove member operations and snapshot/restore
+remain separate operational procedures. Certificate files must be provisioned
+by the surrounding certificate workflow before enabling TLS URLs.
 
 Use `state: clusters_present` to render Patroni configuration and its service
 unit without changing PostgreSQL databases or roles. `state: install` also

@@ -1,0 +1,94 @@
+---
+###############################################################################
+#
+# etcd_present.yml
+#
+###############################################################################
+
+- name: "Selecting local etcd member"
+  ansible.builtin.set_fact:
+    pg_etcd_config: "{{ pg_cluster.dcs.etcd }}"
+    pg_etcd_member: >-
+      {{
+        pg_cluster.dcs.etcd.members
+        | selectattr('host', 'equalto', inventory_hostname)
+        | list | first | default({})
+      }}
+
+- name: "Checking local etcd member mapping"
+  ansible.builtin.assert:
+    that:
+      - pg_etcd_member | length > 0
+      - pg_etcd_member.name is defined
+      - pg_etcd_member.peer_url is defined
+      - pg_etcd_member.client_url is defined
+    fail_msg: >-
+      Managed etcd is enabled, but inventory host {{ inventory_hostname }} is
+      not defined as an etcd member with name, peer_url, and client_url
+
+- name: "Checking managed etcd platform"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'RedHat'
+      - ansible_facts['distribution_major_version'] in ['8', '9', '10']
+    fail_msg: "Managed PGDG etcd is supported only on Red Hat family EL8, EL9, and EL10"
+
+- name: "Selecting managed etcd repository"
+  ansible.builtin.set_fact:
+    pg_etcd_repo_id: "pgdg-rhel{{ ansible_facts['distribution_major_version'] }}-extras"
+
+- name: "Enabling PGDG etcd extras repository"
+  ansible.builtin.command: "dnf config-manager --set-enabled {{ pg_etcd_repo_id }}"
+  register: pg_etcd_repo_enable
+  changed_when: false
+  failed_when: false
+
+- name: "Falling back to repo file enablement for PGDG etcd extras"
+  ansible.builtin.include_tasks: repo_enable_in_file.yml
+  vars:
+    pg_repo_enable_file: "{{ pg_dnf_repo_path }}"
+    pg_repo_enable_section: "{{ pg_etcd_repo_id }}"
+  when: pg_etcd_repo_enable.rc != 0
+
+- name: "Checking PGDG etcd extras repository is enabled"
+  ansible.builtin.command: "dnf repolist --enabled {{ pg_etcd_repo_id }}"
+  register: pg_etcd_repo_check
+  changed_when: false
+  failed_when: pg_etcd_repo_check.rc != 0
+
+- name: "Ensuring etcd package is installed"
+  ansible.builtin.include_tasks: package_present.yml
+  vars:
+    pg_package: "{{ pg_etcd_package }}"
+
+- name: "Ensuring etcd configuration directory exists"
+  ansible.builtin.file:
+    path: "{{ pg_etcd_config_directory }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: "Ensuring etcd data directory exists"
+  ansible.builtin.file:
+    path: "{{ (pg_etcd_config.data_dir | default(pg_etcd_data_directory)) }}"
+    state: directory
+    owner: etcd
+    group: etcd
+    mode: "0700"
+
+- name: "Rendering etcd configuration"
+  ansible.builtin.template:
+    src: etcd.conf.j2
+    dest: "{{ pg_etcd_config_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: pg_etcd_config_result
+  notify: "Restarting etcd after configuration changes"
+
+- name: "Ensuring etcd service is started"
+  ansible.builtin.systemd_service:
+    name: etcd.service
+    state: started
+    enabled: true

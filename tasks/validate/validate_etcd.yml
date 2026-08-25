@@ -1,0 +1,71 @@
+---
+###############################################################################
+#
+# validate_etcd.yml
+#
+###############################################################################
+
+- name: "Checking managed etcd configuration type"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_cluster_record.dcs.etcd | type_debug == 'dict'
+      - pg_validation_cluster_record.dcs.etcd.members is defined
+      - pg_validation_cluster_record.dcs.etcd.members | type_debug == 'list'
+      - pg_validation_cluster_record.dcs.etcd.members | length > 0
+      - pg_validation_cluster_record.dcs.etcd.initial_cluster_token is defined
+      - pg_validation_cluster_record.dcs.etcd.initial_cluster_token | string | length > 0
+    fail_msg: >-
+      Managed etcd requires a non-empty initial_cluster_token and at least one
+      member
+
+- name: "Checking managed etcd member records"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_etcd_member | type_debug == 'dict'
+      - pg_validation_etcd_member.name is defined
+      - pg_validation_etcd_member.name | string | length > 0
+      - pg_validation_etcd_member.host is defined
+      - pg_validation_etcd_member.host | string | length > 0
+      - pg_validation_etcd_member.peer_url is defined
+      - pg_validation_etcd_member.peer_url | string | length > 0
+      - pg_validation_etcd_member.client_url is defined
+      - pg_validation_etcd_member.client_url | string | length > 0
+    fail_msg: "Each managed etcd member must define name, host, peer_url, and client_url"
+  loop: "{{ pg_validation_cluster_record.dcs.etcd.members }}"
+  loop_control:
+    loop_var: pg_validation_etcd_member
+
+- name: "Checking managed etcd member names are unique"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          pg_validation_cluster_record.dcs.etcd.members
+          | map(attribute='name') | list | unique | length
+        ) == (pg_validation_cluster_record.dcs.etcd.members | length)
+    fail_msg: "Managed etcd member names must be unique"
+
+- name: "Checking managed etcd member hosts are unique"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          pg_validation_cluster_record.dcs.etcd.members
+          | map(attribute='host') | list | unique | length
+        ) == (pg_validation_cluster_record.dcs.etcd.members | length)
+    fail_msg: "Managed etcd member hosts must be unique"
+
+- name: "Checking managed etcd TLS configuration"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_cluster_record.dcs.etcd.tls.client.ca_file is defined
+      - pg_validation_cluster_record.dcs.etcd.tls.client.cert_file is defined
+      - pg_validation_cluster_record.dcs.etcd.tls.client.key_file is defined
+      - pg_validation_cluster_record.dcs.etcd.tls.peer.ca_file is defined
+      - pg_validation_cluster_record.dcs.etcd.tls.peer.cert_file is defined
+      - pg_validation_cluster_record.dcs.etcd.tls.peer.key_file is defined
+    fail_msg: >-
+      Managed etcd TLS requires client and peer CA, certificate, and key file
+      paths
+  when:
+    - (pg_validation_cluster_record.dcs.etcd.tls | default({})).enabled | default(false) | bool

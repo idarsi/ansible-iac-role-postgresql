@@ -1,0 +1,111 @@
+---
+- name: "Install the managed three-member etcd cluster"
+  hosts: all
+  become: false
+  vars:
+    state: install
+    pg_patroni_reinitialize: false
+    pg_lang: "en"
+    pg_locale: "US"
+    pg_disable_postgresql_module: false
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: molecule-etcd-server
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints:
+                  - http://etcd01:2379
+                  - http://etcd02:2379
+                  - http://etcd03:2379
+                proxy: http://etcd01:2379
+                etcd:
+                  enabled: true
+                  initial_cluster_token: molecule-etcd-server
+                  members:
+                    - name: etcd01
+                      host: etcd01
+                      peer_url: http://etcd01:2380
+                      client_url: http://etcd01:2379
+                    - name: etcd02
+                      host: etcd02
+                      peer_url: http://etcd02:2380
+                      client_url: http://etcd02:2379
+                    - name: etcd03
+                      host: etcd03
+                      peer_url: http://etcd03:2380
+                      client_url: http://etcd03:2379
+              patroni:
+                ttl: 30
+                loop_wait: 5
+                retry_timeout: 5
+                postgresql:
+                  superuser_password: postgres_password
+                  replication_username: replicator
+                replication_password: replication_password
+                pg_hba:
+                  - local all all trust
+                  - host all postgres 0.0.0.0/0 scram-sha-256
+                  - host replication replicator 0.0.0.0/0 scram-sha-256
+                restapi:
+                  port: 8008
+              members:
+                - host: etcd01
+                  instance: main
+                  name: molecule-etcd-server-etcd01
+                - host: etcd02
+                  instance: main
+                  name: molecule-etcd-server-etcd02
+                - host: etcd03
+                  instance: main
+                  name: molecule-etcd-server-etcd03
+          instances:
+            - name: main
+              cluster: molecule-etcd-server
+              configuration:
+                listen_addresses: "*"
+                port: 5432
+                max_connections: 50
+  roles:
+    - role: ansible-iac-role-postgresql
+
+  tasks:
+    - name: "Wait for Patroni bootstrap to complete before finalizing configuration"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/cluster
+        status_code: 200
+      register: patroni_bootstrap_state
+      retries: 90
+      delay: 2
+      until:
+        - patroni_bootstrap_state.status == 200
+        - patroni_bootstrap_state.json.members | length == 3
+        - patroni_bootstrap_state.json.members
+          | selectattr('role', 'equalto', 'leader') | list | length == 1
+        - patroni_bootstrap_state.json.members
+          | selectattr('role', 'equalto', 'replica') | list | length == 2
+
+    - name: "Finalize Patroni-managed PostgreSQL configuration after bootstrap"
+      ansible.builtin.include_role:
+        name: ansible-iac-role-postgresql
+
+- name: "Wait for Patroni members before idempotence run"
+  hosts: all
+  become: false
+  tasks:
+    - name: "Wait for the local Patroni API"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/patroni
+        status_code: 200
+      register: patroni_ready
+      retries: 90
+      delay: 2
+      until: patroni_ready.status == 200
+
+    - name: "Re-apply managed etcd configuration for idempotence coverage"
+      ansible.builtin.include_role:
+        name: ansible-iac-role-postgresql
+        tasks_from: etcd_present.yml
+      when: pg_cluster.dcs.etcd.enabled | default(false) | bool

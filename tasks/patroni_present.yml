@@ -29,13 +29,24 @@
     pg_patroni_config_path: "{{ pg_patroni_config_directory }}/{{ pg_version }}-{{ pg_instance }}.yml"
     pg_patroni_service_name: "patroni-{{ pg_version }}-{{ pg_instance }}.service"
 
+- name: "Ensuring managed etcd member is present"
+  ansible.builtin.include_tasks: etcd_present.yml
+  when:
+    - (pg_cluster.dcs.etcd | default({})).enabled | default(false) | bool
+
 - name: "Selecting Patroni packages"
   ansible.builtin.set_fact:
     pg_patroni_packages: >-
       {{
-        [pg_patroni_package]
-        + pg_patroni_additional_packages
-      | unique
+        (
+          [pg_patroni_package]
+          + (
+            [pg_patroni_etcd_package]
+            if (pg_cluster.dcs.provider | default('')) == 'etcd3'
+            else []
+          )
+          + pg_patroni_additional_packages
+        ) | unique
       }}
 
 - name: "Selecting Patroni Python DCS dependencies"
