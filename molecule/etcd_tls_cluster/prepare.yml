@@ -1,0 +1,68 @@
+---
+- name: "Prepare per-member etcd TLS certificates"
+  hosts: all
+  become: false
+  tasks:
+    - name: "Create the etcd PKI directory"
+      ansible.builtin.file:
+        path: /tmp/etcd-pki
+        state: directory
+        mode: "0700"
+
+    - name: "Create the shared etcd PKI directory"
+      ansible.builtin.file:
+        path: /etc/etcd/pki
+        state: directory
+        mode: "0755"
+
+    - name: "Generate a certificate for the local etcd member"
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - req
+          - -x509
+          - -nodes
+          - -newkey
+          - rsa:2048
+          - -keyout
+          - /tmp/etcd-pki/shared.key
+          - -out
+          - /tmp/etcd-pki/shared.crt
+          - -days
+          - "1"
+          - -subj
+          - /CN=etcd-cluster
+          - -addext
+          - subjectAltName=DNS:etcd01,DNS:etcd02,DNS:etcd03
+      args:
+        creates: /tmp/etcd-pki/shared.crt
+      when: inventory_hostname == 'etcd01'
+
+    - name: "Read the shared test certificate"
+      ansible.builtin.slurp:
+        src: /tmp/etcd-pki/shared.crt
+      delegate_to: etcd01
+      run_once: true
+      register: shared_etcd_certificate
+
+    - name: "Read the shared test private key"
+      ansible.builtin.slurp:
+        src: /tmp/etcd-pki/shared.key
+      delegate_to: etcd01
+      run_once: true
+      register: shared_etcd_key
+
+    - name: "Install the local certificate as the CA and peer/client certificate"
+      ansible.builtin.copy:
+        content: "{{ shared_etcd_certificate.content | b64decode }}"
+        dest: "{{ item }}"
+        mode: "0644"
+      loop:
+        - /etc/etcd/pki/ca.crt
+        - /etc/etcd/pki/etcd.crt
+
+    - name: "Install the local private key"
+      ansible.builtin.copy:
+        content: "{{ shared_etcd_key.content | b64decode }}"
+        dest: /etc/etcd/pki/etcd.key
+        mode: "0644"

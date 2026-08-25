@@ -1,0 +1,36 @@
+---
+- name: "Verify PGDG etcd on EL8 and EL10"
+  hosts: all
+  become: false
+  tasks:
+    - name: "Read operating system release"
+      ansible.builtin.command: rpm -E '%{rhel}'
+      register: rhel_major
+      changed_when: false
+
+    - name: "Check the matching PGDG extras repository"
+      ansible.builtin.command: "dnf repolist --enabled pgdg-rhel{{ rhel_major.stdout }}-extras"
+      changed_when: false
+
+    - name: "Check the PGDG etcd package and service"
+      ansible.builtin.command: "{{ item }}"
+      loop:
+        - rpm -q etcd
+        - systemctl is-enabled etcd.service
+        - systemctl is-active etcd.service
+      changed_when: false
+
+    - name: "Check the local etcd endpoint"
+      ansible.builtin.command:
+        argv: [etcdctl, "--endpoints=http://{{ inventory_hostname }}:2379", endpoint, health]
+      environment: {ETCDCTL_API: "3"}
+      changed_when: false
+
+    - name: "Check the local Patroni endpoint"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/patroni
+        status_code: 200
+      register: patroni_health
+      retries: 60
+      delay: 2
+      until: patroni_health.status == 200

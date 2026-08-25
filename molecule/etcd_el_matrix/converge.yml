@@ -1,0 +1,40 @@
+---
+- name: "Install managed PGDG etcd on EL8 and EL10"
+  hosts: all
+  become: false
+  vars:
+    state: install
+    pg_lang: "en"
+    pg_locale: "US"
+    pg_disable_postgresql_module: true
+    pg_patroni_reinitialize: true
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: molecule-etcd-el-matrix
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: ["http://{{ inventory_hostname }}:2379"]
+                proxy: "http://{{ inventory_hostname }}:2379"
+                etcd:
+                  enabled: true
+                  initial_cluster_token: molecule-etcd-el-matrix
+                  members:
+                    - {name: "{{ inventory_hostname }}", host: "{{ inventory_hostname }}", peer_url: "http://{{ inventory_hostname }}:2380", client_url: "http://{{ inventory_hostname }}:2379"}
+              patroni:
+                ttl: 30
+                loop_wait: 5
+                retry_timeout: 5
+                postgresql: {superuser_password: postgres_password, replication_username: replicator}
+                replication_password: replication_password
+                restapi: {port: 8008}
+              members:
+                - {host: "{{ inventory_hostname }}", instance: main, name: "molecule-etcd-el-matrix-{{ inventory_hostname }}"}
+          instances:
+            - name: main
+              cluster: molecule-etcd-el-matrix
+              configuration: {listen_addresses: "*", port: 5432, max_connections: 50}
+  roles:
+    - role: ansible-iac-role-postgresql

@@ -1,0 +1,101 @@
+---
+- name: "Verify the managed three-member TLS etcd cluster"
+  hosts: all
+  become: false
+  tasks:
+    - name: "Check TLS key and certificate permissions"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/etcd/pki/ca.crt
+        - /etc/etcd/pki/etcd.crt
+        - /etc/etcd/pki/etcd.key
+      register: tls_files
+
+    - name: "Assert TLS files are present and not writable by group/others"
+      ansible.builtin.assert:
+        that:
+          - tls_files.results | map(attribute='stat.exists') | select('equalto', true) | list | length == 3
+          - tls_files.results | map(attribute='stat.mode') | map('regex_search', '^0?6[04][04]$') | select('string') | list | length == 3
+
+    - name: "Check the local TLS etcd endpoint"
+      ansible.builtin.command:
+        argv:
+          - etcdctl
+          - --endpoints=https://{{ inventory_hostname }}:2379
+          - --cacert=/etc/etcd/pki/ca.crt
+          - --cert=/etc/etcd/pki/etcd.crt
+          - --key=/etc/etcd/pki/etcd.key
+          - endpoint
+          - health
+      environment: {ETCDCTL_API: "3"}
+      changed_when: false
+
+    - name: "Check all TLS etcd members"
+      ansible.builtin.command:
+        argv:
+          - etcdctl
+          - --endpoints=https://etcd01:2379,https://etcd02:2379,https://etcd03:2379
+          - --cacert=/etc/etcd/pki/ca.crt
+          - --cert=/etc/etcd/pki/etcd.crt
+          - --key=/etc/etcd/pki/etcd.key
+          - member
+          - list
+      environment: {ETCDCTL_API: "3"}
+      register: tls_members
+      changed_when: false
+
+    - name: "Assert TLS etcd quorum has three members"
+      ansible.builtin.assert:
+        that: tls_members.stdout_lines | length == 3
+
+    - name: "Check the local Patroni API"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/patroni
+        status_code: 200
+      register: patroni_health
+      retries: 60
+      delay: 2
+      until: patroni_health.status == 200
+
+- name: "Verify TLS etcd quorum recovery"
+  hosts: etcd01
+  become: false
+  tasks:
+    - name: "Write a TLS quorum key"
+      ansible.builtin.command:
+        argv: [etcdctl, "--endpoints=https://etcd01:2379,https://etcd02:2379,https://etcd03:2379", --cacert=/etc/etcd/pki/ca.crt, --cert=/etc/etcd/pki/etcd.crt, --key=/etc/etcd/pki/etcd.key, put, /molecule/tls-quorum, tls-quorum-survived]
+      environment: {ETCDCTL_API: "3"}
+      changed_when: true
+
+    - name: "Stop one TLS etcd member"
+      ansible.builtin.systemd_service:
+        name: etcd.service
+        state: stopped
+      delegate_to: etcd03
+
+    - name: "Verify TLS quorum remains healthy"
+      ansible.builtin.command:
+        argv: [etcdctl, "--endpoints=https://etcd01:2379,https://etcd02:2379", --cacert=/etc/etcd/pki/ca.crt, --cert=/etc/etcd/pki/etcd.crt, --key=/etc/etcd/pki/etcd.key, endpoint, health]
+      environment: {ETCDCTL_API: "3"}
+      changed_when: false
+
+    - name: "Restart the TLS etcd member"
+      ansible.builtin.systemd_service:
+        name: etcd.service
+        state: started
+      delegate_to: etcd03
+
+    - name: "Read the TLS quorum key after recovery"
+      ansible.builtin.command:
+        argv: [etcdctl, "--endpoints=https://etcd01:2379,https://etcd02:2379,https://etcd03:2379", --cacert=/etc/etcd/pki/ca.crt, --cert=/etc/etcd/pki/etcd.crt, --key=/etc/etcd/pki/etcd.key, get, /molecule/tls-quorum]
+      environment: {ETCDCTL_API: "3"}
+      register: tls_key
+      changed_when: false
+      retries: 30
+      delay: 2
+      until: tls_key.rc == 0
+
+    - name: "Assert TLS data survived quorum recovery"
+      ansible.builtin.assert:
+        that: "'tls-quorum-survived' in tls_key.stdout"

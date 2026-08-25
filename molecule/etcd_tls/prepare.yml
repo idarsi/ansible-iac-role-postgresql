@@ -1,0 +1,61 @@
+---
+- name: "Prepare a self-signed etcd TLS certificate"
+  hosts: all
+  become: false
+  tasks:
+    - name: "Create the etcd PKI directory"
+      ansible.builtin.file:
+        path: /tmp/etcd-pki
+        state: directory
+        mode: "0700"
+
+    - name: "Generate a certificate covering the Molecule etcd hostname"
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - req
+          - -x509
+          - -nodes
+          - -newkey
+          - rsa:2048
+          - -keyout
+          - /tmp/etcd-pki/etcd.key
+          - -out
+          - /tmp/etcd-pki/etcd.crt
+          - -days
+          - "1"
+          - -subj
+          - /CN=etcd01
+          - -addext
+          - subjectAltName=DNS:etcd01
+      args:
+        creates: /tmp/etcd-pki/etcd.crt
+
+    - name: "Create the etcd TLS configuration directory"
+      ansible.builtin.file:
+        path: /etc/etcd/pki
+        state: directory
+        mode: "0755"
+
+    - name: "Install the self-signed certificate as the CA"
+      ansible.builtin.copy:
+        src: /tmp/etcd-pki/etcd.crt
+        remote_src: true
+        dest: /etc/etcd/pki/ca.crt
+        mode: "0644"
+
+    - name: "Install the etcd certificate"
+      ansible.builtin.copy:
+        src: /tmp/etcd-pki/etcd.crt
+        remote_src: true
+        dest: /etc/etcd/pki/etcd.crt
+        mode: "0644"
+
+    - name: "Install the etcd private key"
+      ansible.builtin.copy:
+        src: /tmp/etcd-pki/etcd.key
+        remote_src: true
+        dest: /etc/etcd/pki/etcd.key
+        # The same temporary key is used by etcd and Patroni in this smoke test.
+        # Production deployments must provision separate, least-privilege keys.
+        mode: "0644"

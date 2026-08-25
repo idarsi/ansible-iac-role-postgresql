@@ -228,8 +228,28 @@
 
 - name: "Checking if PostgreSQL has instance initialized"
   ansible.builtin.stat:
-    path: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/pg_hba.conf"
+    path: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/PG_VERSION"
   register: postgres_data
+
+- name: "Checking if PostgreSQL data directory exists"
+  ansible.builtin.stat:
+    path: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}"
+  register: postgres_data_directory
+
+- name: "Setting Patroni data directory initialization state"
+  ansible.builtin.set_fact:
+    pg_patroni_data_initialized: "{{ pg_cluster_provider != 'patroni' or postgres_data.stat.exists }}"
+
+- name: "Ensuring Patroni bootstrap base configuration exists"
+  ansible.builtin.copy:
+    content: "# Managed by ansible-iac-role-postgresql\n"
+    dest: "{{ pg_patroni_config_directory }}/{{ pg_version }}-{{ pg_instance }}.base.conf"
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0600"
+  when:
+    - pg_cluster_provider == 'patroni'
+    - not pg_patroni_data_initialized | bool
 
 - name: "Setting log variables"
   ansible.builtin.set_fact:
@@ -240,7 +260,9 @@
       --lc-collate={{ pg_lc_collate }}
       --lc-ctype={{ pg_lc_ctype }}
       -k
-  when: not postgres_data.stat.exists
+  when:
+    - pg_cluster_provider != 'patroni'
+    - not postgres_data.stat.exists
 
 - name: "Ensuring instance is present"
   become: true
@@ -249,17 +271,30 @@
   register: my_output
   changed_when: my_output.rc == 0
   failed_when: my_output.rc != 0
-  when: not postgres_data.stat.exists
+  when:
+    - pg_cluster_provider != 'patroni'
+    - not postgres_data.stat.exists
 
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
   vars:
     iac_log_write: "Installed instance {{ pg_version }}/{{ pg_instance }}"
-  when: not postgres_data.stat.exists
+  when:
+    - pg_cluster_provider != 'patroni'
+    - not postgres_data.stat.exists
 
 ###############################################################################
 # ENSURING CONFIGURATION DIRECTORY EXISTS IF NEEDED
 ###############################################################################
+
+- name: "Ensuring initialized PostgreSQL data directory is present"
+  ansible.builtin.file:
+    path: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}"
+    state: directory
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0700"
+  when: pg_patroni_data_initialized | bool
 
 - name: "Ensuring directory conf.d is present"
   ansible.builtin.file:
@@ -268,6 +303,18 @@
     owner: "{{ pg_os_user }}"
     group: "{{ pg_os_group }}"
     mode: "0750"
+  when: pg_patroni_data_initialized | bool
+
+- name: "Ensuring Patroni base configuration includes conf.d"
+  ansible.builtin.copy:
+    content: "include = '{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/conf.d/*.conf'\n"
+    dest: "{{ pg_patroni_config_directory }}/{{ pg_version }}-{{ pg_instance }}.base.conf"
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0600"
+  when:
+    - pg_cluster_provider == 'patroni'
+    - pg_patroni_data_initialized | bool
 
 - name: "Ensuring PostgreSQL configuration has include_dir to conf.d"
   ansible.builtin.lineinfile:
@@ -277,6 +324,7 @@
     owner: "{{ pg_os_user }}"
     group: "{{ pg_os_group }}"
     mode: "0600"
+  when: pg_cluster_provider != 'patroni'
 
 ###############################################################################
 # ENSURING PROFILE CONFIGURATION EXISTS IF NEEDED
@@ -289,7 +337,9 @@
     owner: "{{ pg_os_user }}"
     group: "{{ pg_os_group }}"
     mode: "0640"
-  when: pg_profile is defined
+  when:
+    - pg_profile is defined
+    - pg_patroni_data_initialized | bool
 
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
@@ -308,7 +358,9 @@
     owner: "{{ pg_os_user }}"
     group: "{{ pg_os_group }}"
     mode: "0640"
-  when: pg_security is defined
+  when:
+    - pg_security is defined
+    - pg_patroni_data_initialized | bool
 
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
@@ -322,7 +374,9 @@
 
 - name: "Ensure certification is present"
   ansible.builtin.include_tasks: "certification_present.yml"
-  when: pg_security_ssl != 'off'
+  when:
+    - pg_security_ssl != 'off'
+    - pg_patroni_data_initialized | bool
 
 ###############################################################################
 # OTHER SECURITY MEASURES
@@ -364,7 +418,9 @@
     mode: "0640"
     owner: "{{ pg_os_user }}"
     group: "{{ pg_os_group }}"
-  when: rendered_lines is defined
+  when:
+    - rendered_lines is defined
+    - pg_patroni_data_initialized | bool
 
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
@@ -383,7 +439,9 @@
     mode: "0640"
     owner: "{{ pg_os_user }}"
     group: "{{ pg_os_group }}"
-  when: pg_autotuning is defined
+  when:
+    - pg_autotuning is defined
+    - pg_patroni_data_initialized | bool
 
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
@@ -402,13 +460,17 @@
     mode: "0640"
     owner: "{{ pg_os_user }}"
     group: "{{ pg_os_group }}"
-  when: pg_replication_enabled | default(false)
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_patroni_data_initialized | bool
 
 - name: "Removing replication configuration when not configured"
   ansible.builtin.file:
     path: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/conf.d/44-replication.conf"
     state: absent
-  when: not (pg_replication_enabled | default(false))
+  when:
+    - not (pg_replication_enabled | default(false))
+    - pg_patroni_data_initialized | bool
 
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
@@ -427,6 +489,7 @@
     owner: "{{ pg_os_user }}"
     group: "{{ pg_os_group }}"
     mode: "0600"
+  when: pg_patroni_data_initialized | bool
 
 - name: "Initializing Patroni authentication credentials"
   become: true
@@ -481,7 +544,7 @@
     mode: "0700"
   when:
     - pg_cluster_provider == 'patroni'
-    - pg_patroni_reinitialize | bool
+    - pg_patroni_reinitialize | bool or not postgres_data_directory.stat.exists
 
 ###############################################################################
 # ENSURING DEFAULT PG_IDENT.CONF IS DELETED AND NEW WRITTEN
@@ -491,7 +554,9 @@
   ansible.builtin.file:
     path: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/pg_ident.conf"
     state: absent
-  when: pg_maprole | length == 0
+  when:
+    - pg_maprole | length == 0
+    - pg_patroni_data_initialized | bool
 
 - name: "Ensure pg_ident.conf access rules are present"
   ansible.builtin.template:
@@ -500,7 +565,9 @@
     owner: "{{ pg_os_user }}"
     group: "{{ pg_os_group }}"
     mode: "0600"
-  when: pg_maprole | length > 0
+  when:
+    - pg_maprole | length > 0
+    - pg_patroni_data_initialized | bool
 
 ###############################################################################
 # ENSURING LOG DIRECTORY EXISTS

@@ -22,6 +22,18 @@
                 endpoints:
                   - https://etcd01.example.org:2379
                   - https://etcd02.example.org:2379
+                etcd:
+                  enabled: true
+                  initial_cluster_token: validation-dcs
+                  members:
+                    - name: etcd01
+                      host: etcd01.example.org
+                      peer_url: https://etcd01.example.org:2380
+                      client_url: https://etcd01.example.org:2379
+                    - name: etcd02
+                      host: etcd02.example.org
+                      peer_url: https://etcd02.example.org:2380
+                      client_url: https://etcd02.example.org:2379
               patroni:
                 ttl: 30
                 loop_wait: 10
@@ -49,6 +61,122 @@
         dest: /tmp/postgresql-validation-valid.ok
         content: "ok\n"
         mode: "0644"
+
+- name: "Reject duplicate managed etcd member names"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: duplicate-etcd-members
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints:
+                  - https://etcd01.example.org:2379
+                etcd:
+                  enabled: true
+                  initial_cluster_token: duplicate-dcs
+                  members:
+                    - name: duplicate
+                      host: etcd01.example.org
+                      peer_url: https://etcd01.example.org:2380
+                      client_url: https://etcd01.example.org:2379
+                    - name: duplicate
+                      host: etcd02.example.org
+                      peer_url: https://etcd02.example.org:2380
+                      client_url: https://etcd02.example.org:2379
+              patroni: {}
+              members:
+                - host: instance-idarsi-validation
+                  instance: main
+                  name: duplicate-etcd-member-test
+          instances:
+            - name: main
+              cluster: duplicate-etcd-members
+  tasks:
+    - name: "Running validation expecting duplicate managed etcd member failure"
+      block:
+        - name: "Applying duplicate managed etcd member names"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if duplicate managed etcd names were accepted"
+          ansible.builtin.fail:
+            msg: "Duplicate managed etcd member names were accepted"
+      rescue:
+        - name: "Checking duplicate managed etcd member failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("Managed etcd member names must be unique")
+        - name: "Writing duplicate managed etcd marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-duplicate-etcd-member.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject incomplete managed etcd TLS configuration"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: incomplete-etcd-tls
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints:
+                  - https://etcd01.example.org:2379
+                etcd:
+                  enabled: true
+                  initial_cluster_token: incomplete-tls
+                  members:
+                    - name: etcd01
+                      host: etcd01.example.org
+                      peer_url: https://etcd01.example.org:2380
+                      client_url: https://etcd01.example.org:2379
+                  tls:
+                    enabled: true
+                    client:
+                      ca_file: /etc/etcd/pki/ca.crt
+              patroni: {}
+              members:
+                - host: instance-idarsi-validation
+                  instance: main
+                  name: incomplete-etcd-tls-member
+          instances:
+            - name: main
+              cluster: incomplete-etcd-tls
+  tasks:
+    - name: "Running validation expecting incomplete TLS failure"
+      block:
+        - name: "Applying incomplete managed etcd TLS configuration"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if incomplete TLS was accepted"
+          ansible.builtin.fail:
+            msg: "Incomplete managed etcd TLS configuration was accepted"
+      rescue:
+        - name: "Checking incomplete TLS failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("Managed etcd TLS requires client and peer CA")
+        - name: "Writing incomplete TLS marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-incomplete-etcd-tls.ok
+            content: "ok\n"
+            mode: "0644"
 
 - name: "Reject an unsupported TimescaleDB source"
   hosts: all

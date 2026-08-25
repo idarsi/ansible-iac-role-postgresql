@@ -1,0 +1,141 @@
+---
+- name: "Verify the TLS-enabled managed etcd member"
+  hosts: all
+  become: false
+  vars:
+    etcdctl_tls_args:
+      - --cacert=/etc/etcd/pki/ca.crt
+      - --cert=/etc/etcd/pki/etcd.crt
+      - --key=/etc/etcd/pki/etcd.key
+  tasks:
+    - name: "Check the etcd service is active"
+      ansible.builtin.command: systemctl is-active etcd.service
+      changed_when: false
+
+    - name: "Check the TLS etcd endpoint"
+      ansible.builtin.command:
+        argv: "{{ ['etcdctl', '--endpoints=https://etcd01:2379'] + etcdctl_tls_args + ['endpoint', 'health'] }}"
+      environment:
+        ETCDCTL_API: "3"
+      register: etcd_tls_health
+      changed_when: false
+      retries: 30
+      delay: 2
+      until: etcd_tls_health.rc == 0
+
+    - name: "Write a key through the TLS etcd endpoint"
+      ansible.builtin.command:
+        argv: "{{ ['etcdctl', '--endpoints=https://etcd01:2379'] + etcdctl_tls_args + ['put', '/molecule/etcd-tls-test', 'tls-enabled'] }}"
+      environment:
+        ETCDCTL_API: "3"
+      changed_when: true
+
+    - name: "Read the key through the TLS etcd endpoint"
+      ansible.builtin.command:
+        argv: "{{ ['etcdctl', '--endpoints=https://etcd01:2379'] + etcdctl_tls_args + ['get', '/molecule/etcd-tls-test'] }}"
+      environment:
+        ETCDCTL_API: "3"
+      register: etcd_tls_get
+      changed_when: false
+
+    - name: "Assert the TLS etcd round trip succeeded"
+      ansible.builtin.assert:
+        that:
+          - "'tls-enabled' in etcd_tls_get.stdout"
+
+    - name: "Check Patroni is using the TLS DCS"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/patroni
+        status_code: 200
+      register: patroni_tls_health
+      retries: 60
+      delay: 2
+      until: patroni_tls_health.status == 200
+
+    - name: "Save the original TLS material"
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        remote_src: true
+        dest: "{{ item.dest }}"
+        mode: "0600"
+      loop:
+        - {src: /etc/etcd/pki/ca.crt, dest: /tmp/old-ca.crt}
+        - {src: /etc/etcd/pki/etcd.crt, dest: /tmp/old-etcd.crt}
+        - {src: /etc/etcd/pki/etcd.key, dest: /tmp/old-etcd.key}
+
+    - name: "Generate replacement TLS material"
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - req
+          - -x509
+          - -nodes
+          - -newkey
+          - rsa:2048
+          - -keyout
+          - /tmp/new-etcd.key
+          - -out
+          - /tmp/new-etcd.crt
+          - -days
+          - "1"
+          - -subj
+          - /CN=etcd01
+          - -addext
+          - subjectAltName=DNS:etcd01
+      args:
+        creates: /tmp/new-etcd.crt
+
+    - name: "Install replacement TLS material"
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        remote_src: true
+        dest: "{{ item.dest }}"
+        mode: "0644"
+      loop:
+        - {src: /tmp/new-etcd.crt, dest: /etc/etcd/pki/ca.crt}
+        - {src: /tmp/new-etcd.crt, dest: /etc/etcd/pki/etcd.crt}
+        - {src: /tmp/new-etcd.key, dest: /etc/etcd/pki/etcd.key}
+
+    - name: "Restart etcd and Patroni after TLS rotation"
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: restarted
+      loop:
+        - etcd.service
+        - patroni-17-main.service
+
+    - name: "Verify the rotated TLS certificate works"
+      ansible.builtin.command:
+        argv: "{{ ['etcdctl', '--endpoints=https://etcd01:2379'] + etcdctl_tls_args + ['endpoint', 'health'] }}"
+      environment:
+        ETCDCTL_API: "3"
+      register: rotated_tls_health
+      changed_when: false
+      retries: 30
+      delay: 2
+      until: rotated_tls_health.rc == 0
+
+    - name: "Verify the old TLS certificate no longer works"
+      ansible.builtin.command:
+        argv:
+          - etcdctl
+          - --endpoints=https://etcd01:2379
+          - --cacert=/tmp/old-ca.crt
+          - --cert=/tmp/old-etcd.crt
+          - --key=/tmp/old-etcd.key
+          - endpoint
+          - health
+      environment:
+        ETCDCTL_API: "3"
+      register: old_tls_health
+      changed_when: false
+      failed_when: old_tls_health.rc == 0
+
+    - name: "Verify Patroni recovered after TLS rotation"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/patroni
+        status_code: 200
+      register: rotated_patroni_health
+      retries: 60
+      delay: 2
+      until: rotated_patroni_health.status == 200

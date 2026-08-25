@@ -1,0 +1,53 @@
+---
+- name: "Install the managed three-member TLS etcd cluster"
+  hosts: all
+  become: false
+  vars:
+    state: install
+    pg_lang: "en"
+    pg_locale: "US"
+    pg_disable_postgresql_module: false
+    pg_patroni_reinitialize: true
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: molecule-etcd-tls-cluster
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints:
+                  - https://etcd01:2379
+                  - https://etcd02:2379
+                  - https://etcd03:2379
+                proxy: https://etcd01:2379
+                etcd:
+                  enabled: true
+                  initial_cluster_token: molecule-etcd-tls-cluster
+                  members:
+                    - {name: etcd01, host: etcd01, peer_url: https://etcd01:2380, client_url: https://etcd01:2379}
+                    - {name: etcd02, host: etcd02, peer_url: https://etcd02:2380, client_url: https://etcd02:2379}
+                    - {name: etcd03, host: etcd03, peer_url: https://etcd03:2380, client_url: https://etcd03:2379}
+                  tls:
+                    enabled: true
+                    client: {ca_file: /etc/etcd/pki/ca.crt, cert_file: /etc/etcd/pki/etcd.crt, key_file: /etc/etcd/pki/etcd.key}
+                    peer: {ca_file: /etc/etcd/pki/ca.crt, cert_file: /etc/etcd/pki/etcd.crt, key_file: /etc/etcd/pki/etcd.key}
+              patroni:
+                ttl: 30
+                loop_wait: 5
+                retry_timeout: 5
+                postgresql:
+                  superuser_password: postgres_password
+                  replication_username: replicator
+                replication_password: replication_password
+                restapi: {port: 8008}
+              members:
+                - {host: etcd01, instance: main, name: molecule-etcd-tls-cluster-etcd01}
+                - {host: etcd02, instance: main, name: molecule-etcd-tls-cluster-etcd02}
+                - {host: etcd03, instance: main, name: molecule-etcd-tls-cluster-etcd03}
+          instances:
+            - name: main
+              cluster: molecule-etcd-tls-cluster
+              configuration: {listen_addresses: "*", port: 5432, max_connections: 50}
+  roles:
+    - role: ansible-iac-role-postgresql

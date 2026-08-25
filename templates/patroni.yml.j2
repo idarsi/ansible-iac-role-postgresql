@@ -18,6 +18,12 @@ etcd3:
 {% if pg_cluster.dcs.use_proxies is defined %}
   use_proxies: {{ pg_cluster.dcs.use_proxies | bool | lower }}
 {% endif %}
+{% if (pg_cluster.dcs.etcd.tls | default({})).enabled | default(false) | bool %}
+  protocol: https
+  cacert: {{ pg_cluster.dcs.etcd.tls.client.ca_file }}
+  cert: {{ pg_cluster.dcs.etcd.tls.client.cert_file }}
+  key: {{ pg_cluster.dcs.etcd.tls.client.key_file }}
+{% endif %}
 {% elif pg_cluster.dcs.provider == 'consul' %}
 consul:
   hosts: {{ pg_cluster.dcs.endpoints | join(',') }}
@@ -54,6 +60,7 @@ postgresql:
   listen: 0.0.0.0:{{ pg_instance_record.1.configuration.port | default(pg_default_port) }}
   connect_address: {{ pg_patroni_postgresql_connect_address_effective }}
   data_dir: {{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}
+  custom_conf: {{ pg_patroni_config_directory }}/{{ pg_version }}-{{ pg_instance }}.base.conf
   bin_dir: /usr/pgsql-{{ pg_version }}/bin
   pgpass: {{ pg_bind_dir }}/{{ pg_version }}/.patroni-{{ pg_instance }}.pgpass
   authentication:
