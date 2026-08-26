@@ -4,6 +4,7 @@
   become: false
   vars:
     state: install
+    pg_patroni_restapi_listen_address: "0.0.0.0"
     pg_patroni_reinitialize: false
     pg_lang: "en"
     pg_locale: "US"
@@ -51,6 +52,9 @@
                   - host replication replicator 0.0.0.0/0 scram-sha-256
                 restapi:
                   port: 8008
+                  authentication:
+                    username: patroni
+                    password: patroni_password
               members:
                 - host: etcd01
                   instance: main

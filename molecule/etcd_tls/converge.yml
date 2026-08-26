@@ -4,6 +4,7 @@
   become: false
   vars:
     state: install
+    pg_patroni_restapi_listen_address: "0.0.0.0"
     pg_lang: "en"
     pg_locale: "US"
     pg_disable_postgresql_module: false
@@ -47,6 +48,9 @@
                 replication_password: replication_password
                 restapi:
                   port: 8008
+                  authentication:
+                    username: patroni
+                    password: patroni_password
               members:
                 - host: etcd01
                   instance: main

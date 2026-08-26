@@ -5,6 +5,7 @@
   vars:
     state: clusters_present
     pg_patroni_package: bash
+    pg_patroni_etcd_package: bash
     pg_patroni_user: root
     pg_patroni_group: root
     pg_patroni_config_directory: /tmp/patroni
@@ -26,6 +27,13 @@
                 retry_timeout: 10
                 restapi:
                   port: 18008
+                  authentication:
+                    username: patroni
+                    password: patroni_password
+                  cafile: /etc/patroni/pki/ca.crt
+                  certfile: /etc/patroni/pki/server.crt
+                  keyfile: /etc/patroni/pki/server.key
+                  verify_client: optional
               members:
                 - host: instance-idarsi-patroni
                   instance: main

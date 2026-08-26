@@ -20,6 +20,9 @@
     pg_patroni: "{{ pg_cluster.patroni | default({}) }}"
     pg_patroni_name: "{{ pg_patroni_member.name }}"
     pg_patroni_restapi_port_effective: "{{ (pg_cluster.patroni.restapi | default({})).port | default(pg_patroni_restapi_port) }}"
+    pg_patroni_restapi_listen_effective: >-
+      {{ (pg_cluster.patroni.restapi | default({})).listen
+         | default(pg_patroni_restapi_listen_address ~ ':' ~ ((pg_cluster.patroni.restapi | default({})).port | default(pg_patroni_restapi_port))) }}
     pg_patroni_restapi_connect_address_effective: >-
       {{ (pg_cluster.patroni.restapi | default({})).connect_address
          | default(inventory_hostname ~ ':' ~ ((pg_cluster.patroni.restapi | default({})).port | default(pg_patroni_restapi_port))) }}
@@ -127,6 +130,7 @@
     owner: root
     group: "{{ pg_patroni_group }}"
     mode: "0640"
+  no_log: true
 
 - name: "Ensuring systemd service directory exists"
   ansible.builtin.file:

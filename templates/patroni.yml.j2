@@ -2,11 +2,27 @@ scope: {{ pg_cluster.name }}
 name: {{ pg_patroni_name }}
 
 restapi:
-  listen: 0.0.0.0:{{ pg_patroni_restapi_port_effective }}
-  connect_address: {{ pg_patroni_restapi_connect_address_effective }}
-{% if pg_patroni.restapi is defined and pg_patroni.restapi.username is defined %}
-  username: {{ pg_patroni.restapi.username }}
-  password: {{ pg_patroni.restapi.password }}
+  listen: {{ pg_patroni_restapi_listen_effective | to_json }}
+  connect_address: {{ pg_patroni_restapi_connect_address_effective | to_json }}
+  authentication:
+    username: {{ pg_patroni.restapi.authentication.username | to_json }}
+    password: {{ pg_patroni.restapi.authentication.password | to_json }}
+{% if pg_patroni.restapi.allowlist is defined %}
+  allowlist:
+{% for address in pg_patroni.restapi.allowlist %}
+    - {{ address | to_json }}
+{% endfor %}
+{% else %}
+  allowlist:
+{% for member in pg_cluster.members | unique(attribute='host') %}
+    - {{ member.host | to_json }}
+{% endfor %}
+{% endif %}
+{% if pg_patroni.restapi.cafile is defined %}
+  cafile: {{ pg_patroni.restapi.cafile | to_json }}
+  certfile: {{ pg_patroni.restapi.certfile | to_json }}
+  keyfile: {{ pg_patroni.restapi.keyfile | to_json }}
+  verify_client: {{ pg_patroni.restapi.verify_client | default('none') | to_json }}
 {% endif %}
 
 {% if pg_cluster.dcs.provider == 'etcd3' %}
