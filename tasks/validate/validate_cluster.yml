@@ -32,10 +32,78 @@
       - pg_validation_cluster_record.dcs.endpoints | length > 0
       - pg_validation_cluster_record.patroni is defined
       - pg_validation_cluster_record.patroni | type_debug == 'dict'
+      - pg_validation_cluster_record.patroni.restapi is defined
+      - pg_validation_cluster_record.patroni.restapi | type_debug == 'dict'
+      - pg_validation_cluster_record.patroni.restapi.authentication is defined
+      - pg_validation_cluster_record.patroni.restapi.authentication | type_debug == 'dict'
+      - pg_validation_cluster_record.patroni.restapi.authentication.username is defined
+      - pg_validation_cluster_record.patroni.restapi.authentication.username | string | length > 0
+      - pg_validation_cluster_record.patroni.restapi.authentication.password is defined
+      - pg_validation_cluster_record.patroni.restapi.authentication.password | string | length > 0
     fail_msg: >-
-      Patroni clusters require a DCS provider, a list of DCS endpoints, and an
-      Patroni configuration object
+      Patroni clusters require a DCS provider, a list of DCS endpoints, a
+      Patroni configuration object, and REST API authentication credentials
   when: pg_validation_cluster_record.provider == 'patroni'
+
+- name: "Checking Patroni REST API listen address"
+  ansible.builtin.assert:
+    that:
+      - >-
+        pg_validation_cluster_record.patroni.restapi.listen is not defined
+        or (
+          pg_validation_cluster_record.patroni.restapi.listen | string
+          is not match('^(0\\.0\\.0\\.0|\\*|::)(:|$)')
+        )
+    fail_msg: "Patroni REST API must not listen on a wildcard address"
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.restapi is defined
+
+- name: "Checking Patroni REST API allowlist"
+  ansible.builtin.assert:
+    that:
+      - >-
+        pg_validation_cluster_record.patroni.restapi.allowlist is not defined
+        or (
+          pg_validation_cluster_record.patroni.restapi.allowlist | type_debug == 'list'
+          and pg_validation_cluster_record.patroni.restapi.allowlist | length > 0
+        )
+    fail_msg: "Patroni REST API allowlist must be a non-empty list"
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.restapi is defined
+
+- name: "Checking Patroni REST API TLS configuration"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          pg_validation_cluster_record.patroni.restapi.cafile is not defined
+          and pg_validation_cluster_record.patroni.restapi.certfile is not defined
+          and pg_validation_cluster_record.patroni.restapi.keyfile is not defined
+        )
+        or (
+          pg_validation_cluster_record.patroni.restapi.cafile is defined
+          and pg_validation_cluster_record.patroni.restapi.certfile is defined
+          and pg_validation_cluster_record.patroni.restapi.keyfile is defined
+        )
+      - >-
+        pg_validation_cluster_record.patroni.restapi.verify_client is not defined
+        or pg_validation_cluster_record.patroni.restapi.verify_client in ['none', 'optional', 'required']
+      - >-
+        pg_validation_cluster_record.patroni.restapi.verify_client is not defined
+        or pg_validation_cluster_record.patroni.restapi.verify_client == 'none'
+        or (
+          pg_validation_cluster_record.patroni.restapi.cafile is defined
+          and pg_validation_cluster_record.patroni.restapi.certfile is defined
+          and pg_validation_cluster_record.patroni.restapi.keyfile is defined
+        )
+    fail_msg: >-
+      Patroni REST API TLS requires cafile, certfile, and keyfile together;
+      verify_client must be none, optional, or required
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.restapi is defined
 
 - name: "Validating managed etcd configuration"
   ansible.builtin.include_tasks: validate_etcd.yml

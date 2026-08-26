@@ -144,3 +144,4 @@ pg_patroni_config_directory: "/etc/patroni"
 pg_patroni_user: "postgres"
 pg_patroni_group: "postgres"
 pg_patroni_restapi_port: 8008
+pg_patroni_restapi_listen_address: "{{ inventory_hostname }}"

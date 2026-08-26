@@ -38,6 +38,10 @@
                 ttl: 30
                 loop_wait: 10
                 retry_timeout: 10
+                restapi:
+                  authentication:
+                    username: patroni
+                    password: patroni_password
               members:
                 - host: instance-idarsi-validation
                   instance: community
@@ -89,7 +93,9 @@
                       host: etcd02.example.org
                       peer_url: https://etcd02.example.org:2380
                       client_url: https://etcd02.example.org:2379
-              patroni: {}
+              patroni:
+                restapi:
+                  authentication: {username: patroni, password: patroni_password}
               members:
                 - host: instance-idarsi-validation
                   instance: main
@@ -147,7 +153,9 @@
                     enabled: true
                     client:
                       ca_file: /etc/etcd/pki/ca.crt
-              patroni: {}
+              patroni:
+                restapi:
+                  authentication: {username: patroni, password: patroni_password}
               members:
                 - host: instance-idarsi-validation
                   instance: main
@@ -235,6 +243,8 @@
                 ttl: 20
                 loop_wait: 10
                 retry_timeout: 10
+                restapi:
+                  authentication: {username: patroni, password: patroni_password}
               members:
                 - host: instance-idarsi-validation
                   instance: main
@@ -280,7 +290,9 @@
                 provider: etcd3
                 endpoints:
                   - https://etcd01.example.org:2379
-              patroni: {}
+              patroni:
+                restapi:
+                  authentication: {username: patroni, password: patroni_password}
               members:
                 - host: another-host.example.org
                   instance: main
@@ -402,7 +414,9 @@
               dcs:
                 provider: etcd3
                 endpoints: []
-              patroni: {}
+              patroni:
+                restapi:
+                  authentication: {username: patroni, password: patroni_password}
               members:
                 - host: instance-idarsi-validation
                   instance: main
@@ -448,7 +462,9 @@
                 provider: etcd3
                 endpoints:
                   - https://etcd01.example.org:2379
-              patroni: {}
+              patroni:
+                restapi:
+                  authentication: {username: patroni, password: patroni_password}
               members:
                 - host: instance-idarsi-validation
                   instance: main
@@ -548,5 +564,52 @@
         - name: "Writing missing blueprint marker"
           ansible.builtin.copy:
             dest: /tmp/postgresql-validation-missing-blueprint.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject Patroni REST API without authentication"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: missing-restapi-authentication
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints:
+                  - https://etcd01.example.org:2379
+              patroni:
+                restapi: {}
+              members:
+                - host: instance-idarsi-validation
+                  instance: main
+                  name: missing-restapi-authentication-member
+          instances:
+            - name: main
+              cluster: missing-restapi-authentication
+  tasks:
+    - name: "Running validation expecting missing REST API authentication failure"
+      block:
+        - name: "Applying Patroni configuration without REST API authentication"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if missing REST API authentication was accepted"
+          ansible.builtin.fail:
+            msg: "Patroni REST API without authentication was accepted"
+      rescue:
+        - name: "Checking missing REST API authentication failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("REST API authentication credentials")
+        - name: "Writing missing REST API authentication marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-missing-restapi-authentication.ok
             content: "ok\n"
             mode: "0644"

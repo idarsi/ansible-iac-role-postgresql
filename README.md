@@ -265,6 +265,13 @@ iac_blueprint:
             loop_wait: 10
             retry_timeout: 10
             synchronous_mode: false
+            restapi:
+              authentication:
+                username: patroni
+                password: "{{ vault_patroni_restapi_password }}"
+              allowlist:
+                - db01.example.org
+                - db02.example.org
           members:
             - host: db01.example.org
               instance: main
