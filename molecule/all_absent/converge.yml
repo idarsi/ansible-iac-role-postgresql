@@ -192,7 +192,7 @@
               update: true
           cron:
             - name: pg17_heartbeat
-              user: root
+              user: postgres
               minute: "0"
               hour: "3"
               job: "/bin/true"
@@ -255,7 +255,7 @@
               update: true
           cron:
             - name: pg17_heartbeat
-              user: root
+              user: postgres
               minute: "0"
               hour: "3"
               job: "/bin/true"

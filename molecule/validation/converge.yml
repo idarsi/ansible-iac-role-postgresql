@@ -14,6 +14,10 @@
                   extensions:
                     - name: timescaledb
         - version: 17
+          post_install:
+            jobs:
+              - database: metrics
+                sql: "CREATE TABLE IF NOT EXISTS validation_marker (id integer);"
           clusters:
             - name: validation-cluster
               provider: patroni
@@ -589,8 +593,8 @@
                   instance: main
                   name: missing-restapi-authentication-member
           instances:
-            - name: main
-              cluster: missing-restapi-authentication
+              - name: main
+                cluster: missing-restapi-authentication
   tasks:
     - name: "Running validation expecting missing REST API authentication failure"
       block:
@@ -611,5 +615,115 @@
         - name: "Writing missing REST API authentication marker"
           ansible.builtin.copy:
             dest: /tmp/postgresql-validation-missing-restapi-authentication.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject PostgreSQL post-install shell commands"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          post_install:
+            jobs:
+              - command: "id"
+                run_as: root
+          instances:
+            - name: main
+  tasks:
+    - name: "Running validation expecting post-install shell rejection"
+      block:
+        - name: "Applying a shell post-install job"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if shell post-install was accepted"
+          ansible.builtin.fail:
+            msg: "Shell post-install job was accepted"
+      rescue:
+        - name: "Checking post-install shell rejection"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("post-install jobs must use a non-empty sql field")
+        - name: "Writing post-install validation marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-post-install.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject PostgreSQL root cron jobs"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          cron:
+            - name: unsafe
+              user: root
+              job: "/bin/true"
+          instances:
+            - name: main
+  tasks:
+    - name: "Running validation expecting root cron rejection"
+      block:
+        - name: "Applying a root cron job"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if root cron was accepted"
+          ansible.builtin.fail:
+            msg: "Root cron job was accepted"
+      rescue:
+        - name: "Checking root cron rejection"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("must define a non-empty job and run as the postgres user")
+        - name: "Writing cron validation marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-cron.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject PostgreSQL protected filesystem paths"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          files:
+            - path: /etc/patroni/unsafe.yml
+              content: "unsafe\n"
+          instances:
+            - name: main
+  tasks:
+    - name: "Running validation expecting protected path rejection"
+      block:
+        - name: "Applying a protected filesystem path"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if protected path was accepted"
+          ansible.builtin.fail:
+            msg: "Protected filesystem path was accepted"
+      rescue:
+        - name: "Checking protected path rejection"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("filesystem paths must be safe")
+        - name: "Writing filesystem validation marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-filesystem.ok
             content: "ok\n"
             mode: "0644"

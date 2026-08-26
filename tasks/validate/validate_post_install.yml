@@ -1,0 +1,21 @@
+---
+- name: "Checking PostgreSQL post-install structure"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_post_install.jobs is not defined or pg_validation_post_install.jobs | type_debug == 'list'
+    fail_msg: "PostgreSQL post_install.jobs must be a list"
+
+- name: "Checking PostgreSQL post-install SQL jobs"
+  ansible.builtin.assert:
+    that:
+      - item | type_debug == 'dict'
+      - item.sql is defined
+      - item.sql | type_debug == 'str'
+      - item.sql | length > 0
+      - item.database is not defined or item.database | string is match('^[A-Za-z_][A-Za-z0-9_$-]*$')
+      - item.command is not defined
+      - item.run_as is not defined
+    fail_msg: >-
+      PostgreSQL post-install jobs must use a non-empty sql field and cannot
+      define command or run_as
+  loop: "{{ pg_validation_post_install.jobs | default([]) }}"

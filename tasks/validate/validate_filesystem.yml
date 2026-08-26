@@ -1,0 +1,34 @@
+---
+- name: "Checking PostgreSQL filesystem record types"
+  ansible.builtin.assert:
+    that:
+      - item | type_debug == 'dict'
+      - item.path is defined
+      - item.path | type_debug == 'str'
+      - item.path is match('^/')
+      - item.path is not search('(^|/)\.\.(/|$)')
+      - item.owner | default('root') in ['root', 'postgres']
+      - item.group | default('root') in ['root', 'postgres']
+      - item.mode is not defined or item.mode | string is match('^0[0-7]{3}$')
+      - item.mode is not defined or item.mode | string is not search('[2367]$')
+      - >-
+        item.path is match('^/var/lib/pgsql/[^/].*$')
+        or item.path is match('^/var/log/pgsql/[^/].*$')
+        or item.path is match('^/etc/pgsql/[^/].*$')
+        or item.path is match('^/tmp/[^/].*$')
+      - item.path is not match('^/var/lib/pgsql/[0-9]+(/|$)')
+      - item.path is not match('^/etc/(patroni|etcd)(/|$)')
+      - item.path is not match('^/var/lib/etcd(/|$)')
+      - item.path is not match('^/usr/lib/systemd(/|$)')
+    fail_msg: >-
+      PostgreSQL blueprint filesystem paths must be safe, remain under the
+      approved PostgreSQL auxiliary directories, and use root or postgres
+      ownership without world-writable permissions
+  loop: "{{ pg_validation_filesystem_directories + pg_validation_filesystem_files }}"
+
+- name: "Checking PostgreSQL file record contents"
+  ansible.builtin.assert:
+    that:
+      - item.content is defined or item.src is defined
+    fail_msg: "Each PostgreSQL file record must define content or src"
+  loop: "{{ pg_validation_filesystem_files }}"

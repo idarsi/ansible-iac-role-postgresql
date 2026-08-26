@@ -1,0 +1,16 @@
+---
+- name: "Checking PostgreSQL cron records"
+  ansible.builtin.assert:
+    that:
+      - item | type_debug == 'dict'
+      - item.name is defined
+      - item.name | string | length > 0
+      - item.job is defined
+      - item.job | string | length > 0
+      - item.user is defined
+      - item.user == 'postgres'
+      - item.cron_file is not defined or item.cron_file | string is match('^[A-Za-z0-9_.-]+$')
+    fail_msg: >-
+      PostgreSQL cron jobs must define a non-empty job and run as the
+      postgres user; cron_file must be a simple filename
+  loop: "{{ pg_validation_cron_records }}"
