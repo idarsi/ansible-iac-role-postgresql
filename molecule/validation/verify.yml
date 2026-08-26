@@ -19,6 +19,9 @@
         - /tmp/postgresql-validation-duplicate-patroni-member.ok
         - /tmp/postgresql-validation-incomplete-etcd-tls.ok
         - /tmp/postgresql-validation-missing-restapi-authentication.ok
+        - /tmp/postgresql-validation-post-install.ok
+        - /tmp/postgresql-validation-cron.ok
+        - /tmp/postgresql-validation-filesystem.ok
       register: pg_validation_markers
 
     - name: "Checking all validation cases completed"

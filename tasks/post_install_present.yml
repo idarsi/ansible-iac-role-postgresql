@@ -21,6 +21,17 @@
 # LOOPING THROUGH DIRECTORIES
 ###############################################################################
 
-- name: "Looping through post install scripts" # noqa command-instead-of-shell no-changed-when partial-become
-  become_user: "{{ iac_post_install_job.run_as }}"
-  ansible.builtin.shell: "{{ iac_post_install_job.command }}"
+- name: "Running PostgreSQL post-install SQL"
+  become: true
+  become_user: "postgres"
+  ansible.builtin.command:
+    argv:
+      - "/usr/pgsql-{{ pg_version }}/bin/psql"
+      - "{{ iac_post_install_job.database | default('postgres') }}"
+      - "-p"
+      - "{{ pg_port | string }}"
+      - "-v"
+      - "ON_ERROR_STOP=1"
+  args:
+    stdin: "{{ iac_post_install_job.sql }}"
+  changed_when: true

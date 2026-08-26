@@ -23,7 +23,7 @@
               mode: "0640"
           cron:
             - name: pg17_heartbeat
-              user: root
+              user: postgres
               minute: "0"
               hour: "3"
               job: "/bin/true"
@@ -65,7 +65,7 @@
               mode: "0640"
           cron:
             - name: pg18_heartbeat
-              user: root
+              user: postgres
               minute: "0"
               hour: "3"
               job: "/bin/true"

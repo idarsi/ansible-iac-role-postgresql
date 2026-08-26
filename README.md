@@ -405,6 +405,10 @@ iac_blueprint:
           hour: <hour>
           weekday: <weekday>
           cron_file: <cron_file>
+      post_install:                             # optional SQL jobs
+        jobs:
+          - database: <database>                # optional, defaults to postgres
+            sql: <SQL statement(s)>              # executed as the postgres OS user
       instances:
         - name: <instance name>                # must be unique on host
           port: <custom port>                  # default: version-specific PostgreSQL default
@@ -663,6 +667,14 @@ Recommended execution order for a basic two-host setup:
 
 The standby host should not be the target for `roles_present` or
 `databases_present`; those write operations belong on the primary host.
+
+Blueprint cron jobs must run as `postgres`. Version-scoped filesystem entries
+are limited to PostgreSQL auxiliary paths under `/var/lib/pgsql/`,
+`/var/log/pgsql/`, `/etc/pgsql/`, or `/tmp/`; PostgreSQL data directories,
+Patroni, etcd, and systemd paths cannot be managed through these entries.
+Post-install jobs accept SQL through `sql` and are always executed with
+`psql` as the PostgreSQL operating-system user. Shell `command` and
+`run_as` fields are not supported.
 
 Minimal example: just install PostgreSQL with one instance
 

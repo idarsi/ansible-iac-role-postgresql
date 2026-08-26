@@ -21,6 +21,7 @@
       - pg_validation_version_record.files is not defined or pg_validation_version_record.files | type_debug == 'list'
       - pg_validation_version_record.git is not defined or pg_validation_version_record.git | type_debug == 'list'
       - pg_validation_version_record.cron is not defined or pg_validation_version_record.cron | type_debug == 'list'
+      - pg_validation_version_record.post_install is not defined or pg_validation_version_record.post_install | type_debug == 'dict'
       - pg_validation_version_record.clusters is not defined or pg_validation_version_record.clusters | type_debug == 'list'
     fail_msg: "PostgreSQL version-scoped inventory records must use lists"
 
@@ -65,3 +66,19 @@
   vars:
     pg_validation_version: "{{ pg_validation_version_record.version | string }}"
     pg_validation_clusters: "{{ pg_validation_version_record.clusters | default([]) }}"
+
+- name: "Validating PostgreSQL version-scoped filesystem records"
+  ansible.builtin.include_tasks: validate_filesystem.yml
+  vars:
+    pg_validation_filesystem_directories: "{{ pg_validation_version_record.directories | default([]) }}"
+    pg_validation_filesystem_files: "{{ pg_validation_version_record.files | default([]) }}"
+
+- name: "Validating PostgreSQL version-scoped cron records"
+  ansible.builtin.include_tasks: validate_cron.yml
+  vars:
+    pg_validation_cron_records: "{{ pg_validation_version_record.cron | default([]) }}"
+
+- name: "Validating PostgreSQL post-install records"
+  ansible.builtin.include_tasks: validate_post_install.yml
+  vars:
+    pg_validation_post_install: "{{ pg_validation_version_record.post_install | default({}) }}"
