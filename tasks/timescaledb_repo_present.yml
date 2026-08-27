@@ -43,6 +43,8 @@
     file: "{{ pg_timescaledb_repo_file | basename | regex_replace('\\.repo$', '') }}"
     baseurl: "{{ pg_timescaledb_repo_baseurl }}"
     enabled: true
+    # The Community repository currently signs repository metadata but does not
+    # provide RPM package signing keys.
     gpgcheck: false
     repo_gpgcheck: "{{ not dnf_disable_gpg_check }}"
     gpgkey: "{{ pg_timescaledb_repo_gpgkey }}"

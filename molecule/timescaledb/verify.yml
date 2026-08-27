@@ -34,6 +34,15 @@
         path: /etc/yum.repos.d/timescale_timescaledb.repo
       register: pg_timescaledb_repo
 
+    - name: "Checking Community repository metadata signature verification"
+      become: true
+      ansible.builtin.command: >-
+        grep -E '^[[:space:]]*repo_gpgcheck[[:space:]]*=[[:space:]]*(1|true)[[:space:]]*$'
+        /etc/yum.repos.d/timescale_timescaledb.repo
+      register: pg_timescaledb_repo_gpgcheck
+      changed_when: false
+      when: timescaledb_source == 'community'
+
     - name: "Verifying TimescaleDB installation"
       ansible.builtin.assert:
         that:
@@ -43,4 +52,7 @@
           - >-
             (timescaledb_source != 'community')
             or pg_timescaledb_repo.stat.exists
+          - >-
+            (timescaledb_source != 'community')
+            or pg_timescaledb_repo_gpgcheck.rc == 0
         fail_msg: "TimescaleDB package, extension, preload, or repository verification failed"
