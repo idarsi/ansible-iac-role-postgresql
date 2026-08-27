@@ -14,7 +14,7 @@
       - pg_validation_cluster_record.dcs.etcd.members | length > 0
       - pg_validation_cluster_record.dcs.etcd.initial_cluster_token is defined
       - pg_validation_cluster_record.dcs.etcd.initial_cluster_token | string | length > 0
-      - pg_etcd_bind_address | type_debug == 'str'
+      - pg_etcd_bind_address is string
       - pg_etcd_bind_address | length > 0
       - pg_etcd_bind_address is not in ['0.0.0.0', '::', '*']
       - pg_etcd_bind_address is not search('[\\s/]')
