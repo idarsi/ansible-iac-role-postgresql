@@ -96,6 +96,31 @@
       register: pg_os_user_check
       changed_when: false
 
+    - name: "Checking role with SQL-sensitive characters"
+      become: true
+      become_user: postgres
+      ansible.builtin.command: >-
+        /usr/pgsql-17/bin/psql postgres -p 5417 -tXAc
+        "SELECT 1 FROM pg_roles WHERE rolname = 'app_user''injection'"
+      register: pg_sql_sensitive_role_check
+      changed_when: false
+
+    - name: "Checking database with SQL-sensitive characters"
+      become: true
+      become_user: postgres
+      ansible.builtin.command: >-
+        /usr/pgsql-17/bin/psql postgres -p 5417 -tXAc
+        "SELECT 1 FROM pg_database WHERE datname = 'appdb''injection'"
+      register: pg_sql_sensitive_database_check
+      changed_when: false
+
+    - name: "Verifying SQL-sensitive role and database"
+      ansible.builtin.assert:
+        that:
+          - pg_sql_sensitive_role_check.stdout | trim == '1'
+          - pg_sql_sensitive_database_check.stdout | trim == '1'
+        fail_msg: "SQL-sensitive role or database was not created correctly"
+
     - name: "Checking PostgreSQL repository file"
       ansible.builtin.stat:
         path: "{{ pg_repo_file }}"
