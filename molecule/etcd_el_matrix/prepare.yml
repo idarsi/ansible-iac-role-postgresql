@@ -1,14 +1,44 @@
 ---
-- name: "Bootstrap Python on minimal UBI images"
+- name: "Prepare local etcd TLS certificates"
   hosts: all
-  gather_facts: false
+  become: false
   tasks:
-    - name: "Install Python 3.9 for Ansible on EL8 UBI"
-      ansible.builtin.raw: "dnf -y install python39 python3-dnf"
-      when: inventory_hostname == "etcd-el8"
-      changed_when: false
+    - name: "Create the etcd PKI directory"
+      ansible.builtin.file:
+        path: /etc/etcd/pki
+        state: directory
+        mode: "0755"
 
-    - name: "Install Python and DNF bindings for Ansible on EL10 UBI"
-      ansible.builtin.raw: "dnf -y install python3 python3-dnf"
-      when: inventory_hostname == "etcd-el10"
-      changed_when: false
+    - name: "Generate a local etcd certificate"
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - req
+          - -x509
+          - -nodes
+          - -newkey
+          - rsa:2048
+          - -keyout
+          - /etc/etcd/pki/etcd.key
+          - -out
+          - /etc/etcd/pki/etcd.crt
+          - -days
+          - "1"
+          - -subj
+          - "/CN={{ inventory_hostname }}"
+          - -addext
+          - "subjectAltName=DNS:{{ inventory_hostname }}"
+      args:
+        creates: /etc/etcd/pki/etcd.crt
+
+    - name: "Use the local certificate as the test CA"
+      ansible.builtin.copy:
+        remote_src: true
+        src: /etc/etcd/pki/etcd.crt
+        dest: /etc/etcd/pki/ca.crt
+        mode: "0644"
+
+    - name: "Make the test private key readable by etcd"
+      ansible.builtin.file:
+        path: /etc/etcd/pki/etcd.key
+        mode: "0644"

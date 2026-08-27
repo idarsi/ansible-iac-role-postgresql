@@ -133,8 +133,8 @@ pg_etcd_package: "etcd"
 pg_etcd_config_directory: "/etc/etcd"
 pg_etcd_config_file: "/etc/etcd/etcd.conf"
 pg_etcd_data_directory: "/var/lib/etcd"
-pg_etcd_listen_peer_urls: "http://0.0.0.0:2380"
-pg_etcd_listen_client_urls: "http://0.0.0.0:2379"
+# Required for managed etcd; define per host in inventory/host_vars.
+pg_etcd_bind_address: ""
 pg_etcd_initial_cluster_state: "new"
 pg_patroni_additional_packages: []
 pg_patroni_python_packages: []
