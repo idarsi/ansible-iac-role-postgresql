@@ -138,3 +138,41 @@
     - pg_real_dir is defined
     - pg_bind_dir is defined
     - pg_real_dir != pg_bind_dir
+
+- name: "Ensuring PostgreSQL cleanup roots exist"
+  ansible.builtin.file:
+    path: "{{ pg_cleanup_root }}"
+    state: directory
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0700"
+  loop:
+    - "{{ pg_bind_dir }}"
+    - "{{ pg_default_dir }}"
+    - "{{ pg_log_directory }}"
+    - "{{ pg_real_dir }}"
+  loop_control:
+    loop_var: pg_cleanup_root
+    label: "{{ pg_cleanup_root }}"
+  when:
+    - pg_cleanup_root is match('^/')
+    - pg_cleanup_root | regex_replace('/+$', '') not in ['/', '']
+
+- name: "Marking PostgreSQL cleanup roots as role-managed"
+  ansible.builtin.copy:
+    dest: "{{ pg_cleanup_root }}/{{ pg_cleanup_marker_filename }}"
+    content: "Managed by ansible-iac-role-postgresql.\n"
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0600"
+  loop:
+    - "{{ pg_bind_dir }}"
+    - "{{ pg_default_dir }}"
+    - "{{ pg_log_directory }}"
+    - "{{ pg_real_dir }}"
+  loop_control:
+    loop_var: pg_cleanup_root
+    label: "{{ pg_cleanup_root }}"
+  when:
+    - pg_cleanup_root is match('^/')
+    - pg_cleanup_root | regex_replace('/+$', '') not in ['/', '']

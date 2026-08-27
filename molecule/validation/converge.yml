@@ -750,3 +750,73 @@
             dest: /tmp/postgresql-validation-filesystem.ok
             content: "ok\n"
             mode: "0644"
+
+- name: "Reject unsafe all_absent cleanup paths"
+  hosts: all
+  become: false
+  vars:
+    state: all_absent
+    pg_bind_dir: /
+    pg_default_dir: /var
+    pg_log_directory: /var/log/../log
+    pg_real_dir: /srv/data/pgsql/../../etc
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: main
+  tasks:
+    - name: "Running validation expecting unsafe cleanup path failure"
+      block:
+        - name: "Applying unsafe all_absent cleanup paths"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if unsafe cleanup paths were accepted"
+          ansible.builtin.fail:
+            msg: "Unsafe all_absent cleanup paths were accepted"
+      rescue:
+        - name: "Checking unsafe cleanup path failure"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("PostgreSQL cleanup paths must be absolute")
+        - name: "Writing cleanup path validation marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-cleanup-path.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject unsafe PostgreSQL instance names"
+  hosts: all
+  become: false
+  vars:
+    state: instances_absent
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: "../unsafe"
+  tasks:
+    - name: "Running validation expecting unsafe instance name failure"
+      block:
+        - name: "Applying an unsafe PostgreSQL instance name"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if unsafe instance name was accepted"
+          ansible.builtin.fail:
+            msg: "Unsafe PostgreSQL instance name was accepted"
+      rescue:
+        - name: "Checking unsafe instance name failure"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("PostgreSQL instance names may contain only")
+        - name: "Writing instance name validation marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-instance-name.ok
+            content: "ok\n"
+            mode: "0644"

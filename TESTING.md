@@ -40,7 +40,8 @@ and RHEL 9 and 10 scenarios already cover PostgreSQL 16, 17, and 18.
   configuration, and undefined certificate-auth map references.
 - `molecule/validation` validates valid and invalid PostgreSQL blueprints
   without installing PostgreSQL packages, including the missing-blueprint
-  execution-context guardrail.
+  execution-context guardrail, destructive cleanup path validation, and
+  PostgreSQL instance-name validation.
 - `molecule/timescaledb` validates TimescaleDB installation from both PGDG and
   the Timescale Community repository on Rocky Linux 9 and 10 and Red Hat
   Enterprise Linux 9 and 10 UBI.

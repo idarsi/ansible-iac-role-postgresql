@@ -59,6 +59,10 @@
 - name: "Validating PostgreSQL inventory"
   ansible.builtin.include_tasks: validate/validate_inventory.yml
 
+- name: "Validating destructive cleanup paths"
+  ansible.builtin.include_tasks: validate/validate_cleanup.yml
+  when: state in ['all_absent', 'instances_absent']
+
 ###############################################################################
 # CHECKING PROXY
 ###############################################################################
