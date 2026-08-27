@@ -17,13 +17,17 @@
               provider: patroni
               dcs:
                 provider: etcd3
-                endpoints: ["http://{{ inventory_hostname }}:2379"]
-                proxy: "http://{{ inventory_hostname }}:2379"
+                endpoints: ["https://{{ inventory_hostname }}:2379"]
+                proxy: "https://{{ inventory_hostname }}:2379"
                 etcd:
                   enabled: true
                   initial_cluster_token: molecule-etcd-el-matrix
                   members:
-                    - {name: "{{ inventory_hostname }}", host: "{{ inventory_hostname }}", peer_url: "http://{{ inventory_hostname }}:2380", client_url: "http://{{ inventory_hostname }}:2379"}
+                    - {name: "{{ inventory_hostname }}", host: "{{ inventory_hostname }}", peer_url: "https://{{ inventory_hostname }}:2380", client_url: "https://{{ inventory_hostname }}:2379"}
+                  tls:
+                    enabled: true
+                    client: {ca_file: /etc/etcd/pki/ca.crt, cert_file: /etc/etcd/pki/etcd.crt, key_file: /etc/etcd/pki/etcd.key}
+                    peer: {ca_file: /etc/etcd/pki/ca.crt, cert_file: /etc/etcd/pki/etcd.crt, key_file: /etc/etcd/pki/etcd.key}
               patroni:
                 ttl: 30
                 loop_wait: 5
@@ -41,5 +45,14 @@
             - name: main
               cluster: molecule-etcd-el-matrix
               configuration: {listen_addresses: "*", port: 5432, max_connections: 50}
+  pre_tasks:
+    - name: "Discover the local container IPv4 address"
+      ansible.builtin.command: "getent ahostsv4 {{ inventory_hostname }}"
+      register: pg_etcd_local_address
+      changed_when: false
+
+    - name: "Set the explicit etcd bind address for the test host"
+      ansible.builtin.set_fact:
+        pg_etcd_bind_address: "{{ pg_etcd_local_address.stdout_lines[0].split()[0] }}"
   roles:
     - role: ansible-iac-role-postgresql

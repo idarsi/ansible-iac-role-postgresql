@@ -14,9 +14,14 @@
       - pg_validation_cluster_record.dcs.etcd.members | length > 0
       - pg_validation_cluster_record.dcs.etcd.initial_cluster_token is defined
       - pg_validation_cluster_record.dcs.etcd.initial_cluster_token | string | length > 0
+      - pg_etcd_bind_address | type_debug == 'str'
+      - pg_etcd_bind_address | length > 0
+      - pg_etcd_bind_address is not in ['0.0.0.0', '::', '*']
+      - pg_etcd_bind_address is not search('[\\s/]')
+      - (pg_validation_cluster_record.dcs.etcd.tls | default({})).enabled | default(false) | bool
     fail_msg: >-
-      Managed etcd requires a non-empty initial_cluster_token and at least one
-      member
+      Managed etcd requires a non-empty initial_cluster_token, an explicit
+      non-wildcard pg_etcd_bind_address, and enabled TLS
 
 - name: "Checking managed etcd member records"
   ansible.builtin.assert:
@@ -28,8 +33,10 @@
       - pg_validation_etcd_member.host | string | length > 0
       - pg_validation_etcd_member.peer_url is defined
       - pg_validation_etcd_member.peer_url | string | length > 0
+      - pg_validation_etcd_member.peer_url is match('^https://')
       - pg_validation_etcd_member.client_url is defined
       - pg_validation_etcd_member.client_url | string | length > 0
+      - pg_validation_etcd_member.client_url is match('^https://')
     fail_msg: "Each managed etcd member must define name, host, peer_url, and client_url"
   loop: "{{ pg_validation_cluster_record.dcs.etcd.members }}"
   loop_control:
@@ -58,14 +65,36 @@
 - name: "Checking managed etcd TLS configuration"
   ansible.builtin.assert:
     that:
-      - pg_validation_cluster_record.dcs.etcd.tls.client.ca_file is defined
-      - pg_validation_cluster_record.dcs.etcd.tls.client.cert_file is defined
-      - pg_validation_cluster_record.dcs.etcd.tls.client.key_file is defined
-      - pg_validation_cluster_record.dcs.etcd.tls.peer.ca_file is defined
-      - pg_validation_cluster_record.dcs.etcd.tls.peer.cert_file is defined
-      - pg_validation_cluster_record.dcs.etcd.tls.peer.key_file is defined
+      - pg_validation_etcd_tls.client.ca_file is defined
+      - pg_validation_etcd_tls.client.cert_file is defined
+      - pg_validation_etcd_tls.client.key_file is defined
+      - pg_validation_etcd_tls.peer.ca_file is defined
+      - pg_validation_etcd_tls.peer.cert_file is defined
+      - pg_validation_etcd_tls.peer.key_file is defined
+      - pg_validation_etcd_tls.client.ca_file | string is match('^/etc/etcd/')
+      - pg_validation_etcd_tls.client.cert_file | string is match('^/etc/etcd/')
+      - pg_validation_etcd_tls.client.key_file | string is match('^/etc/etcd/')
+      - pg_validation_etcd_tls.peer.ca_file | string is match('^/etc/etcd/')
+      - pg_validation_etcd_tls.peer.cert_file | string is match('^/etc/etcd/')
+      - pg_validation_etcd_tls.peer.key_file | string is match('^/etc/etcd/')
     fail_msg: >-
-      Managed etcd TLS requires client and peer CA, certificate, and key file
-      paths
-  when:
-    - (pg_validation_cluster_record.dcs.etcd.tls | default({})).enabled | default(false) | bool
+      Managed etcd TLS requires client and peer CA, certificate, and key paths
+      under /etc/etcd/
+  vars:
+    pg_validation_etcd_tls: "{{ pg_validation_cluster_record.dcs.etcd.tls | default({}) }}"
+
+- name: "Checking managed etcd client endpoints use TLS"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_etcd_endpoint is match('^https://')
+    fail_msg: "Managed etcd client endpoints must use HTTPS"
+  loop: "{{ pg_validation_cluster_record.dcs.endpoints | default([]) }}"
+  loop_control:
+    loop_var: pg_validation_etcd_endpoint
+
+- name: "Checking managed etcd proxy uses TLS"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_cluster_record.dcs.proxy is not defined
+        or pg_validation_cluster_record.dcs.proxy is match('^https://')
+    fail_msg: "Managed etcd proxy must use HTTPS"

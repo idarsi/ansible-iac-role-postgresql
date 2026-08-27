@@ -46,7 +46,10 @@
       ansible.builtin.command:
         argv:
           - etcdctl
-          - --endpoints=http://etcd01:2379,http://etcd02:2379,http://etcd03:2379
+          - --endpoints=https://etcd01:2379,https://etcd02:2379,https://etcd03:2379
+          - --cacert=/etc/etcd/pki/ca.crt
+          - --cert=/etc/etcd/pki/etcd.crt
+          - --key=/etc/etcd/pki/etcd.key
           - endpoint
           - health
       environment:
@@ -61,7 +64,10 @@
       ansible.builtin.command:
         argv:
           - etcdctl
-          - --endpoints=http://etcd01:2379,http://etcd02:2379,http://etcd03:2379
+          - --endpoints=https://etcd01:2379,https://etcd02:2379,https://etcd03:2379
+          - --cacert=/etc/etcd/pki/ca.crt
+          - --cert=/etc/etcd/pki/etcd.crt
+          - --key=/etc/etcd/pki/etcd.key
           - member
           - list
       environment:
@@ -78,7 +84,10 @@
       ansible.builtin.command:
         argv:
           - etcdctl
-          - --endpoints=http://etcd01:2379,http://etcd02:2379,http://etcd03:2379
+          - --endpoints=https://etcd01:2379,https://etcd02:2379,https://etcd03:2379
+          - --cacert=/etc/etcd/pki/ca.crt
+          - --cert=/etc/etcd/pki/etcd.crt
+          - --key=/etc/etcd/pki/etcd.key
           - put
           - /molecule/etcd-server-test
           - managed-by-postgresql-role
@@ -94,7 +103,10 @@
       ansible.builtin.command:
         argv:
           - etcdctl
-          - --endpoints=http://etcd01:2379,http://etcd02:2379,http://etcd03:2379
+          - --endpoints=https://etcd01:2379,https://etcd02:2379,https://etcd03:2379
+          - --cacert=/etc/etcd/pki/ca.crt
+          - --cert=/etc/etcd/pki/etcd.crt
+          - --key=/etc/etcd/pki/etcd.key
           - get
           - /molecule/etcd-server-test
       environment:
@@ -153,7 +165,10 @@
       ansible.builtin.command:
         argv:
           - etcdctl
-          - --endpoints=http://etcd01:2379,http://etcd02:2379
+          - --endpoints=https://etcd01:2379,https://etcd02:2379
+          - --cacert=/etc/etcd/pki/ca.crt
+          - --cert=/etc/etcd/pki/etcd.crt
+          - --key=/etc/etcd/pki/etcd.key
           - endpoint
           - health
       environment:
@@ -168,7 +183,10 @@
       ansible.builtin.command:
         argv:
           - etcdctl
-          - --endpoints=http://etcd01:2379,http://etcd02:2379
+          - --endpoints=https://etcd01:2379,https://etcd02:2379
+          - --cacert=/etc/etcd/pki/ca.crt
+          - --cert=/etc/etcd/pki/etcd.crt
+          - --key=/etc/etcd/pki/etcd.key
           - put
           - /molecule/etcd-quorum-test
           - quorum-survived
@@ -186,7 +204,10 @@
       ansible.builtin.command:
         argv:
           - etcdctl
-          - --endpoints=http://etcd01:2379,http://etcd02:2379,http://etcd03:2379
+          - --endpoints=https://etcd01:2379,https://etcd02:2379,https://etcd03:2379
+          - --cacert=/etc/etcd/pki/ca.crt
+          - --cert=/etc/etcd/pki/etcd.crt
+          - --key=/etc/etcd/pki/etcd.key
           - endpoint
           - health
       environment:
@@ -201,7 +222,10 @@
       ansible.builtin.command:
         argv:
           - etcdctl
-          - --endpoints=http://etcd01:2379,http://etcd02:2379,http://etcd03:2379
+          - --endpoints=https://etcd01:2379,https://etcd02:2379,https://etcd03:2379
+          - --cacert=/etc/etcd/pki/ca.crt
+          - --cert=/etc/etcd/pki/etcd.crt
+          - --key=/etc/etcd/pki/etcd.key
           - get
           - /molecule/etcd-quorum-test
       environment:

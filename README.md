@@ -215,11 +215,17 @@ pg_patroni_etcd_package: patroni-etcd
 ```
 
 The package is selected only when the cluster DCS provider is `etcd3`. The
-role does not install or configure the etcd server itself; etcd remains an
-external DCS service managed by its own role or infrastructure layer. The
-default package name can be overridden with `pg_patroni_etcd_package`, while
-additional Patroni packages can be supplied through
-`pg_patroni_additional_packages`.
+When managed etcd is not enabled, external etcd remains the responsibility of
+the surrounding role or infrastructure layer. The default package name can be
+overridden with `pg_patroni_etcd_package`, while additional Patroni packages
+can be supplied through `pg_patroni_additional_packages`.
+
+For hosts listed in `dcs.etcd.members`, define the local etcd bind address
+explicitly, for example in host variables:
+
+```yaml
+pg_etcd_bind_address: 10.0.0.11
+```
 
 ```yaml
 iac_blueprint:
@@ -234,9 +240,11 @@ iac_blueprint:
               - https://etcd01.example.org:2379
               - https://etcd02.example.org:2379
               - https://etcd03.example.org:2379
-            etcd:
-              enabled: true
-              initial_cluster_token: core-dcs
+                etcd:
+                  enabled: true
+                  # Required on every host managed as an etcd member.
+                  # Define pg_etcd_bind_address in host_vars/group_vars.
+                  initial_cluster_token: core-dcs
               members:
                 - name: etcd01
                   host: etcd01.example.org
@@ -288,10 +296,12 @@ iac_blueprint:
 
 When `dcs.etcd.enabled` is `true`, the role installs the PGDG `etcd` package
 on hosts listed in `dcs.etcd.members`, renders the local member configuration,
-and enables the `etcd` systemd service. The current implementation supports
-static cluster bootstrap. Add/remove member operations and snapshot/restore
-remain separate operational procedures. Certificate files must be provisioned
-by the surrounding certificate workflow before enabling TLS URLs.
+and enables the `etcd` systemd service. Managed etcd requires TLS/mTLS and an
+explicit host-level `pg_etcd_bind_address`; wildcard bind addresses and plain
+HTTP endpoints are rejected. Certificate files must be provisioned by the
+surrounding certificate workflow before enabling the cluster. The current
+implementation supports static cluster bootstrap. Add/remove member operations
+and snapshot/restore remain separate operational procedures.
 
 Use `state: clusters_present` to render Patroni configuration and its service
 unit without changing PostgreSQL databases or roles. `state: install` also

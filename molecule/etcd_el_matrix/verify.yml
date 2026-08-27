@@ -22,7 +22,14 @@
 
     - name: "Check the local etcd endpoint"
       ansible.builtin.command:
-        argv: [etcdctl, "--endpoints=http://{{ inventory_hostname }}:2379", endpoint, health]
+        argv:
+          - etcdctl
+          - "--endpoints=https://{{ inventory_hostname }}:2379"
+          - --cacert=/etc/etcd/pki/ca.crt
+          - --cert=/etc/etcd/pki/etcd.crt
+          - --key=/etc/etcd/pki/etcd.key
+          - endpoint
+          - health
       environment: {ETCDCTL_API: "3"}
       changed_when: false
 
