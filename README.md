@@ -483,7 +483,10 @@ extensions:
 ```
 
 The TimescaleDB Community repository is managed directly by the role with a
-repository file and its GPG key; the vendor installation script is not used.
+repository file and its GPG key. Repository metadata signatures are verified
+with `repo_gpgcheck`; the repository currently does not provide RPM package
+signing keys, so package-level `gpgcheck` remains disabled. The vendor
+installation script is not used.
 TimescaleDB is added automatically to `shared_preload_libraries` while
 preserving other configured preload libraries.
 
