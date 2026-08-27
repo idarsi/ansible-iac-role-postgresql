@@ -1,0 +1,75 @@
+---
+###############################################################################
+#
+# validate_cleanup.yml
+#
+# Validate paths before destructive PostgreSQL cleanup states run.
+#
+###############################################################################
+
+- name: "Checking PostgreSQL cleanup path safety"
+  ansible.builtin.assert:
+    that:
+      - pg_cleanup_path is string
+      - pg_cleanup_path | length > 0
+      - pg_cleanup_path is match('^/')
+      - pg_cleanup_path | regex_replace('/+$', '') not in
+        ['/', '/bin', '/boot', '/dev', '/etc', '/home', '/lib', '/lib64',
+         '/media', '/mnt', '/opt', '/proc', '/root', '/run', '/sbin', '/srv',
+         '/sys', '/tmp', '/usr', '/var']
+      - pg_cleanup_path is not search('(^|/)\.\.(/|$)')
+      - pg_cleanup_path | regex_replace('/+$', '') | basename == 'pgsql'
+    fail_msg: >-
+      PostgreSQL cleanup paths must be absolute, traversal-free, PostgreSQL-specific
+      paths ending in /pgsql, and must not target a system root
+  loop:
+    - "{{ pg_bind_dir }}"
+    - "{{ pg_default_dir }}"
+    - "{{ pg_log_directory }}"
+    - "{{ pg_real_dir }}"
+  loop_control:
+    loop_var: pg_cleanup_path
+    label: "{{ pg_cleanup_path }}"
+  when: state == 'all_absent'
+
+- name: "Checking PostgreSQL systemd cleanup directory"
+  ansible.builtin.assert:
+    that:
+      - pg_systemd_service_dir == '/usr/lib/systemd/system'
+    fail_msg: "PostgreSQL all_absent cannot use a custom systemd service directory"
+  when: state == 'all_absent'
+
+- name: "Checking PostgreSQL cleanup markers"
+  ansible.builtin.stat:
+    path: "{{ pg_cleanup_root }}/{{ pg_cleanup_marker_filename }}"
+  loop:
+    - "{{ pg_bind_dir }}"
+    - "{{ pg_default_dir }}"
+    - "{{ pg_log_directory }}"
+    - "{{ pg_real_dir }}"
+  loop_control:
+    loop_var: pg_cleanup_root
+    label: "{{ pg_cleanup_root }}"
+  register: pg_cleanup_markers
+  when: state == 'all_absent'
+
+- name: "Rejecting unmarked PostgreSQL cleanup roots"
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+    fail_msg: "Refusing PostgreSQL cleanup for an unmarked path: {{ item.pg_cleanup_root }}"
+  loop: "{{ pg_cleanup_markers.results }}"
+  when: state == 'all_absent'
+
+- name: "Checking PostgreSQL instance name safety"
+  ansible.builtin.assert:
+    that:
+      - pg_cleanup_instance_record.1.name is string
+      - pg_cleanup_instance_record.1.name is match('^[A-Za-z0-9][A-Za-z0-9_-]*$')
+    fail_msg: "PostgreSQL instance names may contain only letters, numbers, underscores, and hyphens"
+  loop: "{{ pg_instances }}"
+  loop_control:
+    loop_var: pg_cleanup_instance_record
+    label: "{{ pg_cleanup_instance_record.1.name }}"
+  when: state == 'instances_absent'

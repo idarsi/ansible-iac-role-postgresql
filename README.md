@@ -337,6 +337,12 @@ removes version-scoped managed Git working trees before the final directory
 cleanup. Use it when a host or test environment must be reset back to a clean
 pre-PostgreSQL baseline instead of preserving any existing PostgreSQL data.
 
+Before destructive cleanup, the role validates that its data and log roots are
+absolute PostgreSQL-specific paths ending in `/pgsql`, rejects traversal and
+system-root paths, and requires a role-managed marker created by the `present`
+state. Custom data roots such as `/srv/data/pgsql` are supported; cleanup
+refuses unmarked roots.
+
 Inventory example
 -----------------
 
