@@ -33,7 +33,7 @@
   ansible.builtin.set_fact:
     pg_cli_command: >-
       /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
-      -tXAc "SELECT 1 FROM pg_roles WHERE rolname='{{ pg_db_role }}'"
+      -tXAc "SELECT 1 FROM pg_roles WHERE rolname='{{ pg_db_role | string | replace("'", "''") }}'"
 
 - name: "Checking if user already exists"
   become: true
@@ -47,7 +47,8 @@
   ansible.builtin.set_fact:
     pg_cli_command: >-
       /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
-    pg_cli_sql: "DROP ROLE \"{{ pg_db_role }}\""
+    pg_cli_sql: >-
+      DROP ROLE "{{ pg_db_role | string | replace('"', '""') }}"
 
 - name: "Ensuring role is absent"
   become: true

@@ -122,6 +122,9 @@
                 - name: app_admin
                   password: admin_password
                   createdb: true
+                - name: "app_user'injection"
+                  password: "pass'word"
+                  description: "description with ' apostrophe"
               databases:
                 - name: appdb17
                   owner: app_admin
@@ -134,6 +137,8 @@
                       method: cert
                       clientname: CN
                       map: app_cert_map
+                - name: "appdb'injection"
+                  owner: "app_user'injection"
               configuration_profile: balanced
               security_profile: safe
               configuration:

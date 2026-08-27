@@ -32,13 +32,17 @@
 - name: "Setting variables"
   ansible.builtin.set_fact:
     pg_cli_command: >-
-      /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
-      -tXAc "SELECT 1 FROM pg_roles WHERE rolname='{{ pg_db_role }}'"
+      /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }} -tXA
+    pg_cli_sql: >-
+      SELECT 1 FROM pg_roles
+      WHERE rolname='{{ pg_db_role | string | replace("'", "''") }}'
 
 - name: "Checking if user already exists"
   become: true
   become_user: "{{ pg_os_user }}"
-  ansible.builtin.command: "{{ pg_cli_command }}"
+  ansible.builtin.command:
+    cmd: "{{ pg_cli_command }}"
+    stdin: "{{ pg_cli_sql }}"
   check_mode: false
   changed_when: false
   register: role_exists
@@ -46,12 +50,14 @@
 - name: "Reading current role attributes when role exists"
   become: true
   become_user: "{{ pg_os_user }}"
-  ansible.builtin.command: >-
-    /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
-    -tXAt -F '|' -c
-    "SELECT rolcreatedb::int, rolcreaterole::int, rolsuper::int, rolcanlogin::int,
-    COALESCE(shobj_description(oid, 'pg_authid'), ''), COALESCE(rolpassword, '')
-    FROM pg_authid WHERE rolname='{{ pg_db_role }}'"
+  ansible.builtin.command:
+    cmd: >-
+      /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }} -tXAt -F '|'
+    stdin: >-
+      SELECT rolcreatedb::int, rolcreaterole::int, rolsuper::int, rolcanlogin::int,
+      COALESCE(shobj_description(oid, 'pg_authid'), ''), COALESCE(rolpassword, '')
+      FROM pg_authid
+      WHERE rolname='{{ pg_db_role | string | replace("'", "''") }}'
   check_mode: false
   register: role_current
   changed_when: false
@@ -82,9 +88,13 @@
     - name: "Setting optional attributes for CREATE ROLE"
       ansible.builtin.set_fact:
         pg_db_role_password_str: >-
-          {{ ("PASSWORD '" ~ pg_role_record.password ~ "'") if (pg_role_record.password is defined) else '' }}
+          {{ ("PASSWORD '" ~ (pg_role_record.password | string | replace("'", "''")) ~ "'") if (pg_role_record.password is defined) else '' }}
         pg_db_role_encrypted_password_str: >-
-          {{ ("ENCRYPTED PASSWORD '" ~ pg_role_record.encrypted_password ~ "'") if (pg_role_record.encrypted_password is defined) else '' }}
+          {{ (
+            "ENCRYPTED PASSWORD '" ~
+            (pg_role_record.encrypted_password | string | replace("'", "''")) ~
+            "'"
+          ) if (pg_role_record.encrypted_password is defined) else '' }}
         pg_db_role_createdb_str: >-
           {{ 'CREATEDB' if (pg_role_record.createdb is defined and
           pg_role_record.createdb | bool) else 'NOCREATEDB'
@@ -106,7 +116,7 @@
         pg_cli_command: >-
           /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
         pg_cli_sql: >-
-          CREATE ROLE "{{ pg_db_role }}" {{ pg_db_role_password_str }}
+          CREATE ROLE "{{ pg_db_role | string | replace('"', '""') }}" {{ pg_db_role_password_str }}
           {{ pg_db_role_encrypted_password_str }} {{ pg_db_role_createdb_str }}
           {{ pg_db_role_createrole_str }} {{ pg_db_role_superuser_str }}
           {{ pg_db_role_login_str }}
@@ -118,9 +128,13 @@
     - name: "Setting optional attributes for ALTER ROLE"
       ansible.builtin.set_fact:
         pg_db_role_password_str: >-
-          {{ ("PASSWORD '" ~ pg_role_record.password ~ "'") if (pg_role_record.password is defined) else '' }}
+          {{ ("PASSWORD '" ~ (pg_role_record.password | string | replace("'", "''")) ~ "'") if (pg_role_record.password is defined) else '' }}
         pg_db_role_encrypted_password_str: >-
-          {{ ("ENCRYPTED PASSWORD '" ~ pg_role_record.encrypted_password ~ "'") if (pg_role_record.encrypted_password is defined) else '' }}
+          {{ (
+            "ENCRYPTED PASSWORD '" ~
+            (pg_role_record.encrypted_password | string | replace("'", "''")) ~
+            "'"
+          ) if (pg_role_record.encrypted_password is defined) else '' }}
         pg_db_role_createdb_str: >-
           {{ 'CREATEDB' if (pg_role_record.createdb is defined and
           pg_role_record.createdb | bool) else 'NOCREATEDB'
@@ -142,7 +156,7 @@
         pg_cli_command: >-
           /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
         pg_cli_sql: >-
-          ALTER ROLE "{{ pg_db_role }}" {{ pg_db_role_password_str }}
+          ALTER ROLE "{{ pg_db_role | string | replace('"', '""') }}" {{ pg_db_role_password_str }}
           {{ pg_db_role_encrypted_password_str }} {{ pg_db_role_createdb_str }}
           {{ pg_db_role_createrole_str }} {{ pg_db_role_superuser_str }}
           {{ pg_db_role_login_str }}
@@ -164,7 +178,7 @@
     pg_cli_comment_command: >-
       /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
     pg_cli_comment_sql: >-
-      COMMENT ON ROLE "{{ pg_db_role }}" IS '{{ pg_role_record.description | string }}'
+      COMMENT ON ROLE "{{ pg_db_role | string | replace('"', '""') }}" IS '{{ pg_role_record.description | string | replace("'", "''") }}'
   when:
     - pg_role_record.description is defined
     - pg_role_record.description is not none

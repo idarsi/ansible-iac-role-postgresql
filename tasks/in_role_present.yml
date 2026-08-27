@@ -37,8 +37,8 @@
       -tXAc "SELECT 1 FROM pg_auth_members m
       JOIN pg_roles granted_role ON granted_role.oid = m.roleid
       JOIN pg_roles member_role ON member_role.oid = m.member
-      WHERE granted_role.rolname='{{ pg_grant_role }}'
-      AND member_role.rolname='{{ pg_db_role }}'"
+      WHERE granted_role.rolname='{{ pg_grant_role | string | replace("'", "''") }}'
+      AND member_role.rolname='{{ pg_db_role | string | replace("'", "''") }}'"
 
 - name: "Checking whether role membership exists"
   become: true
@@ -53,7 +53,9 @@
   ansible.builtin.set_fact:
     pg_cli_command: >-
       /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
-    pg_cli_sql: "GRANT \"{{ pg_grant_role }}\" TO \"{{ pg_db_role }}\""
+    pg_cli_sql: >-
+      GRANT "{{ pg_grant_role | string | replace('"', '""') }}" TO
+      "{{ pg_db_role | string | replace('"', '""') }}"
 
 - name: "Ensuring role is granted to role"
   become: true

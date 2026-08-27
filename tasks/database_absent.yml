@@ -19,7 +19,7 @@
     cmd: >-
       /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
       -tXAc "SELECT 1 FROM pg_database
-      WHERE datname='{{ pg_database | replace("'", "''") }}'"
+      WHERE datname='{{ pg_database | string | replace("'", "''") }}'"
   check_mode: false
   register: pg_database_exists
   changed_when: false

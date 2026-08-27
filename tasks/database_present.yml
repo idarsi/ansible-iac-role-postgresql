@@ -36,7 +36,7 @@
   ansible.builtin.set_fact:
     pg_cli_command: >-
       /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
-      -tXAc "SELECT 1 FROM pg_database WHERE datname='{{ pg_database }}'"
+      -tXAc "SELECT 1 FROM pg_database WHERE datname='{{ pg_database | string | replace("'", "''") }}'"
 
 - name: "Checking if database already exists"
   become: true
@@ -55,9 +55,13 @@
 - name: "Reading current database owner when database exists"
   become: true
   become_user: "{{ pg_os_user }}"
-  ansible.builtin.command: >-
-    /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
-    -tXAc "SELECT pg_catalog.pg_get_userbyid(datdba) FROM pg_database WHERE datname='{{ pg_database }}'"
+  ansible.builtin.command:
+    cmd: >-
+      /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }} -tXA
+    stdin: >-
+      SELECT pg_catalog.pg_get_userbyid(datdba)
+      FROM pg_database
+      WHERE datname='{{ pg_database | string | replace("'", "''") }}'
   check_mode: false
   register: database_owner
   changed_when: false
@@ -74,41 +78,46 @@
     - name: "Setting optional attributes for CREATE DATABASE"
       ansible.builtin.set_fact:
         pg_database_owner_str: >-
-          {{ ('OWNER "' ~ pg_database_record.owner ~ '"') if (pg_database_record.owner is defined) else '' }}
+          {{ ('OWNER "' ~ (pg_database_record.owner | string | replace('"', '""')) ~ '"') if (pg_database_record.owner is defined) else '' }}
         pg_database_encoding_str: >-
-          {{ ('ENCODING "' ~ pg_database_record.encoding ~ '"') if (pg_database_record.encoding is defined) else '' }}
+          {{ ('ENCODING "' ~ (pg_database_record.encoding | string | replace('"', '""')) ~ '"') if (pg_database_record.encoding is defined) else '' }}
     - name: "Assembling full CREATE DATABASE psql command"
       ansible.builtin.set_fact:
         pg_cli_command: >-
           /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
-          -c "CREATE DATABASE \"{{ pg_database }}\" {{ pg_database_owner_str }}
-          {{ pg_database_encoding_str }}"
+        pg_cli_sql: >-
+          CREATE DATABASE "{{ pg_database | string | replace('"', '""') }}"
+          {{ pg_database_owner_str }} {{ pg_database_encoding_str }}
 - name: "Preparing ALTER DATABASE command if database does not exist"
   when: database_is_present
   block:
     - name: "Setting optional attributes for ALTER DATABASE"
       ansible.builtin.set_fact:
         pg_database_owner_str: >-
-          {{ ('OWNER TO "' ~ pg_database_record.owner ~ '"') if (pg_database_record.owner is defined) else '' }}
+          {{ ('OWNER TO "' ~ (pg_database_record.owner | string | replace('"', '""')) ~ '"') if (pg_database_record.owner is defined) else '' }}
     - name: "Assembling full ALTER DATABASE psql command"
       ansible.builtin.set_fact:
         pg_cli_command: >-
           /usr/pgsql-{{ pg_version }}/bin/psql postgres -p {{ pg_port }}
-          -c "ALTER DATABASE \"{{ pg_database }}\" {{ pg_database_owner_str }}"
+        pg_cli_sql: >-
+          ALTER DATABASE "{{ pg_database | string | replace('"', '""') }}"
+          {{ pg_database_owner_str }}
 - name: "Ensuring database is present with correct parameters"
   become: true
   become_user: "{{ pg_os_user }}"
-  ansible.builtin.command: "{{ pg_cli_command }}"
-  register: my_output
+  ansible.builtin.command:
+    cmd: "{{ pg_cli_command }}"
+    stdin: "{{ pg_cli_sql }}"
+  register: database_command_result
   changed_when: (not (database_is_present | bool)) or ((database_needs_update | default(false)) | bool)
-  failed_when: my_output.rc != 0
+  failed_when: database_command_result.rc != 0
   when: (not (database_is_present | bool)) or ((database_needs_update | default(false)) | bool)
 
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
   vars:
     iac_log_write: "Created database {{ pg_version }}/{{ pg_instance }}/{{ pg_database }}"
-  when: my_output is defined and (my_output.changed | bool)
+  when: database_command_result is defined and (database_command_result.changed | bool)
 
 ###############################################################################
 # LOOPING THROUGH EXTENSIONS
