@@ -11,7 +11,7 @@ Platform/image                  | PostgreSQL versions | Molecule scenarios | Mai
 --------------------------------|---------------------|--------------------|--------------
 Rocky Linux 8 UBI               | 17, 18              | `rocky8`             | PGDG repository and multi-version baseline installation
 Red Hat Enterprise Linux 8 UBI | 17, 18              | `rhel8`              | PGDG repository and multi-version baseline installation
-Rocky Linux 9 UBI               | 16, 17, 18          | `default`, `all_absent`, `bind_guardrails`, `hba_guardrails`, `replication`, `timescaledb`, `validation`, `patroni_config`, `patroni_failover`, `patroni_membership` | Full baseline, cleanup, guardrails, physical replication, inventory validation, TimescaleDB sources, Patroni membership, and failover
+Rocky Linux 9 UBI               | 16, 17, 18          | `default`, `all_absent`, `bind_guardrails`, `hba_guardrails`, `replication`, `timescaledb`, `validation`, `patroni_config`, `patroni_failover`, `patroni_membership`, `etcd_server`, `etcd_tls`, `etcd_tls_cluster` | Full baseline, cleanup, guardrails, physical replication, inventory validation, TimescaleDB sources, Patroni membership, failover, and managed etcd
 Red Hat Enterprise Linux 9 UBI | 16, 17, 18          | `rhel9`             | Full baseline, bind, git, and repository workflow
 Rocky Linux 10 UBI              | 16, 17, 18          | `rocky10`           | Baseline installation and multi-version coverage
 Red Hat Enterprise Linux 10 UBI| 16, 17, 18          | `rhel10`            | Baseline installation and multi-version coverage
@@ -82,7 +82,19 @@ and RHEL 9 and 10 scenarios already cover PostgreSQL 16, 17, and 18.
 
 The GitHub Actions workflow runs the production-profile lint check and the
 Molecule scenarios as separate jobs. Molecule scenarios run in parallel by
-scenario, while the lint job is shared by all pull requests.
+scenario. Pull requests and pushes to `main` run a fast representative matrix;
+the complete scenario matrix runs once per day and can also be started with
+`workflow_dispatch`.
+
+The fast matrix contains `default`, `validation`, `all_absent`,
+`bind_guardrails`, `hba_guardrails`, `replication`, `patroni_config`,
+`rocky8`, `rhel8`, `rhel9`, `rocky10`, `rhel10`, `fedora43`, and `fedora44`.
+The daily matrix runs all scenarios listed in this document, including the
+multi-member Patroni and etcd scenarios and both TimescaleDB repository
+variants.
+
+The workflow cancels an older in-progress run for the same branch or scheduled
+workflow when a newer run starts.
 
 The workflow uses the exact Ansible Core, ansible-lint, Molecule, and
 molecule-plugins versions defined in `requirements-ci.txt`. Install that file
