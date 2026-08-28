@@ -67,6 +67,8 @@
         profile_file: "/var/lib/pgsql/17/main/conf.d/40-profile.conf"
         security_file: "/var/lib/pgsql/17/main/conf.d/41-security.conf"
         ca_file: "/var/lib/pgsql/17/main/ssl/client-root-ca.crt"
+        certificate_file: "/var/lib/pgsql/17/main/ssl/postgresql.crt"
+        certificate_san: "DNS:localhost"
         autotuning_file: ""
         service_file: "/usr/lib/systemd/system/postgresql-17-main.service"
         hba_rule: "hostssl appdb17 app_user 10.0.0.1/32 cert clientname=CN map=app_cert_map"
@@ -85,6 +87,8 @@
         profile_file: ""
         security_file: "/var/lib/pgsql/18/main/conf.d/41-security.conf"
         ca_file: "/var/lib/pgsql/18/main/ssl/client-root-ca.crt"
+        certificate_file: "/var/lib/pgsql/18/main/ssl/postgresql.crt"
+        certificate_san: "DNS:localhost"
         autotuning_file: "/var/lib/pgsql/18/main/conf.d/43-autotuning.conf"
         service_file: "/usr/lib/systemd/system/postgresql-18-main.service"
         hba_rule: "hostssl appdb18 app_user 10.0.0.1/32 scram-sha-256 clientcert=verify-full clientname=DN"
@@ -395,6 +399,19 @@
         path: "{{ item.ca_file }}"
       loop: "{{ pg_molecule_instances | selectattr('ca_file', 'defined') | list }}"
       register: pg_client_ca_checks
+
+    - name: "Checking certificate subject alternative names"
+      ansible.builtin.command: >-
+        openssl x509 -in {{ item.certificate_file }} -noout -ext subjectAltName
+      loop: "{{ pg_molecule_instances | selectattr('certificate_file', 'defined') | list }}"
+      register: pg_certificate_san_checks
+      changed_when: false
+
+    - name: "Checking certificate subject alternative name values"
+      ansible.builtin.assert:
+        that:
+          - item.stdout is search(item.item.certificate_san)
+      loop: "{{ pg_certificate_san_checks.results }}"
 
     - name: "Checking security configuration for SSL client CA"
       ansible.builtin.command: >-

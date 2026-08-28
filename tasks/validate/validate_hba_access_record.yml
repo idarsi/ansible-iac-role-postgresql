@@ -16,6 +16,12 @@
       - pg_hba_access_type in ['local', 'host', 'hostssl', 'hostnossl', 'hostgssenc', 'hostnogssenc']
     fail_msg: "PostgreSQL pg_hba access record has invalid type '{{ pg_hba_access_type }}'"
 
+- name: "Checking safe profile pg_hba access type"
+  ansible.builtin.assert:
+    that:
+      - pg_security != 'safe' or pg_hba_access_type in ['local', 'hostssl']
+    fail_msg: "PostgreSQL safe security profile permits only local or hostssl pg_hba access"
+
 - name: "Checking pg_hba access record address requirements"
   ansible.builtin.assert:
     that:

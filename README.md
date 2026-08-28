@@ -337,6 +337,12 @@ removes version-scoped managed Git working trees before the final directory
 cleanup. Use it when a host or test environment must be reset back to a clean
 pre-PostgreSQL baseline instead of preserving any existing PostgreSQL data.
 
+The `safe` security profile uses `hostssl` as the default network access type
+and rejects explicit non-SSL host access. Generated server certificates include
+the configured `certificate_subject_alt_names` values (default: `localhost`).
+These names can be set per instance when clients connect using another DNS
+name.
+
 Before destructive cleanup, the role validates that its data and log roots are
 absolute PostgreSQL-specific paths ending in `/pgsql`, rejects traversal and
 system-root paths, and requires a role-managed marker created by the `present`
@@ -431,6 +437,8 @@ iac_blueprint:
           configuration_profile: <name>        # e.g. "balanced"
           autotuning_profile: <name>           # e.g. "balanced"
           security_profile: <name>             # e.g. "safe"
+          certificate_subject_alt_names:       # optional DNS SANs for generated certificate
+            - <dns name>
           client_certificate_authority_content: |  # optional trusted CA PEM for client certificate auth
             -----BEGIN CERTIFICATE-----
             ...
