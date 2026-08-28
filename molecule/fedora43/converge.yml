@@ -1,0 +1,31 @@
+---
+- name: Converge
+  hosts: all
+  become: false
+  vars:
+    state: install
+    pg_lang: "en"
+    pg_locale: "US"
+    ansible_become_method: su
+    iac_blueprint:
+      postgresql:
+        - version: "17"
+          instances:
+            - name: main
+              roles:
+                - name: app_user
+                  password: app_password
+                  createdb: false
+              databases:
+                - name: appdb17
+                  owner: app_user
+                  access:
+                    - name: app_user
+                      address: 10.0.0.1/32
+                      type: host
+                      method: scram-sha-256
+              configuration:
+                port: 5417
+                max_connections: 50
+  roles:
+    - role: ansible-iac-role-postgresql

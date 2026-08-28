@@ -15,10 +15,10 @@ Rocky Linux 9 UBI               | 16, 17, 18          | `default`, `all_absent`,
 Red Hat Enterprise Linux 9 UBI | 16, 17, 18          | `rhel9`             | Full baseline, bind, git, and repository workflow
 Rocky Linux 10 UBI              | 16, 17, 18          | `rocky10`           | Baseline installation and multi-version coverage
 Red Hat Enterprise Linux 10 UBI| 16, 17, 18          | `rhel10`            | Baseline installation and multi-version coverage
+Fedora 43                       | 17                   | `fedora43`          | PGDG repository and baseline installation
+Fedora 44                       | 17                   | `fedora44`          | PGDG repository and baseline installation
 Rocky Linux 9 UBI               | 17                   | `etcd_server`, `etcd_tls_cluster` | Managed three-member etcd, quorum recovery, Patroni failover, and TLS etcd
 Rocky Linux 8/10 UBI            | 17                   | `etcd_el_matrix`    | Managed etcd package and service coverage across EL8 and EL10
-
-Fedora is not included in the current automated test matrix.
 
 The 8-series scenarios cover PostgreSQL 17 and 18. The Rocky Linux 9 and 10
 and RHEL 9 and 10 scenarios already cover PostgreSQL 16, 17, and 18.
@@ -77,6 +77,8 @@ and RHEL 9 and 10 scenarios already cover PostgreSQL 16, 17, and 18.
 - `molecule/rocky10` validates the same baseline behavior on Rocky Linux 10.
 - `molecule/rhel10` validates the same baseline behavior on Red Hat Enterprise
   Linux 10 UBI.
+- `molecule/fedora43` and `molecule/fedora44` validate PostgreSQL 17
+  installation from the Fedora-specific PGDG repository workflow.
 
 The GitHub Actions workflow runs the production-profile lint check and the
 Molecule scenarios as separate jobs. Molecule scenarios run in parallel by
@@ -129,6 +131,8 @@ molecule test -s rhel8
 molecule test -s rhel9
 molecule test -s rocky10
 molecule test -s rhel10
+molecule test -s fedora43
+molecule test -s fedora44
 ```
 
 Run only syntax checks when working on task or scenario structure:

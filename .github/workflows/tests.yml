@@ -50,6 +50,8 @@ jobs:
           - rhel9
           - rocky10
           - rhel10
+          - fedora43
+          - fedora44
           - timescaledb
           - replication
           - all_absent
