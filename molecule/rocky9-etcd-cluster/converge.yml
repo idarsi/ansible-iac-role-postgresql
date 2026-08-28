@@ -76,6 +76,13 @@
                 listen_addresses: "*"
                 port: 5432
                 max_connections: 50
+        - version: 18
+          instances:
+            - name: main18
+              configuration:
+                listen_addresses: "*"
+                port: 5433
+                max_connections: 50
   pre_tasks:
     - name: "Discover the local container IPv4 address"
       ansible.builtin.command: "getent ahostsv4 {{ inventory_hostname }}"
