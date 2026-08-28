@@ -38,6 +38,15 @@
         )
       }}
 
+- name: "Gathering installed package facts before installation"
+  ansible.builtin.package_facts:
+    manager: "auto"
+
+- name: "Recording packages already installed before role management"
+  ansible.builtin.set_fact:
+    pg_package_preexisting: >-
+      {{ pg_package_list | select('in', ansible_facts.packages.keys() | list) | list }}
+
 ###############################################################################
 # ENSURING PACKAGE IS PRESENT
 ###############################################################################
@@ -92,6 +101,35 @@
         ansible_facts["os_family"] == "RedHat"
         and ansible_facts["distribution_major_version"] == "8"
       )
+
+- name: "Recording packages newly installed by the role"
+  ansible.builtin.set_fact:
+    pg_newly_installed_packages: >-
+      {{ pg_package_list
+         | reject('in', pg_package_preexisting)
+         | reject('search', '://')
+         | list }}
+
+- name: "Ensuring managed package marker directory exists"
+  ansible.builtin.file:
+    path: "{{ pg_managed_packages_file | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  when: pg_newly_installed_packages | length > 0
+
+- name: "Recording packages newly installed by the role"
+  ansible.builtin.lineinfile:
+    path: "{{ pg_managed_packages_file }}"
+    regexp: "^{{ item | regex_escape }}$"
+    line: "{{ item }}"
+    create: true
+    owner: root
+    group: root
+    mode: "0640"
+  loop: "{{ pg_newly_installed_packages }}"
+  when: pg_newly_installed_packages | length > 0
 
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml

@@ -73,6 +73,7 @@ These operations are supported:
 Operation                       | State               |
 --------------------------------|---------------------|
 Installing and configuring all  | install             |
+Updating installed role-managed packages | update              |
 Uninstalling all                | uninstall           |
 Removing PostgreSQL completely  | all_absent          |
 Validating inventory            | validate             |
@@ -120,6 +121,11 @@ Run only the validation when checking a blueprint without changing the host:
     - role: ansible-iac-role-postgresql
       state: validate
 ```
+
+The `update` state updates only packages that are both managed by this role and
+currently installed on the host. It does not run a general system-wide DNF
+update and does not install packages that are missing. The role records packages
+it installs in a marker file and uses that record for later updates.
 
 The `all_absent` state is intentionally destructive: it removes PostgreSQL
 packages, repository configuration, service files, data, logs, and the

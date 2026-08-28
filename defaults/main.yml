@@ -75,6 +75,7 @@ pg_bind_dir: "{{ pg_default_dir }}"
 pg_systemd_service_dir: "/usr/lib/systemd/system"
 pg_log_directory: "/var/log/pgsql"
 pg_cleanup_marker_filename: ".ansible-iac-role-postgresql-managed"
+pg_managed_packages_file: "/var/lib/ansible-iac-role-postgresql/managed-packages"
 
 # Do not change os user
 pg_os_user: "postgres"

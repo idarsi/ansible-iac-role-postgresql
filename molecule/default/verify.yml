@@ -152,6 +152,35 @@
       register: pg_package_checks
       changed_when: false
 
+    - name: "Checking managed package marker"
+      ansible.builtin.stat:
+        path: "/var/lib/ansible-iac-role-postgresql/managed-packages"
+      register: pg_managed_package_marker_check
+
+    - name: "Reading managed package marker"
+      ansible.builtin.slurp:
+        path: "/var/lib/ansible-iac-role-postgresql/managed-packages"
+      register: pg_managed_package_marker_content
+      when: pg_managed_package_marker_check.stat.exists
+
+    - name: "Verifying managed package marker"
+      ansible.builtin.assert:
+        that:
+          - pg_managed_package_marker_check.stat.exists
+          - >-
+            'postgresql16-server' in
+            (pg_managed_package_marker_content.content | b64decode)
+          - >-
+            'postgresql17-server' in
+            (pg_managed_package_marker_content.content | b64decode)
+          - >-
+            'postgresql18-server' in
+            (pg_managed_package_marker_content.content | b64decode)
+          - >-
+            '://' not in
+            (pg_managed_package_marker_content.content | b64decode)
+        fail_msg: "The managed package marker does not contain valid role-managed packages"
+
     - name: "Checking PL/Python extension packages"
       ansible.builtin.command: "rpm -q {{ item.plpython_package }}"
       loop: "{{ pg_molecule_versions | selectattr('plpython_package', 'defined') | rejectattr('plpython_package', 'equalto', '') | list }}"

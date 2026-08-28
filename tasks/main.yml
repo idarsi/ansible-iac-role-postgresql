@@ -114,6 +114,10 @@
   ansible.builtin.include_tasks: install.yml
   when: state == 'install'
 
+- name: "STATE: Update installed role-managed packages"
+  ansible.builtin.include_tasks: update.yml
+  when: state == 'update'
+
 - name: "STATE: Ensure PostgreSQL installations are absent"
   ansible.builtin.include_tasks: uninstall.yml
   when: state == 'uninstall'

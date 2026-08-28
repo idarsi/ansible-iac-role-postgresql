@@ -444,6 +444,14 @@
   roles:
     - role: ansible-iac-role-postgresql
   post_tasks:
+    - name: "Updating installed role-managed packages"
+      ansible.builtin.include_role:
+        name: ansible-iac-role-postgresql
+      vars:
+        state: update
+      tags:
+        - molecule-idempotence-notest
+
     - name: "Writing source fixture after bind migration completes"
       ansible.builtin.copy:
         dest: /srv/data/pgsql/.bash_profile

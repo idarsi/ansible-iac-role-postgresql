@@ -21,7 +21,7 @@
       - state is defined
       - state in
         [
-          'install', 'uninstall', 'all_absent', 'present', 'absent',
+          'install', 'update', 'uninstall', 'all_absent', 'present', 'absent',
           'validate', 'instances_present', 'instances_absent',
           'instances_started', 'instances_stopped', 'instances_restarted',
           'replication_present', 'roles_present', 'roles_absent',
