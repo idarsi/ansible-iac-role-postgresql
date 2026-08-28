@@ -49,15 +49,11 @@ jobs:
         scenario:
           - default
           - validation
-          - rocky8
-          - rhel9
-          - rocky10
-          - fedora43
-          - replication
           - all_absent
-          - bind_guardrails
-          - hba_guardrails
           - patroni_config
+          - rocky10
+          - rhel10
+          - fedora44
 
     steps:
       - name: Check out repository

@@ -90,6 +90,7 @@ Create databases                | databases_present   |
 Remove databases                | databases_absent    |
 Create database users           | roles_present       |
 Remove database users           | roles_absent        |
+Run post-install SQL jobs       | post_installs_present |
 
 Quick start
 -----------
