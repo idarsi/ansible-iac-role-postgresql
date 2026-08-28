@@ -28,9 +28,9 @@ structured inventory while Ansible handles the host-specific implementation.
 > multi-version and multi-instance PostgreSQL deployments, database and role
 > management, extensions, replication, inventory validation, repository
 > workflows, filesystem handling, and destructive cleanup. The role remains at
-> Beta because its interfaces and behavior may still change, Fedora is not part
-> of the automated test matrix, and broader long-term production evidence and
-> backward-compatibility guarantees have not yet been established.
+> Beta because its interfaces and behavior may still change, and broader
+> long-term production evidence and backward-compatibility guarantees have not
+> yet been established.
 
 Supported PostgreSQL major versions:
 - PostgreSQL 18 — supported until 14 November 2030
@@ -42,6 +42,21 @@ These versions are installed from the PostgreSQL Global Development Group
 supporting each major version for five years after its initial release. The
 PGDG repository provides packages and updates for supported PostgreSQL
 versions throughout their support lifetime.
+
+Supported operating systems and lifecycle targets:
+
+Operating system                | Supported versions | Upstream lifecycle target
+--------------------------------|--------------------|-------------------------
+Rocky Linux                     | 8, 9, 10           | Rocky 8 until 31 May 2029; Rocky 9 until 31 May 2032; Rocky 10 until 31 May 2035
+Red Hat Enterprise Linux (UBI) | 8, 9, 10           | RHEL 8, 9 and 10 follow Red Hat's ten-year lifecycle; planned major-release ends are 31 May 2029, 31 May 2032 and 31 May 2035
+Fedora                          | 43, 44             | Approximately 13 months per release; Fedora 43 is maintained until one month after Fedora 45, and Fedora 44 until one month after Fedora 46
+
+The Rocky Linux dates are based on the [Rocky Linux release guide](https://wiki.rockylinux.org/rocky/version/).
+RHEL and UBI follow the [Red Hat Enterprise Linux lifecycle policy](https://access.redhat.com/support/policy/updates/errata);
+the role does not manage Red Hat subscriptions. Fedora follows the
+[Fedora release lifecycle](https://fedoraproject.org/wiki/Fedora_Release_Life_Cycle),
+so its end dates move with the actual release schedule. These lifecycle
+targets should be reviewed when adding or removing a supported major version.
 
 On Red Hat Enterprise Linux (including UBI) and Rocky Linux, the role uses the
 PGDG repository for PostgreSQL packages. It does not install PostgreSQL from
@@ -115,8 +130,7 @@ Requirements
 ------------
 
 - Operating systems covered by the automated Molecule test matrix are listed
-  in [TESTING.md](TESTING.md). Fedora is not included in the current automated
-  test coverage.
+  in [TESTING.md](TESTING.md).
 
 - Other components
   - Ansible 2.15 or higher

@@ -1,0 +1,10 @@
+# Molecule managed
+
+{% if item.registry is defined %}
+FROM {{ item.registry.url }}/{{ item.image }}
+{% else %}
+FROM {{ item.image }}
+{% endif %}
+
+RUN dnf --assumeyes install python3 sudo bash iproute openssl systemd && \
+    dnf clean all

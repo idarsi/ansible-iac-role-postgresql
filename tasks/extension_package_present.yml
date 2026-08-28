@@ -68,4 +68,4 @@
     - pg_extension == ext.name
     - pg_version in ["16", "17", "18"]
     - (ansible_facts["distribution"] in ['RedHat', 'Rocky'] and ansible_facts["distribution_major_version"] in ['10', '9', '8']) or
-      (ansible_facts["distribution"] in ['Fedora'] and ansible_facts["distribution_major_version"] in ['41','42'])
+      (ansible_facts["distribution"] in ['Fedora'] and ansible_facts["distribution_major_version"] in ['43','44'])
