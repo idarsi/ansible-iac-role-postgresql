@@ -133,7 +133,6 @@
                   access:
                     - name: app_user
                       address: 10.0.0.1/32
-                      type: hostssl
                       method: cert
                       clientname: CN
                       map: app_cert_map

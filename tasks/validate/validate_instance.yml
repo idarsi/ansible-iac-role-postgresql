@@ -20,6 +20,21 @@
       - pg_validation_instance_record.roles is not defined or pg_validation_instance_record.roles | type_debug == 'list'
       - pg_validation_instance_record.configuration is not defined or pg_validation_instance_record.configuration | type_debug == 'dict'
       - pg_validation_instance_record.replication is not defined or pg_validation_instance_record.replication | type_debug == 'dict'
+      - >-
+        pg_validation_instance_record.certificate_subject_alt_names is not defined
+        or pg_validation_instance_record.certificate_subject_alt_names | type_debug == 'list'
+      - >-
+        pg_validation_instance_record.certificate_subject_alt_names is not defined
+        or (
+          pg_validation_instance_record.certificate_subject_alt_names
+          | select('string') | list | length
+        ) == pg_validation_instance_record.certificate_subject_alt_names | length
+      - >-
+        pg_validation_instance_record.certificate_subject_alt_names is not defined
+        or (
+          pg_validation_instance_record.certificate_subject_alt_names
+          | select('match', '^[A-Za-z0-9][A-Za-z0-9._-]*$') | list | length
+        ) == pg_validation_instance_record.certificate_subject_alt_names | length
       - pg_validation_instance_record.cluster is not defined or pg_validation_instance_record.cluster is string
       - >-
         pg_validation_instance_record.configuration is not defined

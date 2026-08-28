@@ -20,6 +20,7 @@
     pg_configuration: "{{ pg_instance_record.1.configuration | default(omit) }}"
     pg_databases: "{{ pg_instance_record.1.databases | default([]) }}"
     pg_global_access: "{{ pg_instance_record.1.global_access | default([]) }}"
+    pg_hba_default_type: "{{ 'hostssl' if (pg_instance_record.1.security_profile | default('off')) == 'safe' else 'host' }}"
     pg_instance: "{{ pg_instance_record.1.name }}"
     pg_max_connections: "{{ pg_instance_record.1.configuration.max_connections | default(pg_default_max_connections) }}"
     pg_port: "{{ pg_instance_record.1.configuration.port | default(pg_default_port) }}"
@@ -127,6 +128,7 @@
   ansible.builtin.set_fact:
     pg_certificate_private_key_fullpath: "{{ pg_default_dir }}/{{ pg_version }}/{{ pg_instance }}/ssl/{{ pg_certificate_private_key_path }}"
     pg_certificate_public_key_fullpath: "{{ pg_default_dir }}/{{ pg_version }}/{{ pg_instance }}/ssl/{{ pg_certificate_public_key_path }}"
+    pg_certificate_subject_alt_names: "{{ pg_instance_record.1.certificate_subject_alt_names | default(pg_certificate_subject_alt_names) }}"
     pg_client_certificate_authority_fullpath: "{{ pg_default_dir }}/{{ pg_version }}/{{ pg_instance }}/ssl/{{ pg_client_certificate_authority_path }}"
     pg_client_certificate_authority_enabled: >-
       {{
@@ -191,7 +193,7 @@
   loop_control:
     loop_var: pg_hba_access_record
   vars:
-    pg_hba_access_type: "{{ pg_hba_access_record.type | default('host') }}"
+    pg_hba_access_type: "{{ pg_hba_access_record.type | default(pg_hba_default_type | default('host')) }}"
     pg_hba_access_uses_client_certificate: >-
       {{
         (pg_hba_access_record.method | default('scram-sha-256')) == 'cert'
@@ -210,7 +212,7 @@
     loop_var: pg_hba_database_access_record
   vars:
     pg_hba_access_record: "{{ pg_hba_database_access_record.1 }}"
-    pg_hba_access_type: "{{ pg_hba_access_record.type | default('host') }}"
+    pg_hba_access_type: "{{ pg_hba_access_record.type | default(pg_hba_default_type | default('host')) }}"
     pg_hba_access_uses_client_certificate: >-
       {{
         (pg_hba_access_record.method | default('scram-sha-256')) == 'cert'

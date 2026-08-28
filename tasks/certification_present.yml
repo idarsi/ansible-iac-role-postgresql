@@ -17,6 +17,9 @@
       - pg_certificate_private_key_bits is defined
       - pg_certificate_private_key_fullpath is defined
       - pg_certificate_public_key_fullpath is defined
+      - pg_certificate_subject_alt_names is defined
+      - pg_certificate_subject_alt_names | type_debug == 'list'
+      - pg_certificate_subject_alt_names | length > 0
       - >-
         (
           pg_client_certificate_authority_content is not defined
@@ -60,17 +63,33 @@
   vars:
     iac_log_write: "Created private key to {{ pg_certificate_private_key_fullpath }}"
 
-- name: "Setting variables"
+- name: "Setting certificate subject alternative names"
   ansible.builtin.set_fact:
-    pg_cli_command: >-
-      openssl req -new -x509 -nodes
-      -key {{ pg_certificate_private_key_fullpath }}
-      -out {{ pg_certificate_public_key_fullpath }}
-      -days {{ pg_certificate_public_key_days }}
-      -subj "/CN=localhost"
+    pg_certificate_subject_alt_names_option: >-
+      subjectAltName={{
+        pg_certificate_subject_alt_names
+        | map('regex_replace', '^', 'DNS:')
+        | join(',')
+      }}
 
 - name: "Ensuring certificate public key exists if needed"
-  ansible.builtin.command: "{{ pg_cli_command }}"
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - req
+      - -new
+      - -x509
+      - -nodes
+      - -key
+      - "{{ pg_certificate_private_key_fullpath }}"
+      - -out
+      - "{{ pg_certificate_public_key_fullpath }}"
+      - -days
+      - "{{ pg_certificate_public_key_days }}"
+      - -subj
+      - "/CN={{ pg_certificate_subject_alt_names[0] }}"
+      - -addext
+      - "{{ pg_certificate_subject_alt_names_option }}"
   args:
     creates: "{{ pg_certificate_public_key_fullpath }}"
   register: my_output
