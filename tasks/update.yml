@@ -1,0 +1,64 @@
+---
+###############################################################################
+#
+# update.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+###############################################################################
+# SELECT PACKAGES INSTALLED BY THIS ROLE
+###############################################################################
+
+- name: "Checking if required variables are defined"
+  ansible.builtin.assert:
+    that:
+      - pg_managed_packages_file is defined
+    fail_msg: "PostgreSQL update state is missing one or more required variables"
+
+- name: "Gathering installed package facts"
+  ansible.builtin.package_facts:
+    manager: "auto"
+
+- name: "Checking managed package marker"
+  ansible.builtin.stat:
+    path: "{{ pg_managed_packages_file }}"
+  register: pg_managed_packages_marker
+
+- name: "Reading managed package marker"
+  ansible.builtin.slurp:
+    path: "{{ pg_managed_packages_file }}"
+  register: pg_managed_packages_content
+  when: pg_managed_packages_marker.stat.exists
+
+- name: "Selecting installed role-managed packages"
+  ansible.builtin.set_fact:
+    pg_update_packages: >-
+      {{ ((pg_managed_packages_content.content | b64decode).splitlines()
+         if pg_managed_packages_marker.stat.exists else [])
+         | select('in', ansible_facts.packages.keys() | list)
+         | list }}
+
+###############################################################################
+# UPDATE ONLY ROLE-MANAGED PACKAGES
+###############################################################################
+
+- name: "Updating installed role-managed packages"  # noqa package-latest
+  ansible.builtin.dnf:
+    name: "{{ pg_update_packages }}"
+    sslverify: "{{ dnf_sslverify }}"
+    validate_certs: "{{ dnf_validate_certs }}"
+    disable_gpg_check: "{{ dnf_disable_gpg_check }}"
+    state: "latest"
+  vars:
+    ansible_python_interpreter: "{{ pg_package_module_interpreter }}"
+  environment:
+    http_proxy: "{{ http_proxy }}"
+    https_proxy: "{{ https_proxy }}"
+    no_proxy: "{{ no_proxy }}"
+  register: pg_update_result
+  retries: "{{ pg_repo_network_retries | default(1) }}"
+  delay: "{{ pg_repo_network_delay | default(0) }}"
+  until: pg_update_result is succeeded
+  when: pg_update_packages | length > 0

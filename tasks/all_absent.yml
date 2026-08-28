@@ -24,6 +24,7 @@
       - pg_default_dir is defined
       - pg_dnf_repo_path is defined
       - pg_log_directory is defined
+      - pg_managed_packages_file is defined
       - pg_os_user is defined
       - pg_real_dir is defined
       - pg_systemd_service_dir is defined
@@ -111,6 +112,11 @@
 
 - name: "Ensuring PostgreSQL repository is absent"
   ansible.builtin.include_tasks: repo_absent.yml
+
+- name: "Removing managed package marker"
+  ansible.builtin.file:
+    path: "{{ pg_managed_packages_file }}"
+    state: absent
 
 ###############################################################################
 # REMOVING DIRECTORIES
