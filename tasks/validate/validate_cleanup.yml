@@ -7,6 +7,16 @@
 #
 ###############################################################################
 
+- name: "Selecting PostgreSQL cleanup paths"
+  ansible.builtin.set_fact:
+    pg_cleanup_paths: >-
+      {{
+        [pg_bind_dir, pg_default_dir, pg_log_directory, pg_real_dir]
+        if state == 'all_absent'
+        else [pg_bind_dir, pg_real_dir]
+      }}
+  when: state in ['all_absent', 'absent']
+
 - name: "Checking PostgreSQL cleanup path safety"
   ansible.builtin.assert:
     that:
@@ -22,15 +32,11 @@
     fail_msg: >-
       PostgreSQL cleanup paths must be absolute, traversal-free, PostgreSQL-specific
       paths ending in /pgsql, and must not target a system root
-  loop:
-    - "{{ pg_bind_dir }}"
-    - "{{ pg_default_dir }}"
-    - "{{ pg_log_directory }}"
-    - "{{ pg_real_dir }}"
+  loop: "{{ pg_cleanup_paths }}"
   loop_control:
     loop_var: pg_cleanup_path
     label: "{{ pg_cleanup_path }}"
-  when: state == 'all_absent'
+  when: state in ['all_absent', 'absent']
 
 - name: "Checking PostgreSQL systemd cleanup directory"
   ansible.builtin.assert:
@@ -39,19 +45,25 @@
     fail_msg: "PostgreSQL all_absent cannot use a custom systemd service directory"
   when: state == 'all_absent'
 
+- name: "Selecting PostgreSQL cleanup marker paths"
+  ansible.builtin.set_fact:
+    pg_cleanup_marker_paths: >-
+      {{
+        pg_cleanup_paths
+        if state == 'all_absent' or pg_real_dir != pg_bind_dir
+        else []
+      }}
+  when: state in ['all_absent', 'absent']
+
 - name: "Checking PostgreSQL cleanup markers"
   ansible.builtin.stat:
     path: "{{ pg_cleanup_root }}/{{ pg_cleanup_marker_filename }}"
-  loop:
-    - "{{ pg_bind_dir }}"
-    - "{{ pg_default_dir }}"
-    - "{{ pg_log_directory }}"
-    - "{{ pg_real_dir }}"
+  loop: "{{ pg_cleanup_marker_paths }}"
   loop_control:
     loop_var: pg_cleanup_root
     label: "{{ pg_cleanup_root }}"
   register: pg_cleanup_markers
-  when: state == 'all_absent'
+  when: state in ['all_absent', 'absent']
 
 - name: "Rejecting unmarked PostgreSQL cleanup roots"
   ansible.builtin.assert:
@@ -60,7 +72,7 @@
       - item.stat.isreg
     fail_msg: "Refusing PostgreSQL cleanup for an unmarked path: {{ item.pg_cleanup_root }}"
   loop: "{{ pg_cleanup_markers.results }}"
-  when: state == 'all_absent'
+  when: state in ['all_absent', 'absent']
 
 - name: "Checking PostgreSQL instance name safety"
   ansible.builtin.assert:

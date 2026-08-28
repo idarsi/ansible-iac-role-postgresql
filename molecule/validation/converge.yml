@@ -820,3 +820,70 @@
             dest: /tmp/postgresql-validation-instance-name.ok
             content: "ok\n"
             mode: "0644"
+
+- name: "Reject unsafe absent cleanup paths"
+  hosts: all
+  become: false
+  vars:
+    state: absent
+    pg_real_dir: /etc
+    pg_bind_dir: /var/lib/pgsql
+    iac_blueprint:
+      postgresql:
+        - version: 17
+  tasks:
+    - name: "Running validation expecting unsafe absent cleanup path failure"
+      block:
+        - name: "Applying unsafe absent cleanup paths"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if unsafe absent cleanup paths were accepted"
+          ansible.builtin.fail:
+            msg: "Unsafe absent cleanup paths were accepted"
+      rescue:
+        - name: "Checking unsafe absent cleanup path failure"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("PostgreSQL cleanup paths must be absolute")
+        - name: "Writing absent cleanup path validation marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-absent-cleanup-path.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject unsafe version-scoped bind paths"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          binds:
+            - source: /etc
+              target: /tmp/pgsql-unsafe-bind
+  tasks:
+    - name: "Running validation expecting unsafe version-scoped bind failure"
+      block:
+        - name: "Applying unsafe version-scoped bind paths"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if unsafe version-scoped bind paths were accepted"
+          ansible.builtin.fail:
+            msg: "Unsafe version-scoped bind paths were accepted"
+      rescue:
+        - name: "Checking unsafe version-scoped bind path failure"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("version-scoped bind paths must be absolute")
+        - name: "Writing version-scoped bind validation marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-version-bind.ok
+            content: "ok\n"
+            mode: "0644"

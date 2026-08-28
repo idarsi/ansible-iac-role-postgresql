@@ -25,6 +25,33 @@
       - pg_validation_version_record.clusters is not defined or pg_validation_version_record.clusters | type_debug == 'list'
     fail_msg: "PostgreSQL version-scoped inventory records must use lists"
 
+- name: "Checking PostgreSQL version-scoped bind records"
+  ansible.builtin.assert:
+    that:
+      - item | type_debug == 'dict'
+      - item.source is defined
+      - item.target is defined
+      - item.source is match('^/')
+      - item.target is match('^/')
+      - item.source is not search('(^|/)\.\.(/|$)')
+      - item.target is not search('(^|/)\.\.(/|$)')
+      - >-
+        item.source is match('^/var/lib/pgsql/[^/].*$')
+        or item.source is match('^/var/log/pgsql/[^/].*$')
+        or item.source is match('^/etc/pgsql/[^/].*$')
+        or item.source is match('^/srv/data/pgsql[^/]*(/|$)')
+        or item.source is match('^/tmp/pgsql[^/]*(/|$)')
+      - >-
+        item.target is match('^/var/lib/pgsql/[^/].*$')
+        or item.target is match('^/var/log/pgsql/[^/].*$')
+        or item.target is match('^/etc/pgsql/[^/].*$')
+        or item.target is match('^/srv/data/pgsql[^/]*(/|$)')
+        or item.target is match('^/tmp/pgsql[^/]*(/|$)')
+    fail_msg: >-
+      PostgreSQL version-scoped bind paths must be absolute, traversal-free,
+      and remain under approved PostgreSQL directories
+  loop: "{{ pg_validation_version_record.binds | default([]) }}"
+
 - name: "Checking PostgreSQL cluster names are unique"
   ansible.builtin.assert:
     that:
