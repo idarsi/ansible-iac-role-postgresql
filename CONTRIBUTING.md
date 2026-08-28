@@ -47,11 +47,11 @@ repository, or preload behavior:
 molecule test -s timescaledb
 ```
 
-Run the default scenario after changes that affect normal installation or
+Run the `rocky9-full` scenario after changes that affect normal installation or
 configuration behavior:
 
 ```bash
-molecule test -s default
+molecule test -s rocky9-full
 ```
 
 New validation scenarios should cover both successful input and the expected

@@ -151,6 +151,26 @@
           - patroni_cluster.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
           - patroni_cluster.json.members | selectattr('role', 'equalto', 'replica') | list | length == 2
 
+    - name: "Check the PostgreSQL 18 package and service"
+      ansible.builtin.command: "{{ item }}"
+      loop:
+        - rpm -q postgresql18-server
+        - systemctl is-active postgresql-18-main18.service
+      changed_when: false
+
+    - name: "Check the PostgreSQL 18 database"
+      become: true
+      become_user: postgres
+      ansible.builtin.command: >-
+        /usr/pgsql-18/bin/psql postgres -p 5433 -tXAc
+        "SELECT version() LIKE 'PostgreSQL 18%'"
+      register: pg18_database
+      changed_when: false
+
+    - name: "Assert PostgreSQL 18 is operational"
+      ansible.builtin.assert:
+        that: pg18_database.stdout == "t"
+
 - name: "Verify etcd quorum survives one member outage"
   hosts: etcd01
   become: false

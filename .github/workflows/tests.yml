@@ -47,13 +47,13 @@ jobs:
       fail-fast: false
       matrix:
         scenario:
-          - default
+          - rocky9-full
           - validation
           - all_absent
           - patroni_config
-          - rocky10
-          - rhel10
-          - fedora44
+          - rocky10-baseline
+          - rhel10-baseline
+          - fedora44-baseline
 
     steps:
       - name: Check out repository
@@ -92,7 +92,7 @@ jobs:
       fail-fast: false
       matrix:
         scenario:
-          - default
+          - rocky9-full
           - validation
           - all_absent
           - bind_guardrails
@@ -102,17 +102,17 @@ jobs:
           - patroni_config
           - patroni_membership
           - patroni_failover
-          - etcd_server
-          - etcd_tls
-          - etcd_tls_cluster
-          - etcd_el_matrix
-          - rocky8
-          - rhel8
-          - rhel9
-          - rocky10
-          - rhel10
-          - fedora43
-          - fedora44
+          - rocky9-etcd-cluster
+          - rocky9-etcd-tls-member
+          - rocky9-etcd-tls-cluster
+          - el8-el10-etcd-matrix
+          - rocky8-baseline
+          - rhel8-baseline
+          - rhel9-full
+          - rocky10-baseline
+          - rhel10-baseline
+          - fedora43-baseline
+          - fedora44-baseline
 
     steps:
       - name: Check out repository

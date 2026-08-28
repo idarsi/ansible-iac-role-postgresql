@@ -41,6 +41,32 @@
       register: pg_hba
       changed_when: false
 
+    - name: "Checking PostgreSQL 18 package"
+      ansible.builtin.command: rpm -q postgresql18-server
+      register: pg18_package
+      changed_when: false
+
+    - name: "Checking PostgreSQL 18 service"
+      ansible.builtin.command: systemctl is-active postgresql-18-main18.service
+      register: pg18_service
+      changed_when: false
+
+    - name: "Checking PostgreSQL 18 database"
+      become: true
+      become_user: postgres
+      ansible.builtin.command: >-
+        /usr/pgsql-18/bin/psql postgres -p 5418 -tXAc
+        "SELECT 1 FROM pg_database WHERE datname='appdb18'"
+      register: pg18_database
+      changed_when: false
+
+    - name: "Checking PostgreSQL 18 pg_hba rule"
+      ansible.builtin.command: >-
+        grep -F "host appdb18 app_user 10.0.0.1/32 scram-sha-256"
+        /var/lib/pgsql/18/main18/pg_hba.conf
+      register: pg18_hba
+      changed_when: false
+
     - name: "Verifying Fedora 44 PostgreSQL installation"
       ansible.builtin.assert:
         that:
@@ -50,4 +76,8 @@
           - pg_service.stdout == "active"
           - pg_database.stdout == "1"
           - pg_hba.rc == 0
+          - pg18_package.rc == 0
+          - pg18_service.stdout == "active"
+          - pg18_database.stdout == "1"
+          - pg18_hba.rc == 0
         fail_msg: "PostgreSQL Fedora 44 Molecule verification failed"

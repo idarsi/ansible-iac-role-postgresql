@@ -1,0 +1,89 @@
+---
+- name: "Install a TLS-enabled managed etcd member"
+  hosts: all
+  become: false
+  vars:
+    state: install
+    pg_patroni_restapi_listen_address: "0.0.0.0"
+    pg_lang: "en"
+    pg_locale: "US"
+    pg_disable_postgresql_module: false
+    pg_patroni_reinitialize: true
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: molecule-etcd-tls
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints:
+                  - https://etcd01:2379
+                proxy: https://etcd01:2379
+                etcd:
+                  enabled: true
+                  initial_cluster_token: molecule-etcd-tls
+                  members:
+                    - name: etcd01
+                      host: etcd01
+                      peer_url: https://etcd01:2380
+                      client_url: https://etcd01:2379
+                  tls:
+                    enabled: true
+                    client:
+                      ca_file: /etc/etcd/pki/ca.crt
+                      cert_file: /etc/etcd/pki/etcd.crt
+                      key_file: /etc/etcd/pki/etcd.key
+                    peer:
+                      ca_file: /etc/etcd/pki/ca.crt
+                      cert_file: /etc/etcd/pki/etcd.crt
+                      key_file: /etc/etcd/pki/etcd.key
+              patroni:
+                ttl: 30
+                loop_wait: 5
+                retry_timeout: 5
+                postgresql:
+                  superuser_password: postgres_password
+                  replication_username: replicator
+                replication_password: replication_password
+                restapi:
+                  port: 8008
+                  authentication:
+                    username: patroni
+                    password: patroni_password
+              members:
+                - host: etcd01
+                  instance: main
+                  name: molecule-etcd-tls-etcd01
+          instances:
+            - name: main
+              cluster: molecule-etcd-tls
+              configuration:
+                listen_addresses: "*"
+                port: 5432
+                max_connections: 50
+        - version: 18
+          instances:
+            - name: main18
+              configuration:
+                listen_addresses: "*"
+                port: 5433
+                max_connections: 50
+  pre_tasks:
+    - name: "Discover the local container IPv4 address"
+      ansible.builtin.command: "getent ahostsv4 {{ inventory_hostname }}"
+      register: pg_etcd_local_address
+      changed_when: false
+
+    - name: "Set the explicit etcd bind address for the test host"
+      ansible.builtin.set_fact:
+        pg_etcd_bind_address: "{{ pg_etcd_local_address.stdout_lines[0].split()[0] }}"
+  roles:
+    - role: ansible-iac-role-postgresql
+
+  tasks:
+    - name: "Re-apply managed TLS etcd configuration for idempotence coverage"
+      ansible.builtin.include_role:
+        name: ansible-iac-role-postgresql
+        tasks_from: etcd_present.yml
+      when: pg_cluster.dcs.etcd.enabled | default(false) | bool
