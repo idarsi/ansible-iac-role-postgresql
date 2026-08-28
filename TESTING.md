@@ -84,15 +84,16 @@ The GitHub Actions workflow runs the production-profile lint check and the
 Molecule scenarios as separate jobs. Molecule scenarios run in parallel by
 scenario, while the lint job is shared by all pull requests.
 
-The workflow currently uses Ansible Core 2.16, ansible-lint 25.x, Molecule 6.x,
-and molecule-plugins 23.x–24.x. These versions are compatible with the
-repository's existing Molecule scenario configuration.
+The workflow uses the exact Ansible Core, ansible-lint, Molecule, and
+molecule-plugins versions defined in `requirements-ci.txt`. Install that file
+locally before running Molecule to reproduce the CI test environment.
 
 ## Running tests
 
 Run the production-profile Ansible Lint check before the Molecule scenarios:
 
 ```bash
+python -m pip install -r requirements-ci.txt
 ANSIBLE_ROLES_PATH=.. ansible-lint --profile production
 ```
 
