@@ -88,10 +88,10 @@ the complete scenario matrix runs once per day and can also be started with
 
 The fast matrix contains `default`, `validation`, `all_absent`,
 `bind_guardrails`, `hba_guardrails`, `replication`, `patroni_config`,
-`rocky8`, `rhel8`, `rhel9`, `rocky10`, `rhel10`, `fedora43`, and `fedora44`.
-The daily matrix runs all scenarios listed in this document, including the
-multi-member Patroni and etcd scenarios and both TimescaleDB repository
-variants.
+`rocky8`, `rhel9`, `rocky10`, and `fedora43`. The daily matrix runs all
+scenarios listed in this document, including the additional EL and Fedora
+baseline images, both TimescaleDB repository variants, and the multi-member
+Patroni and etcd scenarios.
 
 The workflow cancels an older in-progress run for the same branch or scheduled
 workflow when a newer run starts.
