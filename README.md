@@ -48,7 +48,7 @@ Supported operating systems and lifecycle targets:
 Operating system                | Supported versions | Upstream lifecycle target
 --------------------------------|--------------------|-------------------------
 Rocky Linux                     | 8, 9, 10           | Rocky 8 until 31 May 2029; Rocky 9 until 31 May 2032; Rocky 10 until 31 May 2035
-Red Hat Enterprise Linux (UBI) | 8, 9, 10           | RHEL 8, 9 and 10 follow Red Hat's ten-year lifecycle; planned major-release ends are 31 May 2029, 31 May 2032 and 31 May 2035
+Red Hat Enterprise Linux (UBI)  | 8, 9, 10           | RHEL 8, 9 and 10 follow Red Hat's ten-year lifecycle; planned major-release ends are 31 May 2029, 31 May 2032 and 31 May 2035
 Fedora                          | 43, 44             | Approximately 13 months per release; Fedora 43 is maintained until one month after Fedora 45, and Fedora 44 until one month after Fedora 46
 
 The Rocky Linux dates are based on the [Rocky Linux release guide](https://wiki.rockylinux.org/rocky/version/).
@@ -142,9 +142,9 @@ Requirements
   - Ansible 2.15 or higher
 
 The versions used by the automated CI test environment are documented in
-[TESTING.md](TESTING.md). The CI currently pins Ansible Core 2.16,
-ansible-lint 25.x, Molecule 6.x, and molecule-plugins 23.x–24.x for
-repeatable test runs.
+[requirements-ci.txt](requirements-ci.txt) and installed by GitHub Actions.
+Use the same file before running Molecule locally so local and CI tests use the
+same Ansible Core, ansible-lint, Molecule, and molecule-plugins versions.
 
 Usage
 =====
