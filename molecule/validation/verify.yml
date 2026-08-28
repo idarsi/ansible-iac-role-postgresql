@@ -24,6 +24,8 @@
         - /tmp/postgresql-validation-filesystem.ok
         - /tmp/postgresql-validation-cleanup-path.ok
         - /tmp/postgresql-validation-instance-name.ok
+        - /tmp/postgresql-validation-absent-cleanup-path.ok
+        - /tmp/postgresql-validation-version-bind.ok
       register: pg_validation_markers
 
     - name: "Checking all validation cases completed"
