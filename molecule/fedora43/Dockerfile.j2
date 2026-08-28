@@ -6,5 +6,5 @@ FROM {{ item.registry.url }}/{{ item.image }}
 FROM {{ item.image }}
 {% endif %}
 
-RUN dnf --assumeyes install python3 sudo bash iproute openssl systemd && \
+RUN dnf --assumeyes install python3 python3-libdnf5 sudo bash iproute openssl systemd && \
     dnf clean all
