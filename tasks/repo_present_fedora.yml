@@ -61,12 +61,34 @@
     - pg_repofile_available is false
 
 - name: "Ensuring PostgreSQL repository package is present for Fedora"
-  ansible.builtin.include_tasks: package_present.yml
+  ansible.builtin.command: # noqa command-instead-of-module
+    argv:
+      - dnf
+      - -y
+      - install
+      - "--setopt=sslverify={{ 1 if dnf_sslverify else 0 }}"
+      - "{{ '--nogpgcheck' if dnf_disable_gpg_check else '--setopt=gpgcheck=1' }}"
+      - >-
+        {{ 'https://download.postgresql.org/pub/repos/yum/reporpms/F-' ~
+        ansible_facts['distribution_major_version'] ~
+        '-x86_64/pgdg-fedora-repo-latest.noarch.rpm' }}
+  environment:
+    http_proxy: "{{ http_proxy }}"
+    https_proxy: "{{ https_proxy }}"
+    no_proxy: "{{ no_proxy }}"
+  register: pg_repo_package_result
+  retries: "{{ pg_repo_network_retries | default(1) }}"
+  delay: "{{ pg_repo_network_delay | default(0) }}"
+  until: pg_repo_package_result is succeeded
+  changed_when: true
+  when:
+    - pg_files_available is false
+    - pg_repofile_available is false
+
+- name: "Writing log"
+  ansible.builtin.include_tasks: log_write.yml
   vars:
-    pg_package: >-
-      {{ 'https://download.postgresql.org/pub/repos/yum/reporpms/F-' ~
-      ansible_facts['distribution_major_version'] ~
-      '-x86_64/pgdg-fedora-repo-latest.noarch.rpm' }}
+    iac_log_write: "Installed Fedora PostgreSQL repository package"
   when:
     - pg_files_available is false
     - pg_repofile_available is false
