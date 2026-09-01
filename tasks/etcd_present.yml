@@ -61,6 +61,35 @@
   vars:
     pg_package: "{{ pg_etcd_package }}"
 
+- name: "Installing generated etcd client and peer certificates"
+  ansible.builtin.copy:
+    content: "{{ pg_cluster_member_certificate_files.results[0 if item.kind == 'cert' else 1].content | b64decode }}"
+    dest: "{{ item.path }}"
+    owner: etcd
+    group: etcd
+    mode: "0600"
+  loop:
+    - {kind: cert, path: "{{ pg_cluster_etcd_tls_effective.client.cert_file | default('/etc/etcd/pki/etcd-client.crt') }}"}
+    - {kind: key, path: "{{ pg_cluster_etcd_tls_effective.client.key_file | default('/etc/etcd/pki/etcd-client.key') }}"}
+    - {kind: cert, path: "{{ pg_cluster_etcd_tls_effective.peer.cert_file | default('/etc/etcd/pki/etcd-peer.crt') }}"}
+    - {kind: key, path: "{{ pg_cluster_etcd_tls_effective.peer.key_file | default('/etc/etcd/pki/etcd-peer.key') }}"}
+  no_log: true
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool
+
+- name: "Granting Patroni read access to the generated etcd client certificate"
+  ansible.posix.acl:
+    path: "{{ item }}"
+    entity: postgres
+    etype: user
+    permissions: r
+    state: present
+  loop:
+    - "{{ pg_cluster_etcd_tls_effective.client.cert_file | default('/etc/etcd/pki/etcd-client.crt') }}"
+    - "{{ pg_cluster_etcd_tls_effective.client.key_file | default('/etc/etcd/pki/etcd-client.key') }}"
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool
+
 - name: "Ensuring etcd configuration directory exists"
   ansible.builtin.file:
     path: "{{ pg_etcd_config_directory }}"

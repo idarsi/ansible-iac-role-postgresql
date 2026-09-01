@@ -149,3 +149,5 @@ pg_patroni_user: "postgres"
 pg_patroni_group: "postgres"
 pg_patroni_restapi_port: 8008
 pg_patroni_restapi_listen_address: "{{ inventory_hostname }}"
+pg_cluster_certificate_key_bits: 3072
+pg_cluster_certificate_days: 3650

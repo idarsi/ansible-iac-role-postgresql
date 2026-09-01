@@ -30,14 +30,7 @@
                       client_url: https://etcd01:2379
                   tls:
                     enabled: true
-                    client:
-                      ca_file: /etc/etcd/pki/ca.crt
-                      cert_file: /etc/etcd/pki/etcd.crt
-                      key_file: /etc/etcd/pki/etcd.key
-                    peer:
-                      ca_file: /etc/etcd/pki/ca.crt
-                      cert_file: /etc/etcd/pki/etcd.crt
-                      key_file: /etc/etcd/pki/etcd.key
+                    auto_generate: true
               patroni:
                 ttl: 30
                 loop_wait: 5
@@ -82,8 +75,23 @@
     - role: ansible-iac-role-postgresql
 
   tasks:
+    - name: "Restore the managed Patroni cluster context for idempotence coverage"
+      ansible.builtin.set_fact:
+        pg_cluster: >-
+          {{
+            iac_blueprint.postgresql[0].clusters[0]
+            | combine({
+                'dcs': iac_blueprint.postgresql[0].clusters[0].dcs
+                  | combine({
+                      'etcd': iac_blueprint.postgresql[0].clusters[0].dcs.etcd
+                        | combine({'tls': pg_cluster_etcd_tls_effective}, recursive=true)
+                    }, recursive=true)
+              }, recursive=true)
+          }}
     - name: "Re-apply managed TLS etcd configuration for idempotence coverage"
       ansible.builtin.include_role:
         name: ansible-iac-role-postgresql
         tasks_from: etcd_present.yml
-      when: pg_cluster.dcs.etcd.enabled | default(false) | bool
+      when: >-
+        iac_blueprint.postgresql[0].clusters[0].dcs.etcd.enabled
+        | default(false) | bool

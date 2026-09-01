@@ -65,18 +65,35 @@
 - name: "Checking managed etcd TLS configuration"
   ansible.builtin.assert:
     that:
-      - pg_validation_etcd_tls.client.ca_file is defined
-      - pg_validation_etcd_tls.client.cert_file is defined
-      - pg_validation_etcd_tls.client.key_file is defined
-      - pg_validation_etcd_tls.peer.ca_file is defined
-      - pg_validation_etcd_tls.peer.cert_file is defined
-      - pg_validation_etcd_tls.peer.key_file is defined
-      - pg_validation_etcd_tls.client.ca_file | string is match('^/etc/etcd/')
-      - pg_validation_etcd_tls.client.cert_file | string is match('^/etc/etcd/')
-      - pg_validation_etcd_tls.client.key_file | string is match('^/etc/etcd/')
-      - pg_validation_etcd_tls.peer.ca_file | string is match('^/etc/etcd/')
-      - pg_validation_etcd_tls.peer.cert_file | string is match('^/etc/etcd/')
-      - pg_validation_etcd_tls.peer.key_file | string is match('^/etc/etcd/')
+      - pg_validation_etcd_tls.auto_generate is not defined or pg_validation_etcd_tls.auto_generate | type_debug == 'bool'
+      - >-
+        pg_validation_etcd_tls.auto_generate | default(false) | bool
+        or (
+          pg_validation_etcd_tls.client.ca_file is defined
+          and pg_validation_etcd_tls.client.cert_file is defined
+          and pg_validation_etcd_tls.client.key_file is defined
+          and pg_validation_etcd_tls.peer.ca_file is defined
+          and pg_validation_etcd_tls.peer.cert_file is defined
+          and pg_validation_etcd_tls.peer.key_file is defined
+        )
+      - >-
+        pg_validation_etcd_tls.auto_generate | default(false) | bool
+        or pg_validation_etcd_tls.client.ca_file | string is match('^/etc/etcd/')
+      - >-
+        pg_validation_etcd_tls.auto_generate | default(false) | bool
+        or pg_validation_etcd_tls.client.cert_file | string is match('^/etc/etcd/')
+      - >-
+        pg_validation_etcd_tls.auto_generate | default(false) | bool
+        or pg_validation_etcd_tls.client.key_file | string is match('^/etc/etcd/')
+      - >-
+        pg_validation_etcd_tls.auto_generate | default(false) | bool
+        or pg_validation_etcd_tls.peer.ca_file | string is match('^/etc/etcd/')
+      - >-
+        pg_validation_etcd_tls.auto_generate | default(false) | bool
+        or pg_validation_etcd_tls.peer.cert_file | string is match('^/etc/etcd/')
+      - >-
+        pg_validation_etcd_tls.auto_generate | default(false) | bool
+        or pg_validation_etcd_tls.peer.key_file | string is match('^/etc/etcd/')
     fail_msg: >-
       Managed etcd TLS requires client and peer CA, certificate, and key paths
       under /etc/etcd/

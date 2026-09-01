@@ -5,8 +5,8 @@
   vars:
     etcdctl_tls_args:
       - --cacert=/etc/etcd/pki/ca.crt
-      - --cert=/etc/etcd/pki/etcd.crt
-      - --key=/etc/etcd/pki/etcd.key
+      - --cert=/etc/etcd/pki/etcd-client.crt
+      - --key=/etc/etcd/pki/etcd-client.key
   tasks:
     - name: "Check the etcd service is active"
       ansible.builtin.command: systemctl is-active etcd.service
@@ -60,8 +60,8 @@
         mode: "0600"
       loop:
         - {src: /etc/etcd/pki/ca.crt, dest: /tmp/old-ca.crt}
-        - {src: /etc/etcd/pki/etcd.crt, dest: /tmp/old-etcd.crt}
-        - {src: /etc/etcd/pki/etcd.key, dest: /tmp/old-etcd.key}
+        - {src: /etc/etcd/pki/etcd-client.crt, dest: /tmp/old-etcd.crt}
+        - {src: /etc/etcd/pki/etcd-client.key, dest: /tmp/old-etcd.key}
 
     - name: "Generate replacement TLS material"
       ansible.builtin.command:
@@ -93,8 +93,10 @@
         mode: "0644"
       loop:
         - {src: /tmp/new-etcd.crt, dest: /etc/etcd/pki/ca.crt}
-        - {src: /tmp/new-etcd.crt, dest: /etc/etcd/pki/etcd.crt}
-        - {src: /tmp/new-etcd.key, dest: /etc/etcd/pki/etcd.key}
+        - {src: /tmp/new-etcd.crt, dest: /etc/etcd/pki/etcd-client.crt}
+        - {src: /tmp/new-etcd.key, dest: /etc/etcd/pki/etcd-client.key}
+        - {src: /tmp/new-etcd.crt, dest: /etc/etcd/pki/etcd-peer.crt}
+        - {src: /tmp/new-etcd.key, dest: /etc/etcd/pki/etcd-peer.key}
 
     - name: "Restart etcd and Patroni after TLS rotation"
       ansible.builtin.systemd_service:
