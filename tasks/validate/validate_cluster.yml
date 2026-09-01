@@ -77,6 +77,9 @@
   ansible.builtin.assert:
     that:
       - >-
+        pg_validation_cluster_record.patroni.restapi.auto_generate is not defined
+        or pg_validation_cluster_record.patroni.restapi.auto_generate | type_debug == 'bool'
+      - >-
         (
           pg_validation_cluster_record.patroni.restapi.cafile is not defined
           and pg_validation_cluster_record.patroni.restapi.certfile is not defined
@@ -87,6 +90,7 @@
           and pg_validation_cluster_record.patroni.restapi.certfile is defined
           and pg_validation_cluster_record.patroni.restapi.keyfile is defined
         )
+        or pg_validation_cluster_record.patroni.restapi.auto_generate | default(false) | bool
       - >-
         pg_validation_cluster_record.patroni.restapi.verify_client is not defined
         or pg_validation_cluster_record.patroni.restapi.verify_client in ['none', 'optional', 'required']

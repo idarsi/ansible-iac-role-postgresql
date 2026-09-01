@@ -32,6 +32,9 @@
     pg_patroni_config_path: "{{ pg_patroni_config_directory }}/{{ pg_version }}-{{ pg_instance }}.yml"
     pg_patroni_service_name: "patroni-{{ pg_version }}-{{ pg_instance }}.service"
 
+- name: "Ensuring Patroni and etcd certificates are present"
+  ansible.builtin.include_tasks: cluster_certificates_present.yml
+
 - name: "Ensuring managed etcd member is present"
   ansible.builtin.include_tasks: etcd_present.yml
   when:

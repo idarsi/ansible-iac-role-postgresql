@@ -1,0 +1,217 @@
+---
+###############################################################################
+#
+# cluster_certificates_present.yml
+#
+# Generate or install certificates used by Patroni and managed etcd.
+#
+###############################################################################
+
+- name: "Setting cluster certificate variables"
+  ansible.builtin.set_fact:
+    pg_cluster_certificate_seed_host: "{{ pg_cluster.members[0].host }}"
+    pg_cluster_certificate_name: "{{ pg_cluster.name | regex_replace('[^A-Za-z0-9_.-]', '_') }}"
+    pg_cluster_etcd_tls: "{{ pg_cluster.dcs.etcd.tls | default({}) }}"
+    pg_cluster_patroni_restapi: "{{ pg_cluster.patroni.restapi | default({}) }}"
+
+- name: "Checking automatically generated cluster certificate settings"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_certificate_seed_host in (pg_cluster.members | map(attribute='host') | list)
+      - pg_cluster_etcd_tls.auto_generate is not defined or pg_cluster_etcd_tls.auto_generate | type_debug == 'bool'
+      - pg_cluster_patroni_restapi.auto_generate is not defined or pg_cluster_patroni_restapi.auto_generate | type_debug == 'bool'
+    fail_msg: "Automatic cluster certificate generation requires valid certificate paths"
+
+- name: "Setting generated etcd certificate paths"
+  ansible.builtin.set_fact:
+    pg_cluster_etcd_tls_effective: >-
+      {{
+        pg_cluster_etcd_tls
+        | combine({
+            'ca_file': pg_cluster_etcd_tls.ca_file | default('/etc/etcd/pki/ca.crt'),
+            'client': pg_cluster_etcd_tls.client | default({}) | combine({
+              'ca_file': (pg_cluster_etcd_tls.client | default({})).ca_file | default(pg_cluster_etcd_tls.ca_file | default('/etc/etcd/pki/ca.crt')),
+              'cert_file': (pg_cluster_etcd_tls.client | default({})).cert_file | default('/etc/etcd/pki/etcd-client.crt'),
+              'key_file': (pg_cluster_etcd_tls.client | default({})).key_file | default('/etc/etcd/pki/etcd-client.key')
+            }),
+            'peer': pg_cluster_etcd_tls.peer | default({}) | combine({
+              'ca_file': (pg_cluster_etcd_tls.peer | default({})).ca_file | default(pg_cluster_etcd_tls.ca_file | default('/etc/etcd/pki/ca.crt')),
+              'cert_file': (pg_cluster_etcd_tls.peer | default({})).cert_file | default('/etc/etcd/pki/etcd-peer.crt'),
+              'key_file': (pg_cluster_etcd_tls.peer | default({})).key_file | default('/etc/etcd/pki/etcd-peer.key')
+            })
+          }, recursive=true)
+      }}
+
+- name: "Setting generated Patroni REST API certificate paths"
+  ansible.builtin.set_fact:
+    pg_cluster_patroni_restapi_effective: >-
+      {{
+        pg_cluster_patroni_restapi
+        | combine({
+            'cafile': pg_cluster_patroni_restapi.cafile | default('/etc/patroni/pki/ca.crt'),
+            'certfile': pg_cluster_patroni_restapi.certfile | default('/etc/patroni/pki/server.crt'),
+            'keyfile': pg_cluster_patroni_restapi.keyfile | default('/etc/patroni/pki/server.key')
+          }, recursive=true)
+      }}
+
+- name: "Updating effective cluster TLS settings"
+  ansible.builtin.set_fact:
+    pg_cluster: >-
+      {{
+        pg_cluster
+        | combine({
+            'dcs': pg_cluster.dcs | combine({
+              'etcd': pg_cluster.dcs.etcd | default({}) | combine({'tls': pg_cluster_etcd_tls_effective}, recursive=true)
+            }, recursive=true),
+            'patroni': pg_cluster.patroni | combine({'restapi': pg_cluster_patroni_restapi_effective}, recursive=true)
+          }, recursive=true)
+      }}
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Ensuring generated cluster certificate directories exist"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /etc/etcd/pki
+    - /etc/patroni/pki
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Generating cluster certificate authority private key"
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - genrsa
+      - -out
+      - "/var/lib/pgsql/{{ pg_cluster_certificate_name }}.ca.key"
+      - "{{ pg_cluster_certificate_key_bits }}"
+  args:
+    creates: "/var/lib/pgsql/{{ pg_cluster_certificate_name }}.ca.key"
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  no_log: true
+  throttle: 1
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Generating cluster certificate authority certificate"
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - req
+      - -new
+      - -x509
+      - -key
+      - "/var/lib/pgsql/{{ pg_cluster_certificate_name }}.ca.key"
+      - -out
+      - "/var/lib/pgsql/{{ pg_cluster_certificate_name }}.ca.crt"
+      - -days
+      - "{{ pg_cluster_certificate_days }}"
+      - -subj
+      - "/CN={{ pg_cluster_certificate_name }}-ca"
+      - -addext
+      - basicConstraints=critical,CA:TRUE
+      - -addext
+      - keyUsage=critical,keyCertSign,cRLSign
+  args:
+    creates: "/var/lib/pgsql/{{ pg_cluster_certificate_name }}.ca.crt"
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  no_log: true
+  throttle: 1
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Reading generated cluster CA certificate"
+  ansible.builtin.slurp:
+    src: "/var/lib/pgsql/{{ pg_cluster_certificate_name }}.ca.crt"
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  register: pg_cluster_ca_certificate
+  no_log: true
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Installing generated cluster CA certificate"
+  ansible.builtin.copy:
+    content: "{{ pg_cluster_ca_certificate.content | b64decode }}"
+    dest: "{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - "{{ pg_cluster_etcd_tls_effective.ca_file | default('/etc/etcd/pki/ca.crt') }}"
+    - "{{ pg_cluster_patroni_restapi_effective.cafile | default('/etc/patroni/pki/ca.crt') }}"
+  no_log: true
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Creating certificate extension configuration on the seed host"
+  ansible.builtin.copy:
+    content: |
+      basicConstraints=CA:FALSE
+      keyUsage=digitalSignature,keyEncipherment
+      extendedKeyUsage=serverAuth,clientAuth
+      subjectAltName=DNS:{{ item.host }}
+    dest: "/var/lib/pgsql/{{ pg_cluster_certificate_name }}-{{ item.host }}.ext"
+    owner: root
+    group: root
+    mode: "0600"
+  loop: "{{ pg_cluster.members }}"
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  no_log: true
+  throttle: 1
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Generating member certificate on the seed host"
+  ansible.builtin.shell: >-
+    set -eu;
+    openssl req -new -newkey rsa:{{ pg_cluster_certificate_key_bits }} -nodes
+    -keyout /var/lib/pgsql/{{ pg_cluster_certificate_name }}-{{ item.host }}.key
+    -out /var/lib/pgsql/{{ pg_cluster_certificate_name }}-{{ item.host }}.csr
+    -subj /CN={{ item.host }};
+    openssl x509 -req
+    -in /var/lib/pgsql/{{ pg_cluster_certificate_name }}-{{ item.host }}.csr
+    -CA /var/lib/pgsql/{{ pg_cluster_certificate_name }}.ca.crt
+    -CAkey /var/lib/pgsql/{{ pg_cluster_certificate_name }}.ca.key
+    -CAcreateserial
+    -out /var/lib/pgsql/{{ pg_cluster_certificate_name }}-{{ item.host }}.crt
+    -days {{ pg_cluster_certificate_days }} -sha256
+    -extfile /var/lib/pgsql/{{ pg_cluster_certificate_name }}-{{ item.host }}.ext
+  args:
+    creates: "/var/lib/pgsql/{{ pg_cluster_certificate_name }}-{{ item.host }}.crt"
+  loop: "{{ pg_cluster.members }}"
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  no_log: true
+  throttle: 1
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Reading local generated member certificate and key"
+  ansible.builtin.slurp:
+    src: "/var/lib/pgsql/{{ pg_cluster_certificate_name }}-{{ inventory_hostname }}.{{ item }}"
+  loop:
+    - crt
+    - key
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  register: pg_cluster_member_certificate_files
+  no_log: true
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Installing generated Patroni REST API certificate"
+  ansible.builtin.copy:
+    content: "{{ pg_cluster_member_certificate_files.results[0 if item.kind == 'cert' else 1].content | b64decode }}"
+    dest: "{{ item.path }}"
+    owner: root
+    group: "{{ pg_patroni_group }}"
+    mode: "0640"
+  loop:
+    - {kind: cert, path: "{{ pg_cluster_patroni_restapi_effective.certfile | default('/etc/patroni/pki/server.crt') }}"}
+    - {kind: key, path: "{{ pg_cluster_patroni_restapi_effective.keyfile | default('/etc/patroni/pki/server.key') }}"}
+  no_log: true
+  when:
+    - pg_cluster_patroni_restapi.auto_generate | default(false) | bool
