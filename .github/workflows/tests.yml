@@ -39,6 +39,14 @@ jobs:
           ANSIBLE_ROLES_PATH: ..
         run: ansible-lint --profile production
 
+      - name: Run Ansible syntax check
+        env:
+          ANSIBLE_ROLES_PATH: ..
+        run: >-
+          ansible-playbook --syntax-check
+          -i docs/inventory-example.yml
+          docs/playbook-example.yml
+
   molecule-fast:
     name: Molecule fast (${{ matrix.scenario }})
     if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'

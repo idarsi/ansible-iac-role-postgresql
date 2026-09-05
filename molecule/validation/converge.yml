@@ -588,6 +588,35 @@
             content: "ok\n"
             mode: "0644"
 
+- name: "Reject a PostgreSQL blueprint with an invalid root type"
+  hosts: all
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint: "invalid-root"
+  tasks:
+    - name: "Running validation expecting an invalid blueprint root failure"
+      block:
+        - name: "Applying an invalid PostgreSQL blueprint root"
+          ansible.builtin.include_role:
+            name: "ansible-iac-role-postgresql"
+        - name: "Failing if an invalid blueprint root was accepted"
+          ansible.builtin.fail:
+            msg: "An invalid PostgreSQL blueprint root was accepted"
+      rescue:
+        - name: "Checking invalid blueprint root failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("iac_blueprint must be a mapping containing postgresql")
+        - name: "Writing invalid blueprint root marker"
+          ansible.builtin.copy:
+            dest: "/tmp/postgresql-validation-invalid-root.ok"
+            content: "ok\n"
+            mode: "0644"
+
 - name: "Reject Patroni REST API without authentication"
   hosts: all
   become: false
@@ -610,8 +639,8 @@
                   instance: main
                   name: missing-restapi-authentication-member
           instances:
-              - name: main
-                cluster: missing-restapi-authentication
+            - name: main
+              cluster: missing-restapi-authentication
   tasks:
     - name: "Running validation expecting missing REST API authentication failure"
       block:

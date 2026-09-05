@@ -23,7 +23,10 @@
                   enabled: true
                   initial_cluster_token: molecule-etcd-el-matrix
                   members:
-                    - {name: "{{ inventory_hostname }}", host: "{{ inventory_hostname }}", peer_url: "https://{{ inventory_hostname }}:2380", client_url: "https://{{ inventory_hostname }}:2379"}
+                    - name: "{{ inventory_hostname }}"
+                      host: "{{ inventory_hostname }}"
+                      peer_url: "https://{{ inventory_hostname }}:2380"
+                      client_url: "https://{{ inventory_hostname }}:2379"
                   tls:
                     enabled: true
                     client: {ca_file: /etc/etcd/pki/ca.crt, cert_file: /etc/etcd/pki/etcd.crt, key_file: /etc/etcd/pki/etcd.key}

@@ -8,7 +8,7 @@ platforms:
     image: docker.io/rockylinux/rockylinux:8-ubi-init
     command: /sbin/init
     privileged: true
-    pre_build_image: true
+    pre_build_image: false
     network: molecule-etcd-el-matrix
     systemd: "true"
     tty: true
@@ -17,7 +17,7 @@ platforms:
     image: quay.io/rockylinux/rockylinux:10-ubi-init
     command: /sbin/init
     privileged: true
-    pre_build_image: true
+    pre_build_image: false
     network: molecule-etcd-el-matrix
     systemd: "true"
     tty: true
@@ -34,6 +34,8 @@ provisioner:
     host_vars:
       etcd-el8:
         ansible_python_interpreter: /usr/bin/python3.9
+      etcd-el10:
+        ansible_python_interpreter: /usr/bin/python3
 scenario:
   test_sequence: [dependency, destroy, syntax, create, prepare, converge, verify, destroy]
 verifier:
