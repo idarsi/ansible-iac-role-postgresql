@@ -20,11 +20,27 @@
                  | list
                  | length == 0
 
-- name: "Checking if service_key is found from variables"
-  ansible.builtin.fail:
-    msg: "iac_blueprint or iac_blueprint.postgresql is not defined"
-  when:
-    - iac_blueprint is not defined or iac_blueprint.postgresql is not defined
+###############################################################################
+# CHECKING BLUEPRINT EXECUTION CONTEXT
+###############################################################################
+
+- name: "Checking PostgreSQL blueprint execution context"
+  ansible.builtin.assert:
+    that:
+      - iac_blueprint is defined
+    fail_msg: "iac_blueprint or iac_blueprint.postgresql is not defined"
+
+- name: "Checking PostgreSQL blueprint root type"
+  ansible.builtin.assert:
+    that:
+      - iac_blueprint | type_debug == "dict"
+    fail_msg: "iac_blueprint must be a mapping containing postgresql"
+
+- name: "Checking PostgreSQL service blueprint"
+  ansible.builtin.assert:
+    that:
+      - iac_blueprint.postgresql is defined
+    fail_msg: "iac_blueprint or iac_blueprint.postgresql is not defined"
 
 ###############################################################################
 # SETTING VARIABLES
@@ -33,6 +49,17 @@
 - name: "Setting variables"
   ansible.builtin.set_fact:
     pg_versions: "{{ iac_blueprint.postgresql }}"
+
+###############################################################################
+# VALIDATING INVENTORY
+###############################################################################
+
+- name: "Validating PostgreSQL inventory"
+  ansible.builtin.include_tasks: validate/validate_inventory.yml
+
+- name: "Normalizing PostgreSQL instances"
+  ansible.builtin.set_fact:
+    pg_instances: "{{ iac_blueprint.postgresql | subelements('instances', skip_missing=True) }}"
 
 - name: "Setting Python interpreter for DNF and RPM modules"
   ansible.builtin.set_fact:
@@ -46,18 +73,6 @@
         )
         else ansible_facts["python"]["executable"] | default('/usr/bin/python3')
       }}
-
-- name: "Setting what instances are to be configured"
-  ansible.builtin.set_fact:
-    pg_instances: "{{ iac_blueprint.postgresql | subelements('instances', skip_missing=True) }}"
-  when: iac_blueprint.postgresql | selectattr('instances', 'defined') | list | length > 0
-
-###############################################################################
-# VALIDATING INVENTORY
-###############################################################################
-
-- name: "Validating PostgreSQL inventory"
-  ansible.builtin.include_tasks: validate/validate_inventory.yml
 
 - name: "Validating destructive cleanup paths"
   ansible.builtin.include_tasks: validate/validate_cleanup.yml

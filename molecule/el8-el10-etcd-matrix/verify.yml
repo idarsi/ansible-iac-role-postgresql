@@ -4,12 +4,11 @@
   become: false
   tasks:
     - name: "Read operating system release"
-      ansible.builtin.command: rpm -E '%{rhel}'
-      register: rhel_major
-      changed_when: false
+      ansible.builtin.set_fact:
+        rhel_major: "{{ ansible_facts['distribution_major_version'] }}"
 
     - name: "Check the matching PGDG extras repository"
-      ansible.builtin.command: "dnf repolist --enabled pgdg-rhel{{ rhel_major.stdout }}-extras"
+      ansible.builtin.command: "dnf repolist --enabled pgdg-rhel{{ rhel_major }}-extras"
       changed_when: false
 
     - name: "Check the PGDG etcd package and service"

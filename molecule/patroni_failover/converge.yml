@@ -103,6 +103,15 @@
     - role: ansible-iac-role-postgresql
 
   tasks:
+    - name: "Wait for Patroni and PostgreSQL to become ready before the idempotency run"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/readiness
+        status_code: 200
+      register: initial_patroni_readiness
+      retries: 90
+      delay: 2
+      until: initial_patroni_readiness.status == 200
+
     - name: "Capture Patroni process before idempotency run"
       ansible.builtin.systemd_service:
         name: patroni-17-main.service
@@ -130,22 +139,33 @@
 - name: "Restart Patroni after access configuration"
   hosts: pg01:pg02:pg03
   become: false
+  serial: 1
+  any_errors_fatal: true
   tasks:
     - name: "Restart Patroni to reload PostgreSQL access rules"
       ansible.builtin.systemd_service:
         name: patroni-17-main.service
         state: restarted
 
+    - name: "Wait for the restarted Patroni member to become ready"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/readiness
+        status_code: 200
+      register: restarted_patroni_readiness
+      retries: 90
+      delay: 2
+      until: restarted_patroni_readiness.status == 200
+
 - name: "Wait for all Patroni members to register"
   hosts: pg01:pg02:pg03
   become: false
   tasks:
-    - name: "Wait for local Patroni API endpoint"
+    - name: "Wait for local Patroni and PostgreSQL readiness"
       ansible.builtin.uri:
-        url: http://127.0.0.1:8008/patroni
+        url: http://127.0.0.1:8008/readiness
         status_code: 200
       register: local_patroni_health
-      retries: 60
+      retries: 90
       delay: 2
       until: local_patroni_health.status == 200
 
@@ -153,11 +173,18 @@
   hosts: pg01
   become: false
   tasks:
-    - name: "Query Patroni cluster members through the REST API"
+    - name: "Wait for Patroni to elect one leader and register all members"
       ansible.builtin.uri:
         url: http://127.0.0.1:8008/cluster
         return_content: true
       register: initial_cluster
+      retries: 60
+      delay: 2
+      until:
+        - initial_cluster.status == 200
+        - initial_cluster.json.members | default([]) | length == 3
+        - initial_cluster.json.members | default([]) | selectattr('role', 'equalto', 'leader') | list | length == 1
+        - initial_cluster.json.members | default([]) | selectattr('role', 'equalto', 'replica') | list | length == 2
 
     - name: "Check cluster has three members and one leader"
       ansible.builtin.assert:

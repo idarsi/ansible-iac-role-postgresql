@@ -43,8 +43,8 @@ Rocky Linux 9 and 10 and RHEL 9 and 10 scenarios cover PostgreSQL 16, 17, and
   configuration, and undefined certificate-auth map references.
 - `molecule/validation` validates valid and invalid PostgreSQL blueprints
   without installing PostgreSQL packages, including the missing-blueprint
-  execution-context guardrail, destructive cleanup path validation, and
-  PostgreSQL instance-name validation.
+  execution-context guardrail, platform-before-blueprint validation ordering,
+  destructive cleanup path validation, and PostgreSQL instance-name validation.
 - `molecule/timescaledb` validates TimescaleDB installation from both PGDG and
   the Timescale Community repository on Rocky Linux 9 and 10 and Red Hat
   Enterprise Linux 9 and 10 UBI.
@@ -84,9 +84,10 @@ Rocky Linux 9 and 10 and RHEL 9 and 10 scenarios cover PostgreSQL 16, 17, and
 - `molecule/fedora43-baseline` and `molecule/fedora44-baseline` validate PostgreSQL 17 and 18
   installations from the Fedora-specific PGDG repository workflow.
 
-The GitHub Actions workflow runs the production-profile lint check and the
-Molecule scenarios as separate jobs. Molecule scenarios run in parallel by
-scenario. Pull requests and pushes to `main` run a fast representative matrix;
+The GitHub Actions workflow runs syntax and production-profile lint checks in
+the `ansible-lint` job. Molecule jobs are independent and run in parallel by
+scenario; they are not gated by that static-analysis job. Pull requests and
+pushes to `main` run a fast representative matrix;
 the complete scenario matrix runs once per day and can also be started with
 `workflow_dispatch`.
 
@@ -100,18 +101,48 @@ repository variants, and the multi-member Patroni and etcd scenarios.
 The workflow cancels an older in-progress run for the same branch or scheduled
 workflow when a newer run starts.
 
-The workflow uses the exact Ansible Core, ansible-lint, Molecule, and
-molecule-plugins versions defined in `requirements-ci.txt`. Install that file
-locally before running Molecule to reproduce the CI test environment.
+The CI workflow installs the exact Ansible Core, ansible-lint, Molecule, and
+molecule-plugins versions defined in `requirements-ci.txt` in its isolated
+Python environment. The shared local environment must not be modified to
+match these pins. Check for a version mismatch first and report it instead of
+installing or upgrading packages.
 
 ## Running tests
 
-Run the production-profile Ansible Lint check before the Molecule scenarios:
+Run the production-profile Ansible Lint check and syntax check using the
+shared local test environment. The commands below do not install packages or
+modify that environment:
 
 ```bash
-python -m pip install -r requirements-ci.txt
-ANSIBLE_ROLES_PATH=.. ansible-lint --profile production
+PATH="/home/arsi/.local/share/venvs/idarsi-ansible-testing/bin:$PATH" \
+  ANSIBLE_ROLES_PATH=.. ansible-lint --profile production
+PATH="/home/arsi/.local/share/venvs/idarsi-ansible-testing/bin:$PATH" \
+  ANSIBLE_ROLES_PATH=.. ansible-playbook --syntax-check \
+  -i docs/inventory-example.yml docs/playbook-example.yml
 ```
+
+Compare the shared environment with the project pins before running tests:
+
+```bash
+PATH="/home/arsi/.local/share/venvs/idarsi-ansible-testing/bin:$PATH" \
+  python - <<'PY'
+from importlib.metadata import version
+
+expected = {
+    "ansible-core": "2.21.3",
+    "ansible-lint": "26.8.0",
+    "molecule": "26.8.0",
+    "molecule-plugins": "26.7.15",
+}
+for package, required in expected.items():
+    installed = version(package)
+    status = "OK" if installed == required else "MISMATCH"
+    print(f"{package}: installed={installed}, required={required} [{status}]")
+PY
+```
+
+If any package is marked `MISMATCH`, use the CI environment or report the
+mismatch; do not change the shared environment.
 
 Molecule's current releases do not provide Ansible Lint as a built-in
 scenario phase, so this is a separate static-analysis gate in the same test

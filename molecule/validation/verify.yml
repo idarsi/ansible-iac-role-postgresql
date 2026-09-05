@@ -24,8 +24,9 @@
         - /tmp/postgresql-validation-filesystem.ok
         - /tmp/postgresql-validation-cleanup-path.ok
         - /tmp/postgresql-validation-instance-name.ok
-        - /tmp/postgresql-validation-absent-cleanup-path.ok
-        - /tmp/postgresql-validation-version-bind.ok
+        - "/tmp/postgresql-validation-absent-cleanup-path.ok"
+        - "/tmp/postgresql-validation-version-bind.ok"
+        - "/tmp/postgresql-validation-invalid-root.ok"
       register: pg_validation_markers
 
     - name: "Checking all validation cases completed"
@@ -34,3 +35,19 @@
           - item.stat.exists
         fail_msg: "Validation marker is missing: {{ item.item }}"
       loop: "{{ pg_validation_markers.results }}"
+
+- name: "Verify platform validation precedes blueprint validation"
+  hosts: all
+  become: false
+  vars:
+    pg_main_tasks: "{{ lookup(\"ansible.builtin.file\", \"../../tasks/main.yml\") }}"
+    pg_platform_check_marker: "- name: \"Checking if operating system is supported\""
+    pg_blueprint_check_marker: "- name: \"Checking PostgreSQL blueprint execution context\""
+  tasks:
+    - name: "Checking validation task ordering in the role dispatcher"
+      ansible.builtin.assert:
+        that:
+          - pg_main_tasks.find(pg_platform_check_marker) >= 0
+          - pg_main_tasks.find(pg_blueprint_check_marker) >= 0
+          - pg_main_tasks.find(pg_platform_check_marker) < pg_main_tasks.find(pg_blueprint_check_marker)
+        fail_msg: "The platform check must precede blueprint validation in tasks/main.yml"

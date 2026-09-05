@@ -309,7 +309,7 @@
 
 - name: "Ensuring Patroni base configuration includes conf.d"
   ansible.builtin.copy:
-    content: "include = '{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/conf.d/*.conf'\n"
+    content: "include_dir = '{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/conf.d'\n"
     dest: "{{ pg_patroni_config_directory }}/{{ pg_version }}-{{ pg_instance }}.base.conf"
     owner: "{{ pg_os_user }}"
     group: "{{ pg_os_group }}"
