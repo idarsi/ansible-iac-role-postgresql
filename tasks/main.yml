@@ -79,6 +79,10 @@
   ansible.builtin.set_fact:
     pg_patroni_enabled: "{{ pg_patroni_enabled | trim | bool }}"
 
+- name: "Initializing Patroni bootstrap state"
+  ansible.builtin.set_fact:
+    pg_patroni_bootstrap_pending: false
+
 - name: "Setting Python interpreter for DNF and RPM modules"
   ansible.builtin.set_fact:
     pg_package_module_interpreter: >-

@@ -58,12 +58,16 @@
 
 - name: "Selecting Patroni REST API URL host"
   ansible.builtin.set_fact:
+    pg_patroni_restapi_connect_host: "{{ (pg_patroni_restapi_connect_address_effective | trim) | regex_replace(':[0-9]+$', '') | trim }}"
+
+- name: "Selecting Patroni REST API URL host"
+  ansible.builtin.set_fact:
     pg_patroni_restapi_url_host: >-
       {{
-        '[' ~ pg_patroni_restapi_listen_host ~ ']'
-        if ':' in (pg_patroni_restapi_listen_host | string)
-        and (pg_patroni_restapi_listen_host | string) is not match('^\\[')
-        else pg_patroni_restapi_listen_host
+        '[' ~ pg_patroni_restapi_connect_host ~ ']'
+        if ':' in (pg_patroni_restapi_connect_host | string)
+        and (pg_patroni_restapi_connect_host | string) is not match('^\\[')
+        else pg_patroni_restapi_connect_host
       }}
 
 - name: "Waiting for local Patroni API"
@@ -116,10 +120,22 @@
     path: "{{ pg_bind_dir }}/{{ pg_patroni_version }}/{{ pg_patroni_instance }}/PG_VERSION"
   register: pg_patroni_post_bootstrap_version
 
+- name: "Waiting for the local PostgreSQL data directory"
+  ansible.builtin.wait_for:
+    path: "{{ pg_bind_dir }}/{{ pg_patroni_version }}/{{ pg_patroni_instance }}/PG_VERSION"
+    state: present
+    timeout: "{{ pg_patroni_readiness_retries * pg_patroni_readiness_delay }}"
+  when: not pg_patroni_post_bootstrap_version.stat.exists
+
 - name: "Checking that Patroni bootstrap completed locally"
+  ansible.builtin.stat:
+    path: "{{ pg_bind_dir }}/{{ pg_patroni_version }}/{{ pg_patroni_instance }}/PG_VERSION"
+  register: pg_patroni_post_bootstrap_version_final
+
+- name: "Asserting that Patroni bootstrap completed locally"
   ansible.builtin.assert:
     that:
-      - pg_patroni_post_bootstrap_version.stat.exists
+      - pg_patroni_post_bootstrap_version_final.stat.exists
     fail_msg: >-
       Patroni reported a ready cluster, but the local PostgreSQL data directory
       has no PG_VERSION; refusing post-bootstrap finalization.
@@ -133,6 +149,30 @@
     # while explicitly preventing the reinitialization branch from deleting it.
     pg_patroni_reinitialize: false
     pg_patroni_post_bootstrap: true
+
+- name: "Restarting Patroni after first bootstrap configuration"
+  ansible.builtin.systemd_service:
+    name: "patroni-{{ pg_patroni_version }}-{{ pg_patroni_instance }}.service"
+    state: restarted
+  throttle: 1
+  when: pg_patroni_bootstrap_pending | bool
+
+- name: "Waiting for Patroni after first bootstrap restart"
+  ansible.builtin.uri:
+    url: "{{ pg_patroni_restapi_scheme }}://{{ pg_patroni_restapi_url_host }}:{{ pg_patroni_restapi_port_effective }}/cluster"
+    validate_certs: true
+    ca_path: "{{ pg_patroni_restapi_cafile if pg_patroni_restapi_scheme == 'https' else omit }}"
+    status_code: 200
+    return_content: true
+    url_username: "{{ pg_patroni_restapi_username }}"
+    url_password: "{{ pg_patroni_restapi_password }}"
+    force_basic_auth: "{{ pg_patroni_restapi_username | length > 0 }}"
+  register: pg_patroni_cluster_after_restart
+  retries: "{{ pg_patroni_readiness_retries }}"
+  delay: "{{ pg_patroni_readiness_delay }}"
+  until:
+    - pg_patroni_cluster_after_restart.status | default(0) == 200
+    - (pg_patroni_cluster_after_restart.json | default({})).members | default([]) | selectattr('role', 'equalto', 'leader') | list | length == 1
 
 - name: "Ensuring PostgreSQL roles on the Patroni leader"
   ansible.builtin.include_tasks: roles_present.yml

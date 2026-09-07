@@ -238,6 +238,13 @@
     path: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}"
   register: postgres_data_directory
 
+- name: "Recording Patroni post-bootstrap restart requirement"
+  ansible.builtin.set_fact:
+    pg_patroni_bootstrap_pending: true
+  when:
+    - pg_cluster_provider == 'patroni'
+    - not postgres_data.stat.exists
+
 - name: "Setting Patroni data directory initialization state"
   ansible.builtin.set_fact:
     pg_patroni_data_initialized: "{{ pg_cluster_provider != 'patroni' or postgres_data.stat.exists }}"
