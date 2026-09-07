@@ -30,3 +30,24 @@
   loop: "{{ pg_instances }}"
   loop_control:
     loop_var: pg_instance_record
+  when: >-
+    pg_instance_provider is not defined
+    or (
+      pg_instance_provider == 'standalone'
+      and (
+        (
+          pg_instance_record.0.clusters | default([])
+          | selectattr('name', 'equalto', pg_instance_record.1.cluster | default(''))
+          | map(attribute='provider') | first | default('standalone')
+        ) != 'patroni'
+      )
+    )
+    or (
+      pg_instance_provider != 'standalone'
+      and
+      (
+        pg_instance_record.0.clusters | default([])
+        | selectattr('name', 'equalto', pg_instance_record.1.cluster | default(''))
+        | map(attribute='provider') | first | default('standalone')
+      ) == pg_instance_provider
+    )

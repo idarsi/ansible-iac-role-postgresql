@@ -21,6 +21,10 @@
   ansible.builtin.package_facts:
     manager: "auto"
 
+- name: "Saving package facts before the update transaction"
+  ansible.builtin.set_fact:
+    pg_update_packages_before: "{{ ansible_facts.packages }}"
+
 - name: "Checking managed package marker"
   ansible.builtin.stat:
     path: "{{ pg_managed_packages_file }}"
@@ -40,13 +44,25 @@
          | select('in', ansible_facts.packages.keys() | list)
          | list }}
 
+- name: "Selecting installed transport packages for the update transaction"
+  ansible.builtin.set_fact:
+    pg_update_transport_packages_installed: >-
+      {{ pg_update_transport_packages
+         | select('in', ansible_facts.packages.keys() | list)
+         | list }}
+
+- name: "Combining role-managed and transport packages"
+  ansible.builtin.set_fact:
+    pg_update_packages_for_transaction: >-
+      {{ (pg_update_packages + pg_update_transport_packages_installed) | unique }}
+
 ###############################################################################
 # UPDATE ONLY ROLE-MANAGED PACKAGES
 ###############################################################################
 
 - name: "Updating installed role-managed packages"  # noqa package-latest
   ansible.builtin.dnf:
-    name: "{{ pg_update_packages }}"
+    name: "{{ pg_update_packages_for_transaction }}"
     sslverify: "{{ dnf_sslverify }}"
     validate_certs: "{{ dnf_validate_certs }}"
     disable_gpg_check: "{{ dnf_disable_gpg_check }}"
@@ -61,4 +77,35 @@
   retries: "{{ pg_repo_network_retries | default(1) }}"
   delay: "{{ pg_repo_network_delay | default(0) }}"
   until: pg_update_result is succeeded
-  when: pg_update_packages | length > 0
+  when: pg_update_packages_for_transaction | length > 0
+
+- name: "Gathering package facts after the update transaction"
+  ansible.builtin.package_facts:
+    manager: "auto"
+  when: pg_update_packages_for_transaction | length > 0
+
+- name: "Detecting an updated SSH server package"
+  ansible.builtin.set_fact:
+    pg_update_ssh_server_changed: >-
+      {{
+        pg_update_packages_before.get('openssh-server', [])
+        != ansible_facts.packages.get('openssh-server', [])
+      }}
+  when: pg_update_packages_for_transaction | length > 0
+
+- name: "Validating SSH daemon configuration after package update"
+  become: true
+  ansible.builtin.command: "sshd -t"
+  changed_when: false
+  when:
+    - pg_update_result is changed
+    - pg_update_ssh_server_changed | default(false) | bool
+
+- name: "Restarting SSH daemon after transport package update"
+  become: true
+  ansible.builtin.systemd_service:
+    name: "sshd.service"
+    state: "restarted"
+  when:
+    - pg_update_result is changed
+    - pg_update_ssh_server_changed | default(false) | bool

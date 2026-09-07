@@ -493,39 +493,36 @@
     mode: "0600"
   when: pg_patroni_data_initialized | bool
 
-- name: "Initializing Patroni authentication credentials"
-  become: true
-  become_user: "{{ pg_os_user }}"
-  ansible.builtin.shell: |
-    set -e
-    data_dir="{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}"
-    pg_ctl="/usr/pgsql-{{ pg_version }}/bin/pg_ctl"
-    psql="/usr/pgsql-{{ pg_version }}/bin/psql"
-    superuser_password="{{ pg_patroni.postgresql.superuser_password }}"
-    replication_password="{{ pg_patroni.postgresql.replication_password }}"
-    "${pg_ctl}" -D "${data_dir}" -w start
-    "${psql}" postgres -p "{{ pg_instance_record.1.configuration.port | default(pg_default_port) }}" \
-      -v ON_ERROR_STOP=1 <<SQL
-    ALTER ROLE postgres WITH LOGIN SUPERUSER PASSWORD '${superuser_password}';
-    DO \$\$BEGIN
-      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'replicator') THEN
-        CREATE ROLE replicator WITH LOGIN REPLICATION PASSWORD '${replication_password}';
-      ELSE
-        ALTER ROLE replicator WITH LOGIN REPLICATION PASSWORD '${replication_password}';
-      END IF;
-    END\$\$;
-    SQL
-    "${pg_ctl}" -D "${data_dir}" -w stop
-  args:
-    executable: /bin/bash
-  changed_when: not postgres_data.stat.exists
-  no_log: true
+- name: "Checking for the local Patroni service before reinitialization"
+  ansible.builtin.service_facts:
   when:
     - pg_cluster_provider == 'patroni'
-    - not postgres_data.stat.exists
-    - pg_patroni.postgresql is defined
-    - pg_patroni.postgresql.superuser_password is defined
-    - pg_patroni.postgresql.replication_password is defined
+    - pg_patroni_reinitialize | bool
+    - not (pg_patroni_post_bootstrap | default(false) | bool)
+
+- name: "Refusing Patroni reinitialization when the expected service is unknown"
+  ansible.builtin.assert:
+    that:
+      - not postgres_data_directory.stat.exists
+        or ansible_facts.services[pg_patroni_service_name] is defined
+    fail_msg: >-
+      Cannot reinitialize {{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}:
+      existing data requires the expected Patroni service to be known
+  when:
+    - pg_cluster_provider == 'patroni'
+    - pg_patroni_reinitialize | bool
+    - not (pg_patroni_post_bootstrap | default(false) | bool)
+
+- name: "Stopping local Patroni service before reinitialization"
+  become: true
+  ansible.builtin.systemd_service:
+    name: "{{ pg_patroni_service_name }}"
+    state: stopped
+  when:
+    - pg_cluster_provider == 'patroni'
+    - pg_patroni_reinitialize | bool
+    - not (pg_patroni_post_bootstrap | default(false) | bool)
+    - ansible_facts.services[pg_patroni_service_name] is defined
 
 - name: "Removing locally initialized data before Patroni bootstrap"
   become: true
@@ -535,6 +532,7 @@
   when:
     - pg_cluster_provider == 'patroni'
     - pg_patroni_reinitialize | bool
+    - not (pg_patroni_post_bootstrap | default(false) | bool)
 
 - name: "Creating empty Patroni data directory"
   become: true
@@ -547,6 +545,18 @@
   when:
     - pg_cluster_provider == 'patroni'
     - pg_patroni_reinitialize | bool or not postgres_data_directory.stat.exists
+
+- name: "Resetting Patroni bootstrap base configuration"
+  ansible.builtin.copy:
+    content: "# Managed by ansible-iac-role-postgresql\n"
+    dest: "{{ pg_patroni_config_directory }}/{{ pg_version }}-{{ pg_instance }}.base.conf"
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0600"
+  when:
+    - pg_cluster_provider == 'patroni'
+    - pg_patroni_reinitialize | bool
+    - not (pg_patroni_post_bootstrap | default(false) | bool)
 
 ###############################################################################
 # ENSURING DEFAULT PG_IDENT.CONF IS DELETED AND NEW WRITTEN

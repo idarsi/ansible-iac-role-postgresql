@@ -24,13 +24,20 @@
   ansible.builtin.include_tasks: loop_instances.yml
   vars:
     pg_state: "roles_present"
+    pg_instance_provider: "standalone"
 
 - name: "STATE: Ensure PostgreSQL databases are present"
   ansible.builtin.include_tasks: loop_instances.yml
   vars:
     pg_state: "databases_present"
+    pg_instance_provider: "standalone"
 
 - name: "STATE: Ensure post_install scripts are run"
   ansible.builtin.include_tasks: loop_instances.yml
   vars:
     pg_state: "post_installs_present"
+    pg_instance_provider: "standalone"
+
+- name: "STATE: Converge Patroni installation"
+  ansible.builtin.include_tasks: patroni_install.yml
+  when: pg_patroni_enabled | bool

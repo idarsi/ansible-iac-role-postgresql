@@ -22,18 +22,43 @@
     pg_patroni_restapi_port_effective: "{{ (pg_cluster.patroni.restapi | default({})).port | default(pg_patroni_restapi_port) }}"
     pg_patroni_restapi_listen_effective: >-
       {{ (pg_cluster.patroni.restapi | default({})).listen
-         | default(pg_patroni_restapi_listen_address ~ ':' ~ ((pg_cluster.patroni.restapi | default({})).port | default(pg_patroni_restapi_port))) }}
+         | default(
+             (
+               '[' ~ pg_patroni_restapi_listen_address ~ ']'
+               if ':' in (pg_patroni_restapi_listen_address | string)
+               and (pg_patroni_restapi_listen_address | string) is not match('^\\[')
+               else pg_patroni_restapi_listen_address
+             ) ~ ':' ~ ((pg_cluster.patroni.restapi | default({})).port | default(pg_patroni_restapi_port))
+           ) }}
     pg_patroni_restapi_connect_address_effective: >-
       {{ (pg_cluster.patroni.restapi | default({})).connect_address
-         | default(inventory_hostname ~ ':' ~ ((pg_cluster.patroni.restapi | default({})).port | default(pg_patroni_restapi_port))) }}
+         | default(
+             (
+               '[' ~ inventory_hostname ~ ']'
+               if ':' in (inventory_hostname | string)
+               and (inventory_hostname | string) is not match('^\\[')
+               else inventory_hostname
+             ) ~ ':' ~ ((pg_cluster.patroni.restapi | default({})).port | default(pg_patroni_restapi_port))
+           ) }}
     pg_patroni_postgresql_connect_address_effective: >-
       {{ (pg_cluster.patroni.postgresql | default({})).connect_address
-         | default(inventory_hostname ~ ':' ~ (pg_instance_record.1.configuration.port | default(pg_default_port))) }}
+         | default(
+             (
+               '[' ~ inventory_hostname ~ ']'
+               if ':' in (inventory_hostname | string)
+               and (inventory_hostname | string) is not match('^\\[')
+               else inventory_hostname
+             ) ~ ':' ~ (pg_instance_record.1.configuration.port | default(pg_default_port))
+           ) }}
     pg_patroni_config_path: "{{ pg_patroni_config_directory }}/{{ pg_version }}-{{ pg_instance }}.yml"
     pg_patroni_service_name: "patroni-{{ pg_version }}-{{ pg_instance }}.service"
 
 - name: "Ensuring Patroni and etcd certificates are present"
   ansible.builtin.include_tasks: cluster_certificates_present.yml
+
+- name: "Refreshing Patroni settings after certificate path normalization"
+  ansible.builtin.set_fact:
+    pg_patroni: "{{ pg_cluster.patroni | default({}) }}"
 
 - name: "Ensuring managed etcd member is present"
   ansible.builtin.include_tasks: etcd_present.yml

@@ -365,6 +365,12 @@ TimescaleDB package and repository are present before starting the PostgreSQL
 service. This prevents PostgreSQL from starting before its configured preload
 library has been installed.
 
+Setting `pg_patroni_reinitialize` is destructive: it stops the local Patroni
+service and removes the local instance data directory before bootstrap. It is
+disabled by default and must only be enabled for an intentional, disposable
+rebootstrap.
+Post-bootstrap configuration finalization never enables this operation.
+
 To aggressively remove PostgreSQL from a host, including repository
 configuration, the operating system user, and PostgreSQL-owned data
 directories, run:

@@ -74,7 +74,7 @@ bootstrap:
 
 postgresql:
   listen: 0.0.0.0:{{ pg_instance_record.1.configuration.port | default(pg_default_port) }}
-  connect_address: {{ pg_patroni_postgresql_connect_address_effective }}
+  connect_address: {{ pg_patroni_postgresql_connect_address_effective | to_json }}
   data_dir: {{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}
   custom_conf: {{ pg_patroni_config_directory }}/{{ pg_version }}-{{ pg_instance }}.base.conf
   bin_dir: /usr/pgsql-{{ pg_version }}/bin
@@ -82,7 +82,7 @@ postgresql:
   authentication:
     superuser:
       username: postgres
-      password: {{ (pg_patroni.postgresql | default({})).superuser_password | default('') }}
+      password: {{ (pg_patroni.postgresql | default({})).superuser_password | default('') | to_json }}
     replication:
       username: {{ (pg_patroni.postgresql | default({})).replication_username | default('replicator') }}
-      password: {{ (pg_patroni.postgresql | default({})).replication_password | default(pg_patroni.replication_password | default('')) }}
+      password: {{ (pg_patroni.postgresql | default({})).replication_password | default(pg_patroni.replication_password | default('')) | to_json }}

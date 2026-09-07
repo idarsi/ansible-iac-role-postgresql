@@ -1,0 +1,34 @@
+---
+###############################################################################
+#
+# patroni_install.yml
+#
+# Internal orchestration for the full Patroni install state.
+#
+###############################################################################
+
+- name: "Waiting for local Patroni cluster APIs"
+  ansible.builtin.include_tasks: patroni_instance_install.yml
+  loop: "{{ pg_instances }}"
+  loop_control:
+    loop_var: pg_patroni_instance_record
+  when: >-
+    (
+      pg_patroni_instance_record.1.cluster is defined
+      and (
+        pg_patroni_instance_record.0.clusters | default([])
+        | selectattr('name', 'equalto', pg_patroni_instance_record.1.cluster)
+        | selectattr('provider', 'equalto', 'patroni')
+        | list | length
+      ) > 0
+      and (
+        pg_patroni_instance_record.0.clusters
+        | selectattr('name', 'equalto', pg_patroni_instance_record.1.cluster)
+        | map(attribute='members')
+        | map('default', [])
+        | sum(start=[])
+        | selectattr('host', 'equalto', inventory_hostname)
+        | selectattr('instance', 'equalto', pg_patroni_instance_record.1.name)
+        | list | length
+      ) > 0
+    )

@@ -95,26 +95,6 @@
   roles:
     - role: ansible-iac-role-postgresql
 
-  tasks:
-    - name: "Wait for Patroni bootstrap to complete before finalizing configuration"
-      ansible.builtin.uri:
-        url: http://127.0.0.1:8008/cluster
-        status_code: 200
-      register: patroni_bootstrap_state
-      retries: 90
-      delay: 2
-      until:
-        - patroni_bootstrap_state.status == 200
-        - patroni_bootstrap_state.json.members | length == 3
-        - patroni_bootstrap_state.json.members
-          | selectattr('role', 'equalto', 'leader') | list | length == 1
-        - patroni_bootstrap_state.json.members
-          | selectattr('role', 'equalto', 'replica') | list | length == 2
-
-    - name: "Finalize Patroni-managed PostgreSQL configuration after bootstrap"
-      ansible.builtin.include_role:
-        name: ansible-iac-role-postgresql
-
 - name: "Wait for Patroni members before idempotence run"
   hosts: all
   become: false

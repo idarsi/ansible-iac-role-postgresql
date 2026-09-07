@@ -49,11 +49,13 @@
   ansible.builtin.assert:
     that:
       - >-
-        pg_validation_cluster_record.patroni.restapi.listen is not defined
-        or (
-          pg_validation_cluster_record.patroni.restapi.listen | string
-          is not match('^(0\\.0\\.0\\.0|\\*|::)(:|$)')
-        )
+         pg_validation_cluster_record.patroni.restapi.listen is not defined
+         or (
+           pg_validation_cluster_record.patroni.restapi.listen | string
+           is not match('^(0\\.0\\.0\\.0|\\*|::)(:[0-9]+)?$')
+           and pg_validation_cluster_record.patroni.restapi.listen | string
+           is not match('^\\[(0\\.0\\.0\\.0|::)\\](:[0-9]+)?$')
+         )
     fail_msg: "Patroni REST API must not listen on a wildcard address"
   when:
     - pg_validation_cluster_record.provider == 'patroni'
