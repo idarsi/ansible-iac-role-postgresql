@@ -47,6 +47,7 @@
                 loop_wait: 10
                 retry_timeout: 10
                 restapi:
+                  listen: "[2001:db8::1]:8008"
                   auto_generate: true
                   authentication:
                     username: patroni
@@ -74,6 +75,55 @@
         dest: /tmp/postgresql-validation-valid.ok
         content: "ok\n"
         mode: "0644"
+
+- name: "Reject a bracketed wildcard Patroni REST API listen address"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: bracketed-wildcard-listen
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints:
+                  - https://etcd01.example.org:2379
+              patroni:
+                restapi:
+                  listen: "[::]:8008"
+                  authentication: {username: patroni, password: patroni_password}
+              members:
+                - host: instance-idarsi-validation
+                  instance: main
+                  name: bracketed-wildcard-listen-member
+          instances:
+            - name: main
+              cluster: bracketed-wildcard-listen
+  tasks:
+    - name: "Running validation expecting bracketed wildcard listen failure"
+      block:
+        - name: "Applying a bracketed wildcard Patroni REST API listen address"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if bracketed wildcard listen was accepted"
+          ansible.builtin.fail:
+            msg: "Bracketed wildcard Patroni REST API listen address was accepted"
+      rescue:
+        - name: "Checking bracketed wildcard listen failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("Patroni REST API must not listen on a wildcard address")
+        - name: "Writing bracketed wildcard listen marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-bracketed-wildcard-listen.ok
+            content: "ok\n"
+            mode: "0644"
 
 - name: "Reject duplicate managed etcd member names"
   hosts: all

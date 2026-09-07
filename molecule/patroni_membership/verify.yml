@@ -19,3 +19,23 @@
           - final_cluster.json.members | length == 3
           - final_cluster.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
           - final_cluster.json.members | selectattr('role', 'equalto', 'replica') | list | length == 2
+
+    - name: "Check Patroni post-bootstrap finalization created role and database"
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - postgres
+          - --
+          - psql
+          - -Atqc
+          - >-
+            SELECT (SELECT 1 FROM pg_roles WHERE rolname = 'patroni_finalization_user'),
+            (SELECT 1 FROM pg_database WHERE datname = 'patroni_finalization_db');
+      register: patroni_finalization_objects
+      changed_when: false
+
+    - name: "Assert Patroni post-bootstrap finalization result"
+      ansible.builtin.assert:
+        that:
+          - patroni_finalization_objects.stdout | trim == "1|1"

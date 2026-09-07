@@ -82,6 +82,13 @@
                 listen_addresses: "*"
                 port: 5432
                 max_connections: 50
+              roles:
+                - name: patroni_finalization_user
+                  password: finalization_password
+                  login: true
+              databases:
+                - name: patroni_finalization_db
+                  owner: patroni_finalization_user
   roles:
     - role: ansible-iac-role-postgresql
 

@@ -195,3 +195,9 @@ molecule syntax -s <scenario>
 The scenarios use Ansible Galaxy collections for their test infrastructure.
 The role itself uses only `ansible.builtin.*` modules and does not require
 those test-driver collections at runtime.
+
+Known limitation: the guardrail that refuses Patroni reinitialization when
+existing data is present but the expected service unit is unknown is not
+covered by a Molecule scenario. It depends on the host's live systemd service
+fact inventory; the implementation guard remains covered by static review and
+the normal Patroni lifecycle scenarios exercise the known-service path.

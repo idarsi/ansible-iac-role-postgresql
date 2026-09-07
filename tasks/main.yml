@@ -61,6 +61,28 @@
   ansible.builtin.set_fact:
     pg_instances: "{{ iac_blueprint.postgresql | subelements('instances', skip_missing=True) }}"
 
+- name: "Detecting Patroni instances"
+  ansible.builtin.set_fact:
+    pg_patroni_enabled: >-
+      {% set ns = namespace(enabled=false) %}
+      {% for pg_instance_record in pg_instances %}
+      {% set pg_cluster_record = pg_instance_record.0.clusters | default([])
+         | selectattr('name', 'equalto', pg_instance_record.1.cluster | default(''))
+         | list | first | default({}) %}
+      {% if pg_cluster_record.provider | default('standalone') == 'patroni' %}
+      {% set ns.enabled = true %}
+      {% endif %}
+      {% endfor %}
+      {{ ns.enabled | bool }}
+
+- name: "Normalizing Patroni detection result"
+  ansible.builtin.set_fact:
+    pg_patroni_enabled: "{{ pg_patroni_enabled | trim | bool }}"
+
+- name: "Initializing Patroni bootstrap state"
+  ansible.builtin.set_fact:
+    pg_patroni_bootstrap_pending: false
+
 - name: "Setting Python interpreter for DNF and RPM modules"
   ansible.builtin.set_fact:
     pg_package_module_interpreter: >-
