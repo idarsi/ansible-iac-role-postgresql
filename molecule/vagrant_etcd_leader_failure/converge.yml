@@ -1,0 +1,2 @@
+---
+- import_playbook: "../vagrant_patroni_failover/converge.yml"

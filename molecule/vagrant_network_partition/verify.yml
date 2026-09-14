@@ -1,0 +1,120 @@
+---
+- name: "Symmetric private-network partition smoke test"
+  hosts: pg01:pg02
+  become: true
+  vars:
+    vagrant_partition_peer_ip: "{{ '192.168.250.202' if inventory_hostname == 'pg01' else '192.168.250.201' }}"
+    vagrant_partition_rule: "rule family=ipv4 source address={{ vagrant_partition_peer_ip }} priority=-100 reject"
+  tasks:
+    - name: "Require SELinux enforcing on this guest"
+      ansible.builtin.command: getenforce
+      changed_when: false
+      register: vagrant_selinux
+    - name: "Assert SELinux is enforcing"
+      ansible.builtin.assert: {that: vagrant_selinux.stdout | trim == "Enforcing"}
+    - name: "Partition and restore the selected private-network peers"
+      block:
+        - name: "Apply the directional partition rule on each guest"
+          ansible.posix.firewalld:
+            zone: "idarsi-private"
+            rich_rule: "{{ vagrant_partition_rule }}"
+            state: "enabled"
+            permanent: false
+            immediate: true
+        - name: "Verify this host has its directional rule active"
+          ansible.builtin.command: >-
+            firewall-cmd --zone=idarsi-private --query-rich-rule={{ vagrant_partition_rule | quote }}
+          register: vagrant_partition_rule_active
+          changed_when: false
+          failed_when: vagrant_partition_rule_active.rc != 0
+        - name: "Barrier: both directional partition rules are active"
+          ansible.builtin.assert:
+            that:
+              - hostvars['pg01']['vagrant_partition_rule_active']['rc'] == 0
+              - hostvars['pg02']['vagrant_partition_rule_active']['rc'] == 0
+            fail_msg: "Both directional partition rules must be installed before disruption checks."
+          run_once: true
+        - name: "Assert both private and NAT interfaces remain present"
+          ansible.builtin.assert:
+            that:
+              - "'eth1' in ansible_facts.interfaces"
+              - "'eth0' in ansible_facts.interfaces"
+        - name: "Assert the selected peer is unreachable in both directions"
+          ansible.builtin.command: >-
+            timeout 5 bash -c '</dev/tcp/{{ '192.168.250.202' if inventory_hostname == 'pg01' else '192.168.250.201' }}/2379'
+          register: vagrant_partition_etcd
+          changed_when: false
+          failed_when: false
+        - name: "Assert the selected peer Patroni API is unreachable"
+          ansible.builtin.uri:
+            url: "http://{{ '192.168.250.202' if inventory_hostname == 'pg01' else '192.168.250.201' }}:8008/health"
+          register: vagrant_partition_patroni
+          failed_when: false
+        - name: "Assert disruption was observed"
+          ansible.builtin.assert:
+            that:
+              - vagrant_partition_etcd.rc != 0
+              - vagrant_partition_patroni.status | default(0) != 200
+        - name: "Observe surviving DCS quorum and Patroni safety"
+          ansible.builtin.command: >-
+            etcdctl --endpoints=https://192.168.250.203:2379 --cacert=/etc/etcd/pki/ca.crt
+            --cert=/etc/etcd/pki/etcd.crt --key=/etc/etcd/pki/etcd.key endpoint health
+          delegate_to: pg03
+          environment: {ETCDCTL_API: "3"}
+          register: vagrant_partition_surviving_dcs
+          changed_when: false
+        - name: "Read the surviving Patroni view"
+          ansible.builtin.uri:
+            url: "http://192.168.250.203:8008/cluster"
+            url_username: "patroni"
+            url_password: "patroni_password"
+            force_basic_auth: true
+            return_content: true
+          delegate_to: pg03
+          register: vagrant_partition_surviving_patroni
+        - name: "Assert the partition did not create a second leader"
+          ansible.builtin.assert:
+            that:
+              - vagrant_partition_surviving_dcs.rc == 0
+              - vagrant_partition_surviving_patroni.status == 200
+              - vagrant_partition_surviving_patroni.json.members | selectattr('role', 'equalto', 'leader') | list | length <= 1
+            fail_msg: "The partition smoke test observed neither surviving DCS quorum nor a safe Patroni view."
+      always:
+        - name: "Always remove the temporary partition rule"
+          ansible.posix.firewalld:
+            zone: idarsi-private
+            rich_rule: "{{ vagrant_partition_rule }}"
+            state: "disabled"
+            permanent: false
+            immediate: true
+          when: vagrant_partition_rule_active is defined
+        - name: "Verify the temporary partition rule is gone"
+          ansible.builtin.command: >-
+            firewall-cmd --zone=idarsi-private --query-rich-rule={{ vagrant_partition_rule | quote }}
+          register: vagrant_partition_rule_absent
+          changed_when: false
+          failed_when: vagrant_partition_rule_absent.rc != 1
+          when: vagrant_partition_rule_active is defined
+- name: "Verify cluster recovers after symmetric partition"
+  hosts: pg01
+  become: true
+  tasks:
+    - name: "Wait for all three Patroni members after cleanup"
+      ansible.builtin.uri:
+        url: http://192.168.250.201:8008/cluster
+        url_username: patroni
+        url_password: patroni_password
+        force_basic_auth: true
+        return_content: true
+      register: vagrant_partition_recovery
+      retries: 60
+      delay: 2
+      until: vagrant_partition_recovery.status == 200 and (vagrant_partition_recovery.json.members | length) == 3
+        and (vagrant_partition_recovery.json.members | selectattr('role', 'equalto', 'leader') | list | length) == 1
+        and (vagrant_partition_recovery.json.members | selectattr('role', 'equalto', 'replica') | list | length) == 2
+    - name: "Assert final recovery has exactly one leader and two replicas"
+      ansible.builtin.assert:
+        that:
+          - vagrant_partition_recovery.json.members | length == 3
+          - vagrant_partition_recovery.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+          - vagrant_partition_recovery.json.members | selectattr('role', 'equalto', 'replica') | list | length == 2

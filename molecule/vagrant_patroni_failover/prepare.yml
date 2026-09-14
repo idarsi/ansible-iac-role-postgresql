@@ -1,0 +1,229 @@
+---
+- name: "Prepare shared test certificates"
+  hosts: all
+  serial: 1
+  become: true
+  vars:
+    vagrant_cluster_addresses: {pg01: "192.168.250.201", pg02: "192.168.250.202", pg03: "192.168.250.203"}
+  tasks:
+    - name: "Verify the Vagrant private device is present"
+      ansible.builtin.assert:
+        that:
+          - "'eth1' in ansible_facts.interfaces"
+        fail_msg: "The Vagrant private network device eth1 is not present"
+
+    - name: "Install private cluster name resolution"
+      ansible.builtin.blockinfile:
+        path: /etc/hosts
+        marker: "# {mark} ANSIBLE VAGRANT POSTGRESQL PRIVATE CLUSTER"
+        block: |
+          192.168.250.201 pg01
+          192.168.250.202 pg02
+          192.168.250.203 pg03
+
+    - name: "Install DNF repository tooling"
+      ansible.builtin.dnf:
+        name: "dnf-plugins-core"
+        state: "present"
+        sslverify: true
+        validate_certs: true
+        disable_gpg_check: false
+
+    - name: "Import the PGDG repository signing key"
+      ansible.builtin.rpm_key:
+        key: "https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-RHEL"
+        state: "present"
+
+    - name: "Install the signed PGDG repository package"
+      ansible.builtin.dnf:
+        name: "https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm"
+        state: "present"
+        sslverify: true
+        validate_certs: true
+        disable_gpg_check: false
+
+    - name: "Enable the PGDG PostgreSQL 17 repository"
+      ansible.builtin.command: "dnf config-manager --set-enabled pgdg17"
+      changed_when: false
+
+    - name: "Enable the PGDG Rocky Linux 9 extras repository"
+      ansible.builtin.command: "dnf config-manager --set-enabled pgdg-rhel9-extras"
+      changed_when: false
+
+    - name: "Check the PGDG etcd extras repository is enabled"
+      ansible.builtin.command: "dnf repolist --enabled pgdg-rhel9-extras"
+      changed_when: false
+
+    - name: "Install packages managed by the combined cluster scenario"
+      ansible.builtin.dnf:
+        name:
+          - "openssl"
+          - "openssl-libs"
+          - "openssh-server"
+          - "openssh-clients"
+          - "etcd"
+          - "postgresql17-server"
+          - "postgresql17-contrib"
+          - "patroni"
+          - "patroni-etcd"
+        state: "present"
+        sslverify: true
+        validate_certs: true
+        disable_gpg_check: false
+
+    - name: "Upgrade crypto and SSH packages before the role runs"  # noqa package-latest
+      ansible.builtin.dnf:
+        name:
+          - "openssl"
+          - "openssl-libs"
+          - "openssh-server"
+          - "openssh-clients"
+        state: "latest"
+        sslverify: true
+        validate_certs: true
+        disable_gpg_check: false
+
+    - name: "Reboot guests after OpenSSL and etcd installation"
+      ansible.builtin.reboot:
+        msg: "Rebooting the Vagrant guest after package setup"
+        pre_reboot_delay: 1
+        post_reboot_delay: 5
+        reboot_timeout: 180
+        connect_timeout: 10
+        test_command: "whoami"
+
+    - name: "Reset the persistent SSH connection after package reboot"
+      ansible.builtin.meta: reset_connection
+
+    - name: "Wait for bounded Ansible connectivity after guest reboot"
+      ansible.builtin.wait_for_connection:
+        delay: 2
+        timeout: 180
+        connect_timeout: 10
+        sleep: 3
+
+    - name: "Install firewalld and its Ansible Python bindings"
+      ansible.builtin.dnf:
+        name:
+          - "firewalld"
+          - "python3-firewall"
+        state: "present"
+
+    - name: "Ensure firewalld is enabled and running"
+      ansible.builtin.service:
+        name: "firewalld"
+        state: "started"
+        enabled: true
+
+    - name: "Create the private cluster firewalld zone"
+      ansible.posix.firewalld:
+        zone: "idarsi-private"
+        state: "present"
+        permanent: true
+      register: vagrant_firewalld_zone
+      notify: "Reload firewalld after creating the private cluster zone"
+
+    - name: "Apply the private cluster zone before adding runtime rules"  # noqa no-handler
+      ansible.builtin.meta: flush_handlers
+      when: vagrant_firewalld_zone.changed
+
+    - name: "Assign the Vagrant private interface to the private cluster zone"
+      ansible.posix.firewalld:
+        zone: "idarsi-private"
+        interface: "eth1"
+        state: "enabled"
+        permanent: true
+        immediate: true
+
+    - name: "Permit private cluster traffic from the Vagrant network"
+      ansible.posix.firewalld:
+        zone: "idarsi-private"
+        rich_rule: >-
+          rule family="ipv4" source address="192.168.250.0/24"
+          port port="{{ item }}" protocol="tcp" accept
+        state: "enabled"
+        permanent: true
+        immediate: true
+      loop:
+        - "2379"
+        - "2380"
+        - "5432"
+        - "8008"
+
+    - name: "Create shared etcd PKI"
+      ansible.builtin.file:
+        path: /etc/etcd/pki
+        state: directory
+        mode: "0755"
+
+    - name: "Create the PostgreSQL group for fixture ACL ownership"
+      ansible.builtin.group:
+        name: postgres
+        state: present
+
+    - name: "Generate a short-lived cluster certificate"
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - req
+          - -x509
+          - -nodes
+          - -newkey
+          - rsa:2048
+          - -keyout
+          - /tmp/etcd.key
+          - -out
+          - /tmp/etcd.crt
+          - -days
+          - "1"
+          - -subj
+          - /CN=etcd-cluster
+          - "-addext"
+          - "subjectAltName=DNS:pg01,DNS:pg02,DNS:pg03,IP:192.168.250.201,IP:192.168.250.202,IP:192.168.250.203"
+      args:
+        creates: /tmp/etcd.crt
+      delegate_to: pg01
+      run_once: true
+
+    - name: "Read the shared certificate"
+      ansible.builtin.slurp:
+        src: /tmp/etcd.crt
+      delegate_to: pg01
+      run_once: true
+      register: vagrant_etcd_certificate
+
+    - name: "Read the shared key"
+      ansible.builtin.slurp:
+        src: /tmp/etcd.key
+      delegate_to: pg01
+      run_once: true
+      register: vagrant_etcd_key
+
+    - name: "Install the shared certificate"
+      ansible.builtin.copy:
+        content: "{{ vagrant_etcd_certificate.content | b64decode }}"
+        dest: "{{ item }}"
+        mode: "0644"
+      loop:
+        - /etc/etcd/pki/ca.crt
+        - /etc/etcd/pki/etcd.crt
+
+    - name: "Install the shared private key"
+      ansible.builtin.copy:
+        content: "{{ vagrant_etcd_key.content | b64decode }}"
+        dest: /etc/etcd/pki/etcd.key
+        owner: etcd
+        group: postgres
+        mode: "0640"
+
+    - name: "Require private guest name resolution"
+      ansible.builtin.getent:
+        database: hosts
+        key: "{{ item }}"
+      loop: [pg01, pg02, pg03]
+
+  handlers:
+    - name: "Reload firewalld after creating the private cluster zone"
+      ansible.builtin.service:
+        name: "firewalld"
+        state: "reloaded"

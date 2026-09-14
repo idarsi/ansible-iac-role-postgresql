@@ -1,0 +1,194 @@
+---
+- name: "Exercise Patroni primary failure with etcd quorum retained"
+  hosts: pg01
+  become: true
+  vars:
+    vagrant_patroni_private_addresses:
+      pg01: "192.168.250.201"
+      pg02: "192.168.250.202"
+      pg03: "192.168.250.203"
+    vagrant_patroni_restapi_username: patroni
+    vagrant_patroni_restapi_password: patroni_password
+  tasks:
+    - name: "Check SELinux mode on every guest"
+      ansible.builtin.command: getenforce
+      loop: "{{ groups['all'] }}"
+      loop_control: {loop_var: vagrant_guest}
+      delegate_to: "{{ vagrant_guest }}"
+      changed_when: false
+      register: vagrant_selinux
+
+    - name: "Assert SELinux is enforcing on every guest"
+      ansible.builtin.assert:
+        that: vagrant_security_result.stdout | trim == "Enforcing"
+      loop: "{{ vagrant_selinux.results }}"
+      loop_control: {loop_var: vagrant_security_result}
+
+    - name: "Check required listeners on every guest"
+      ansible.builtin.command: ss -ltn
+      loop: "{{ groups['all'] }}"
+      loop_control: {loop_var: vagrant_guest}
+      delegate_to: "{{ vagrant_guest }}"
+      changed_when: false
+      register: vagrant_listeners
+
+    - name: "Assert required services listen on each guest"
+      ansible.builtin.assert:
+        that:
+          - (vagrant_listener.stdout | regex_search(vagrant_patroni_private_addresses[vagrant_listener.vagrant_guest] ~ ':2379')) is not none
+          - (vagrant_listener.stdout | regex_search(vagrant_patroni_private_addresses[vagrant_listener.vagrant_guest] ~ ':2380')) is not none
+          - vagrant_patroni_private_addresses[vagrant_listener.vagrant_guest] ~ ':8008' in vagrant_listener.stdout
+      loop: "{{ vagrant_listeners.results }}"
+      loop_control: {loop_var: vagrant_listener}
+
+    - name: "Check etcd key metadata on every guest"
+      ansible.builtin.stat:
+        path: /etc/etcd/pki/etcd.key
+      loop: "{{ groups['all'] }}"
+      loop_control: {loop_var: vagrant_guest}
+      delegate_to: "{{ vagrant_guest }}"
+      register: vagrant_key_stats
+
+    - name: "Assert etcd key metadata"
+      ansible.builtin.assert:
+        that:
+          - vagrant_key_stat.stat.exists
+          - vagrant_key_stat.stat.mode == "0640"
+          - vagrant_key_stat.stat.pw_name == "etcd"
+          - vagrant_key_stat.stat.gr_name == "postgres"
+      loop: "{{ vagrant_key_stats.results }}"
+      loop_control: {loop_var: vagrant_key_stat}
+
+    - name: "Check effective PostgreSQL access to the etcd key"
+      ansible.builtin.command: runuser -u postgres -- test -r /etc/etcd/pki/etcd.key
+      loop: "{{ groups['all'] }}"
+      loop_control: {loop_var: vagrant_guest}
+      delegate_to: "{{ vagrant_guest }}"
+      changed_when: false
+
+    - name: "Read Patroni from every possible observer"
+      ansible.builtin.uri:
+        url: "http://{{ vagrant_patroni_private_addresses[item] }}:8008/cluster"
+        url_username: "{{ vagrant_patroni_restapi_username }}"
+        url_password: "{{ vagrant_patroni_restapi_password }}"
+        force_basic_auth: true
+        return_content: true
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['all'] }}"
+      register: vagrant_observations
+      failed_when: false
+
+    - name: "Select a reachable observer different from the current leader"
+      ansible.builtin.set_fact:
+        vagrant_before: "{{ (vagrant_observations.results | selectattr('status', 'defined') | selectattr('status', 'equalto', 200) | list | first) }}"
+        vagrant_failed_leader: >-
+          {{ ((vagrant_observations.results | selectattr('status', 'defined') |
+          selectattr('status', 'equalto', 200) | list | first).json.members |
+          selectattr('role', 'equalto', 'leader') | list | first).host }}
+
+    - name: "Select a surviving observer before stopping the leader"
+      ansible.builtin.set_fact:
+        vagrant_observer: >-
+          {{ (vagrant_observations.results | selectattr('status', 'defined') |
+          selectattr('status', 'equalto', 200) | rejectattr('item', 'equalto',
+          vagrant_failed_leader) | list | first).item }}
+
+    - name: "Write continuity data before failure"
+      ansible.builtin.command: >-
+        runuser -u postgres -- psql -v ON_ERROR_STOP=1 -d postgres -c
+        "CREATE TABLE IF NOT EXISTS failover_marker (id integer primary key, value text);
+        INSERT INTO failover_marker VALUES (1, 'before-primary-failure') ON CONFLICT (id) DO UPDATE SET value = EXCLUDED.value;"
+      delegate_to: "{{ vagrant_failed_leader }}"
+      changed_when: true
+
+    - name: "Inject failure and verify failover; always restore the old primary"
+      block:
+        - name: "Stop only the Patroni service on the leader"
+          ansible.builtin.systemd_service:
+            name: patroni-17-main.service
+            state: stopped
+          delegate_to: "{{ vagrant_failed_leader }}"
+
+        - name: "Wait for exactly one leader and two replicas"
+          ansible.builtin.uri:
+            url: "http://{{ vagrant_patroni_private_addresses[vagrant_observer] }}:8008/cluster"
+            url_username: "{{ vagrant_patroni_restapi_username }}"
+            url_password: "{{ vagrant_patroni_restapi_password }}"
+            force_basic_auth: true
+            return_content: true
+          delegate_to: "{{ vagrant_observer }}"
+          register: vagrant_after
+          retries: 60
+          delay: 2
+          until:
+            - vagrant_after.status == 200
+            - vagrant_after.json.members | length == 2
+            - vagrant_after.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+            - vagrant_after.json.members | selectattr('role', 'equalto', 'replica') | list | length == 1
+            - (vagrant_after.json.members | selectattr('role', 'equalto', 'leader') | list | first).host != vagrant_failed_leader
+
+        - name: "Read continuity data from the replacement leader"
+          ansible.builtin.command: >-
+            runuser -u postgres -- psql -tA -d postgres -c
+            "SELECT value FROM failover_marker WHERE id = 1"
+          delegate_to: "{{ (vagrant_after.json.members | selectattr('role', 'equalto', 'leader') | list | first).host }}"
+          register: vagrant_marker
+          changed_when: false
+          until: vagrant_marker.stdout | trim == "before-primary-failure"
+          retries: 30
+          delay: 2
+
+        - name: "Write and read after failover"
+          ansible.builtin.command: >-
+            runuser -u postgres -- psql -v ON_ERROR_STOP=1 -tA -d postgres -c
+            "INSERT INTO failover_marker VALUES (2, 'after-failover') ON CONFLICT (id) DO UPDATE SET value = EXCLUDED.value;
+            SELECT value FROM failover_marker WHERE id = 2"
+          delegate_to: "{{ (vagrant_after.json.members | selectattr('role', 'equalto', 'leader') | list | first).host }}"
+          register: vagrant_post_failover_write
+          changed_when: true
+
+      always:
+        - name: "Restore the failed primary service"
+          ansible.builtin.systemd_service:
+            name: patroni-17-main.service
+            state: started
+          delegate_to: "{{ vagrant_failed_leader }}"
+
+    - name: "Wait for old primary to rejoin as a replica"
+      ansible.builtin.uri:
+        url: "http://{{ vagrant_patroni_private_addresses[vagrant_observer] }}:8008/cluster"
+        url_username: "{{ vagrant_patroni_restapi_username }}"
+        url_password: "{{ vagrant_patroni_restapi_password }}"
+        force_basic_auth: true
+        return_content: true
+      delegate_to: "{{ vagrant_observer }}"
+      register: vagrant_rejoined
+      retries: 90
+      delay: 2
+      until:
+        - vagrant_rejoined.status == 200
+        - vagrant_rejoined.json.members | length == 3
+        - vagrant_rejoined.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+        - vagrant_rejoined.json.members | selectattr('role', 'equalto', 'replica') | list | length == 2
+        - vagrant_rejoined.json.members | selectattr('host', 'equalto', vagrant_failed_leader) | selectattr('role', 'equalto', 'replica') | list | length == 1
+
+    - name: "Verify the failover marker on the rejoined old primary"
+      ansible.builtin.command: >-
+        runuser -u postgres -- psql -tA -d postgres -c
+        "SELECT value FROM failover_marker WHERE id = 2"
+      delegate_to: "{{ vagrant_failed_leader }}"
+      register: vagrant_rejoined_marker
+      changed_when: false
+      until: vagrant_rejoined_marker.stdout | trim == "after-failover"
+      retries: 60
+      delay: 2
+
+    - name: "Assert failover write/read and old-primary replica rejoin"
+      ansible.builtin.assert:
+        that:
+          - vagrant_marker.stdout | trim == "before-primary-failure"
+          - "'after-failover' in vagrant_post_failover_write.stdout"
+          - vagrant_rejoined.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+          - vagrant_rejoined.json.members | selectattr('role', 'equalto', 'replica') | list | length == 2
+          - vagrant_rejoined.json.members | selectattr('host', 'equalto', vagrant_failed_leader) | selectattr('role', 'equalto', 'replica') | list | length == 1
+          - vagrant_rejoined_marker.stdout | trim == "after-failover"

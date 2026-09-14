@@ -1,0 +1,180 @@
+---
+- name: "Hard Patroni failure smoke test"
+  hosts: pg01
+  become: true
+  tasks:
+    - name: "Require SELinux enforcing on every guest"
+      ansible.builtin.command: getenforce
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['all'] }}"
+      changed_when: false
+      register: vagrant_selinux
+    - name: "Assert SELinux is enforcing on every guest"
+      ansible.builtin.assert:
+        that:
+          - >-
+            vagrant_selinux.results | map(attribute='stdout') | map('trim')
+            | select('equalto', 'Enforcing') | list | length == 3
+    - name: "Discover the actual Patroni leader"
+      ansible.builtin.uri:
+        url: "http://{{ item }}:8008/cluster"
+        url_username: patroni
+        url_password: patroni_password
+        force_basic_auth: true
+        return_content: true
+      delegate_to: "{{ item }}"
+      loop: [pg01, pg02, pg03]
+      register: vagrant_before_failure
+      failed_when: false
+    - name: "Record the actual primary"
+      ansible.builtin.set_fact:
+        vagrant_failed_leader: >-
+         {{ (vagrant_before_failure.results
+         | selectattr('status', 'equalto', 200) | map(attribute='json.members')
+         | list | flatten | selectattr('role', 'equalto', 'leader')
+         | map(attribute='host') | first) }}
+    - name: "Require a discovered Patroni leader"
+      ansible.builtin.assert:
+        that:
+          - vagrant_failed_leader in groups['all']
+    - name: "Select a surviving Patroni observer"
+      ansible.builtin.set_fact:
+        vagrant_observer: "{{ (groups['all'] | reject('equalto', vagrant_failed_leader) | list | first) }}"
+    - name: "Create continuity data on the discovered leader"
+      ansible.builtin.command: >-
+        runuser -u postgres -- psql -v ON_ERROR_STOP=1 -d postgres -c
+        "CREATE TABLE IF NOT EXISTS molecule_hard (v text); INSERT INTO
+        molecule_hard VALUES ('before')"
+      delegate_to: "{{ vagrant_failed_leader }}"
+      changed_when: true
+    - name: "Discover the expected libvirt domains"
+      ansible.builtin.command: virsh -c qemu:///system list --all --name
+      delegate_to: localhost
+      become: false
+      register: vagrant_domains
+      changed_when: false
+    - name: "Define the exact current-scenario libvirt domain mapping"
+      ansible.builtin.set_fact:
+        vagrant_patroni_domains:
+          pg01: "{{ vagrant_domains.stdout_lines | select('match', '^molecule\\.[^.]+\\.vagrant_hard_patroni_failure_pg01$') | list | first }}"
+          pg02: "{{ vagrant_domains.stdout_lines | select('match', '^molecule\\.[^.]+\\.vagrant_hard_patroni_failure_pg02$') | list | first }}"
+          pg03: "{{ vagrant_domains.stdout_lines | select('match', '^molecule\\.[^.]+\\.vagrant_hard_patroni_failure_pg03$') | list | first }}"
+    - name: "Require one exact domain for every Patroni member"
+      ansible.builtin.assert:
+        that:
+          - vagrant_patroni_domains[item] | length > 0
+          - vagrant_domains.stdout_lines | select('equalto', vagrant_patroni_domains[item]) | list | length == 1
+        fail_msg: "Unable to uniquely map {{ item }} to the current Molecule libvirt domain."
+      loop: [pg01, pg02, pg03]
+    - name: "Select the exact domain for the failed leader"
+      ansible.builtin.set_fact:
+        vagrant_failed_domain: "{{ vagrant_patroni_domains[vagrant_failed_leader] }}"
+    - name: "Require the exact failed leader domain"
+      ansible.builtin.assert:
+        that:
+          - vagrant_failed_domain in vagrant_patroni_domains.values() | list
+          - vagrant_domains.stdout_lines | select('equalto', vagrant_failed_domain) | list | length == 1
+        fail_msg: >-
+          The selected failed leader {{ vagrant_failed_leader }} must map to its
+          exact existing libvirt domain {{ vagrant_failed_domain }}. Other
+          Molecule domains may exist and are intentionally not eligible for
+          destruction.
+    - name: "Destroy and restore only the selected domain"
+      block:
+        - name: "Destroy the dynamically selected failed leader domain"
+          ansible.builtin.command: >-
+            {{ playbook_dir }}/../../scripts/vagrant-ha-virsh.sh destroy
+            {{ vagrant_failed_domain }}
+          delegate_to: localhost
+          become: false
+          changed_when: true
+        - name: "Wait for failover after host-side destroy"
+          ansible.builtin.pause:
+            seconds: 35
+        - name: "Wait for a replacement leader"
+          ansible.builtin.uri:
+            url: "http://{{ vagrant_observer }}:8008/cluster"
+            url_username: "patroni"
+            url_password: "patroni_password"
+            force_basic_auth: true
+            return_content: true
+          delegate_to: "{{ vagrant_observer }}"
+          register: vagrant_failover
+          retries: 30
+          delay: 2
+          until:
+            - vagrant_failover.status == 200
+            - vagrant_failover.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+            - (vagrant_failover.json.members | selectattr('role', 'equalto', 'leader') | map(attribute='host') | first) != vagrant_failed_leader
+      always:
+        - name: "Restart the dynamically selected failed leader domain"
+          ansible.builtin.command: >-
+            {{ playbook_dir }}/../../scripts/vagrant-ha-virsh.sh start
+            {{ vagrant_failed_domain }}
+          delegate_to: localhost
+          become: false
+          changed_when: true
+        - name: "Wait for the failed leader to accept connections"
+          ansible.builtin.wait_for_connection:
+            timeout: 300
+          delegate_to: "{{ vagrant_failed_leader }}"
+    - name: "Write and read on the replacement leader"
+      ansible.builtin.command: >-
+        runuser -u postgres -- psql -v ON_ERROR_STOP=1 -tA -d postgres -c
+        "INSERT INTO molecule_hard VALUES ('after'); SELECT v FROM
+        molecule_hard WHERE v = 'after'"
+      delegate_to: "{{ (vagrant_failover.json.members
+        | selectattr('role', 'equalto', 'leader') | list | first).host }}"
+      register: vagrant_replacement_write
+      changed_when: true
+
+    - name: "Wait for the failed member to rejoin as a replica"
+      ansible.builtin.uri:
+        url: "http://{{ vagrant_observer }}:8008/cluster"
+        url_username: "patroni"
+        url_password: "patroni_password"
+        force_basic_auth: true
+        return_content: true
+      delegate_to: "{{ vagrant_observer }}"
+      register: vagrant_rejoined
+      retries: 90
+      delay: 2
+      until:
+        - vagrant_rejoined.status == 200
+        - vagrant_rejoined.json.members | length == 3
+        - vagrant_rejoined.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+        - vagrant_rejoined.json.members | selectattr('role', 'equalto', 'replica') | list | length == 2
+        - vagrant_rejoined.json.members | selectattr('host', 'equalto', vagrant_failed_leader) | selectattr('role', 'equalto', 'replica') | list | length == 1
+
+    - name: "Verify the old primary rejoins with its data"
+      ansible.builtin.command: >-
+        runuser -u postgres -- psql -tA -d postgres -c
+        "SELECT v FROM molecule_hard WHERE v = 'before'"
+      delegate_to: "{{ vagrant_failed_leader }}"
+      register: vagrant_rejoined_data
+      changed_when: false
+      retries: 60
+      delay: 3
+      until: vagrant_rejoined_data.stdout | trim == 'before'
+
+    - name: "Verify the replacement marker synchronizes to the old member"
+      ansible.builtin.command: >-
+        runuser -u postgres -- psql -tA -d postgres -c
+        "SELECT v FROM molecule_hard WHERE v = 'after'"
+      delegate_to: "{{ vagrant_failed_leader }}"
+      register: vagrant_rejoined_after_marker
+      changed_when: false
+      retries: 60
+      delay: 3
+      until: vagrant_rejoined_after_marker.stdout | trim == 'after'
+    - name: "Record the replacement leader"
+      ansible.builtin.set_fact:
+        vagrant_replacement_leader: >-
+          {{ vagrant_failover.json.members | selectattr('role', 'equalto', 'leader')
+          | map(attribute='host') | first }}
+    - name: "Assert replacement changed leader and accepted a write"
+      ansible.builtin.assert:
+        that:
+          - vagrant_replacement_leader != vagrant_failed_leader
+          - vagrant_replacement_write.stdout_lines | select('equalto', 'after') | list | length == 1
+          - vagrant_rejoined_after_marker.stdout | trim == 'after'

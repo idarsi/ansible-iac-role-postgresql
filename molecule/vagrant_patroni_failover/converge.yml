@@ -1,0 +1,131 @@
+---
+- name: "Converge the combined Patroni and etcd cluster"
+  hosts: all
+  become: true
+  vars:
+    state: install
+    pg_lang: "en"
+    pg_locale: "US"
+    pg_disable_postgresql_module: false
+    pg_patroni_package: patroni
+    pg_patroni_reinitialize: false
+    vagrant_cluster_addresses: {pg01: "192.168.250.201", pg02: "192.168.250.202", pg03: "192.168.250.203"}
+    pg_etcd_bind_address: "{{ vagrant_cluster_addresses[inventory_hostname] }}"
+    pg_patroni_restapi_listen_address: "{{ vagrant_cluster_addresses[inventory_hostname] }}"
+    vagrant_patroni_private_addresses:
+      pg01: "192.168.250.201"
+      pg02: "192.168.250.202"
+      pg03: "192.168.250.203"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: vagrant-patroni
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: ["https://pg01:2379", "https://pg02:2379", "https://pg03:2379"]
+                etcd:
+                  enabled: true
+                  initial_cluster_token: vagrant-patroni
+                  members:
+                    - {name: pg01, host: pg01, peer_url: "https://pg01:2380", client_url: "https://pg01:2379"}
+                    - {name: pg02, host: pg02, peer_url: "https://pg02:2380", client_url: "https://pg02:2379"}
+                    - {name: pg03, host: pg03, peer_url: "https://pg03:2380", client_url: "https://pg03:2379"}
+                  tls:
+                    enabled: true
+                    client: {ca_file: /etc/etcd/pki/ca.crt, cert_file: /etc/etcd/pki/etcd.crt, key_file: /etc/etcd/pki/etcd.key}
+                    peer: {ca_file: /etc/etcd/pki/ca.crt, cert_file: /etc/etcd/pki/etcd.crt, key_file: /etc/etcd/pki/etcd.key}
+              patroni:
+                ttl: 30
+                loop_wait: 5
+                retry_timeout: 5
+                use_pg_rewind: true
+                postgresql: {superuser_password: postgres_password, replication_username: replicator}
+                replication_password: replication_password
+                pg_hba: ["local all all trust", "host all all 192.168.250.0/24 scram-sha-256", "host replication replicator 192.168.250.0/24 scram-sha-256"]
+                restapi: {port: 8008, authentication: {username: patroni, password: patroni_password}}
+              members:
+                - {host: pg01, instance: main, name: vagrant-patroni-pg01}
+                - {host: pg02, instance: main, name: vagrant-patroni-pg02}
+                - {host: pg03, instance: main, name: vagrant-patroni-pg03}
+          instances:
+            - name: main
+              cluster: vagrant-patroni
+              configuration: {listen_addresses: "*", port: 5432, max_connections: 50}
+  pre_tasks:
+    - name: "Reset the SSH connection left by prepare"
+      ansible.builtin.meta: reset_connection
+
+    - name: "Wait for SSH after prepare package changes"
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+        connect_timeout: 10
+        sleep: 5
+  roles:
+    - role: ansible-iac-role-postgresql
+
+  tasks:
+    - name: "Converge the cluster a second time before failure injection"
+      ansible.builtin.include_role:
+        name: ansible-iac-role-postgresql
+      register: vagrant_second_converge
+
+    - name: "Assert the second convergence is idempotent"
+      ansible.builtin.assert:
+        that:
+          - not (vagrant_second_converge.changed | default(false) | bool)
+        fail_msg: "The second cluster convergence reported an unexpected change"
+
+    - name: "Grant Patroni read access to the disposable etcd client key"
+      ansible.posix.acl:
+        path: "{{ item }}"
+        entity: postgres
+        etype: user
+        permissions: r
+        state: present
+      loop: [/etc/etcd/pki/ca.crt, /etc/etcd/pki/etcd.crt, /etc/etcd/pki/etcd.key]
+
+- name: "Wait for a real three-member cluster"
+  hosts: all
+  become: false
+  vars:
+    vagrant_patroni_private_addresses:
+      pg01: "192.168.250.201"
+      pg02: "192.168.250.202"
+      pg03: "192.168.250.203"
+    vagrant_patroni_restapi_username: patroni
+    vagrant_patroni_restapi_password: patroni_password
+  tasks:
+    - name: "Verify all private guest names resolve"
+      ansible.builtin.getent:
+        database: hosts
+        key: "{{ item }}"
+      loop: [pg01, pg02, pg03]
+
+    - name: "Wait for Patroni membership"
+      ansible.builtin.uri:
+        url: "http://{{ vagrant_patroni_private_addresses[inventory_hostname] }}:8008/cluster"
+        url_username: "{{ vagrant_patroni_restapi_username }}"
+        url_password: "{{ vagrant_patroni_restapi_password }}"
+        force_basic_auth: true
+        return_content: true
+      register: vagrant_initial_cluster
+      retries: 90
+      delay: 2
+      until:
+        - vagrant_initial_cluster.status | default(0) == 200
+        - (vagrant_initial_cluster.json.members | default([])) | length == 3
+
+    - name: "Assert Patroni has exactly one leader and two replicas"
+      ansible.builtin.assert:
+        that:
+          - (vagrant_initial_cluster.json.members | default([])) | length == 3
+          - (vagrant_initial_cluster.json.members | default([]) | selectattr('role', 'equalto', 'leader') | list | length) == 1
+          - (vagrant_initial_cluster.json.members | default([]) | selectattr('role', 'equalto', 'replica') | list | length) == 2
+        fail_msg: >-
+          Patroni membership has an unexpected role distribution:
+          HTTP status={{ vagrant_initial_cluster.status | default('unknown') }};
+          members={{ vagrant_initial_cluster.json.members | default([]) | to_json }};
+          leaders={{ vagrant_initial_cluster.json.members | default([]) | selectattr('role', 'equalto', 'leader') | list | length }};
+          replicas={{ vagrant_initial_cluster.json.members | default([]) | selectattr('role', 'equalto', 'replica') | list | length }}.

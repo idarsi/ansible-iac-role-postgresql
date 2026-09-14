@@ -27,7 +27,7 @@ restapi:
 
 {% if pg_cluster.dcs.provider == 'etcd3' %}
 etcd3:
-  hosts: {{ pg_cluster.dcs.endpoints | join(',') }}
+  hosts: {{ pg_cluster.dcs.endpoints | map('regex_replace', '^https?://', '') | join(',') }}
 {% if pg_cluster.dcs.proxy is defined %}
   proxy: {{ pg_cluster.dcs.proxy }}
 {% endif %}
