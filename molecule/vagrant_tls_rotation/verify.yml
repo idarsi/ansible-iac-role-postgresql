@@ -1,0 +1,424 @@
+---
+- name: "Distribute the rolling CA bundle to every etcd member"
+  hosts: all
+  become: true
+  vars:
+    vagrant_patroni_private_addresses:
+      pg01: "192.168.250.201"
+      pg02: "192.168.250.202"
+      pg03: "192.168.250.203"
+  tasks:
+    - name: "Require SELinux enforcing on every guest"
+      ansible.builtin.command: getenforce
+      changed_when: false
+      register: vagrant_selinux
+
+    - name: "Assert SELinux is enforcing"
+      ansible.builtin.assert:
+        that: vagrant_selinux.stdout | trim == "Enforcing"
+
+    - name: "Discover the current Patroni leader for the PostgreSQL marker"
+      ansible.builtin.uri:
+        url: "http://{{ vagrant_patroni_private_addresses[item] }}:8008/cluster"
+        url_username: "patroni"
+        url_password: "patroni_password"
+        force_basic_auth: true
+        return_content: true
+      delegate_to: "{{ item }}"
+      loop: [pg01, pg02, pg03]
+      register: vagrant_tls_marker_cluster
+      failed_when: false
+      no_log: true
+
+    - name: "Record the current Patroni leader"
+      ansible.builtin.set_fact:
+        vagrant_tls_marker_leader: >-
+          {{ vagrant_tls_marker_cluster.results
+          | selectattr('status', 'defined') | selectattr('status', 'equalto', 200)
+          | map(attribute='json.members', default=[]) | list | flatten
+          | selectattr('role', 'equalto', 'leader') | map(attribute='host') | first }}
+
+    - name: "Require a leader before creating the PostgreSQL marker"
+      ansible.builtin.assert:
+        that: vagrant_tls_marker_leader in groups['all']
+        fail_msg: "Unable to discover a writable Patroni leader for the TLS marker."
+
+    - name: "Create PostgreSQL and DCS continuity markers"
+      ansible.builtin.command: >-
+        /usr/pgsql-17/bin/psql -v ON_ERROR_STOP=1 -d postgres -c
+        "CREATE TABLE IF NOT EXISTS molecule_tls_rotation
+        (id integer primary key, value text); INSERT INTO molecule_tls_rotation
+        VALUES (1, 'before-tls-rotation') ON CONFLICT (id) DO UPDATE
+        SET value = EXCLUDED.value;"
+      delegate_to: "{{ vagrant_tls_marker_leader }}"
+      become: true
+      become_user: postgres
+      run_once: true
+      changed_when: true
+
+    - name: "Write the DCS continuity marker"
+      ansible.builtin.command: >-
+        etcdctl --endpoints=https://pg01:2379 --cacert=/etc/etcd/pki/ca.crt
+        --cert=/etc/etcd/pki/etcd.crt --key=/etc/etcd/pki/etcd.key put
+        /molecule/tls-rotation before-tls-rotation
+      environment:
+        ETCDCTL_API: "3"
+      delegate_to: pg01
+      run_once: true
+      changed_when: true
+
+    - name: "Read the current CA before using it"
+      ansible.builtin.slurp:
+        src: "/etc/etcd/pki/ca.crt"
+      register: vagrant_old_ca
+      no_log: true
+
+    - name: "Create a disposable CA and member-specific SAN leaves"
+      ansible.builtin.shell: |
+        set -eu
+        umask 077
+        openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+          -subj /CN=molecule-rotation-ca -keyout /tmp/rotation-ca.key \
+          -out /tmp/rotation-ca.crt
+        for member in pg01 pg02 pg03; do
+          case "${member}" in
+            pg01) address=192.168.250.201 ;;
+            pg02) address=192.168.250.202 ;;
+            pg03) address=192.168.250.203 ;;
+          esac
+          openssl req -newkey rsa:2048 -nodes -subj /CN="${member}" \
+            -keyout /tmp/rotation-${member}.key -out /tmp/rotation-${member}.csr
+          openssl x509 -req -in /tmp/rotation-${member}.csr \
+            -CA /tmp/rotation-ca.crt -CAkey /tmp/rotation-ca.key \
+            -CAcreateserial -days 1 -out /tmp/rotation-${member}.crt \
+            -extfile <(printf 'subjectAltName=DNS:%s,IP:%s' "${member}" "${address}")
+        done
+      args:
+        executable: "/bin/bash"
+      changed_when: true
+      run_once: true
+      delegate_to: pg01
+      no_log: true
+
+    - name: "Read the new test certificates"
+      ansible.builtin.slurp:
+        src: "{{ vagrant_rotation_file.src }}"
+      loop:
+        - {src: "/tmp/rotation-ca.crt", key: "ca"}
+        - {src: "/tmp/rotation-pg01.crt", member: "pg01", key: "cert"}
+        - {src: "/tmp/rotation-pg01.key", member: "pg01", key: "private"}
+        - {src: "/tmp/rotation-pg02.crt", member: "pg02", key: "cert"}
+        - {src: "/tmp/rotation-pg02.key", member: "pg02", key: "private"}
+        - {src: "/tmp/rotation-pg03.crt", member: "pg03", key: "cert"}
+        - {src: "/tmp/rotation-pg03.key", member: "pg03", key: "private"}
+      loop_control:
+        loop_var: vagrant_rotation_file
+      register: vagrant_rotation_files
+      no_log: true
+      run_once: true
+      delegate_to: pg01
+
+    - name: "Distribute rotation material to every guest"
+      ansible.builtin.set_fact:
+        vagrant_rotation_material:
+          ca: "{{ (vagrant_rotation_files.results | selectattr('vagrant_rotation_file.key', 'equalto', 'ca') | first).content }}"
+          cert: >-
+            {{ (vagrant_rotation_files.results
+            | selectattr('vagrant_rotation_file.member', 'defined')
+            | selectattr('vagrant_rotation_file.member', 'equalto', item)
+            | selectattr('vagrant_rotation_file.key', 'equalto', 'cert')
+            | first).content }}
+          private: >-
+            {{ (vagrant_rotation_files.results
+            | selectattr('vagrant_rotation_file.member', 'defined')
+            | selectattr('vagrant_rotation_file.member', 'equalto', item)
+            | selectattr('vagrant_rotation_file.key', 'equalto', 'private')
+            | first).content }}
+      delegate_to: "{{ item }}"
+      delegate_facts: true
+      loop: "{{ groups['all'] }}"
+      run_once: true
+      no_log: true
+
+    - name: "Render the rolling CA bundle"
+      ansible.builtin.set_fact:
+        vagrant_rolling_ca_bundle: |-
+          {{ vagrant_old_ca.content | b64decode | trim }}
+          {{ (vagrant_rotation_files.results
+          | selectattr('vagrant_rotation_file.key', 'equalto', 'ca')
+          | first).content | b64decode | trim }}
+      no_log: true
+
+    - name: "Assert the rolling CA bundle contains both PEM blocks"
+      ansible.builtin.assert:
+        that:
+          - "'\\\\n' not in vagrant_rolling_ca_bundle"
+          - vagrant_old_ca.content | b64decode | trim in vagrant_rolling_ca_bundle
+          - (vagrant_rotation_files.results
+            | selectattr('vagrant_rotation_file.key', 'equalto', 'ca')
+            | first).content | b64decode | trim in vagrant_rolling_ca_bundle
+        fail_msg: "The rolling CA bundle is not composed of both complete PEM certificates."
+      no_log: true
+
+    - name: "Install the rolling CA bundle on every etcd member"
+      ansible.builtin.copy:
+        content: "{{ vagrant_rolling_ca_bundle }}"
+        dest: "/etc/etcd/pki/ca.crt"
+        owner: "root"
+        group: "etcd"
+        mode: "0644"
+      no_log: true
+
+    - name: "Barrier: confirm the rolling CA bundle exists before leaf rotation"
+      ansible.builtin.stat:
+        path: "/etc/etcd/pki/ca.crt"
+      register: vagrant_rolling_ca
+      until: vagrant_rolling_ca.stat.exists
+      retries: 10
+      delay: 1
+
+- name: "Activate the new CA trust before rotating leaves"
+  hosts: all
+  become: true
+  serial: 1
+  tasks:
+    - name: "Restore SELinux labels on the new CA bundle"
+      ansible.builtin.command: restorecon -v /etc/etcd/pki/ca.crt
+      changed_when: false
+
+    - name: "Restart etcd with the old and new CA bundle"
+      ansible.builtin.systemd_service:
+        name: "etcd.service"
+        state: "restarted"
+      register: vagrant_trust_restart
+      until: vagrant_trust_restart is succeeded
+      retries: 3
+      delay: 2
+
+    - name: "Wait for etcd trust activation and quorum"
+      ansible.builtin.command: >-
+        etcdctl --endpoints=https://pg01:2379,https://pg02:2379,https://pg03:2379
+        --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd.crt
+        --key=/etc/etcd/pki/etcd.key endpoint health
+      environment:
+        ETCDCTL_API: "3"
+      register: vagrant_trusted_etcd_health
+      changed_when: false
+      retries: 30
+      delay: 2
+      until: vagrant_trusted_etcd_health.rc == 0
+
+- name: "Rotate test-only etcd certificates one member at a time"
+  hosts: all
+  serial: 1
+  become: true
+  vars:
+    vagrant_patroni_private_addresses:
+      pg01: "192.168.250.201"
+      pg02: "192.168.250.202"
+      pg03: "192.168.250.203"
+  tasks:
+    - name: "Capture the original certificate fingerprint and serial for this endpoint"
+      ansible.builtin.shell: >-
+        set -o pipefail; timeout 10s openssl s_client -connect
+        {{ inventory_hostname }}:2379 -servername {{ inventory_hostname }} -CAfile
+        /etc/etcd/pki/ca.crt -cert /etc/etcd/pki/etcd.crt -key
+        /etc/etcd/pki/etcd.key </dev/null | openssl x509 -noout
+        -fingerprint -sha256 -serial
+      args: {executable: "/bin/bash"}
+      register: vagrant_original_endpoint_certificate
+      changed_when: false
+      no_log: true
+    - name: "Install the new leaf and key on the current member"
+      ansible.builtin.copy:
+        content: >-
+          {{ vagrant_rotation_material[vagrant_rotation_file.1] | b64decode }}
+        dest: "/etc/etcd/pki/{{ vagrant_rotation_file.0 }}"
+        owner: "{{ 'etcd' if vagrant_rotation_file.0 == 'etcd.key' else 'root' }}"
+        group: "{{ 'postgres' if vagrant_rotation_file.0 == 'etcd.key' else 'etcd' }}"
+        mode: "{{ vagrant_rotation_file.2 }}"
+      loop:
+        - ["etcd.crt", "cert", "0644"]
+        - ["etcd.key", "private", "0640"]
+      loop_control:
+        loop_var: vagrant_rotation_file
+      no_log: true
+
+    - name: "Restore SELinux labels on the rotated leaf files"
+      ansible.builtin.command: restorecon -v /etc/etcd/pki/{{ item }}
+      loop:
+        - "etcd.crt"
+        - "etcd.key"
+      changed_when: false
+
+    - name: "Restart the rotated etcd member"
+      ansible.builtin.systemd_service:
+        name: "etcd.service"
+        state: "restarted"
+      register: vagrant_leaf_restart
+      until: vagrant_leaf_restart is succeeded
+      retries: 3
+      delay: 2
+
+    - name: "Wait for the rotated etcd member and cluster quorum"
+      ansible.builtin.command: >-
+        etcdctl --endpoints=https://pg01:2379,https://pg02:2379,https://pg03:2379
+        --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd.crt
+        --key=/etc/etcd/pki/etcd.key endpoint health
+      environment:
+        ETCDCTL_API: "3"
+      register: vagrant_rotated_etcd_health
+      changed_when: false
+      retries: 30
+      delay: 2
+      until: vagrant_rotated_etcd_health.rc == 0
+
+    - name: "Assert rotated etcd certificate metadata"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "/etc/etcd/pki/etcd.crt"
+        - "/etc/etcd/pki/etcd.key"
+      register: vagrant_rotated_tls_stats
+
+    - name: "Require secure rotated etcd certificate ownership and modes"
+      ansible.builtin.assert:
+        that:
+          - vagrant_rotated_tls_stats.results[0].stat.exists
+          - vagrant_rotated_tls_stats.results[0].stat.pw_name == "root"
+          - vagrant_rotated_tls_stats.results[0].stat.gr_name == "etcd"
+          - vagrant_rotated_tls_stats.results[0].stat.mode == "0644"
+          - vagrant_rotated_tls_stats.results[1].stat.exists
+          - vagrant_rotated_tls_stats.results[1].stat.pw_name == "etcd"
+          - vagrant_rotated_tls_stats.results[1].stat.gr_name == "postgres"
+          - vagrant_rotated_tls_stats.results[1].stat.mode == "0640"
+
+    - name: "Require postgres effective read access to rotated etcd TLS files"
+      ansible.builtin.command:
+        argv: [runuser, -u, postgres, --, test, -r, "{{ item }}"]
+      loop:
+        - "/etc/etcd/pki/ca.crt"
+        - "/etc/etcd/pki/etcd.crt"
+        - "/etc/etcd/pki/etcd.key"
+      changed_when: false
+
+    - name: "Verify the rotated member certificate has only its intended DNS and IP SAN"
+      ansible.builtin.command:
+        argv: [openssl, x509, -in, /etc/etcd/pki/etcd.crt, -noout, -ext, subjectAltName]
+      register: vagrant_rotated_san
+      changed_when: false
+
+    - name: "Assert the rotated member certificate SAN"
+      ansible.builtin.assert:
+        that:
+          - "'DNS:' ~ inventory_hostname in vagrant_rotated_san.stdout"
+          - "'IP Address:' ~ vagrant_patroni_private_addresses[inventory_hostname] in vagrant_rotated_san.stdout"
+
+    - name: "Verify the PostgreSQL continuity marker after rotation"
+      ansible.builtin.command: >-
+        runuser -u postgres -- psql -tA -d postgres -c
+        "SELECT value FROM molecule_tls_rotation WHERE id = 1"
+      register: vagrant_pg_marker
+      changed_when: false
+
+    - name: "Verify the DCS continuity marker after rotation"
+      ansible.builtin.command: >-
+        etcdctl --endpoints=https://pg01:2379,https://pg02:2379,https://pg03:2379
+        --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd.crt
+        --key=/etc/etcd/pki/etcd.key get /molecule/tls-rotation
+      environment:
+        ETCDCTL_API: "3"
+      register: vagrant_dcs_marker
+      changed_when: false
+
+    - name: "Verify all TLS endpoints and quorum after rotation"
+      ansible.builtin.command: >-
+        etcdctl --endpoints=https://pg01:2379,https://pg02:2379,https://pg03:2379
+        --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd.crt
+        --key=/etc/etcd/pki/etcd.key endpoint health
+      environment:
+        ETCDCTL_API: "3"
+      changed_when: false
+      no_log: true
+
+    - name: "Verify the rotated client certificate status"
+      ansible.builtin.command: >-
+        etcdctl --endpoints=https://pg01:2379,https://pg02:2379,https://pg03:2379
+        --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd.crt
+        --key=/etc/etcd/pki/etcd.key endpoint status
+      environment:
+        ETCDCTL_API: "3"
+      changed_when: false
+      no_log: true
+    - name: "Capture the rotated certificate fingerprint and serial for this endpoint"
+      ansible.builtin.shell: >-
+        set -o pipefail; timeout 10s openssl s_client -connect
+        {{ inventory_hostname }}:2379 -servername {{ inventory_hostname }} -CAfile
+        /etc/etcd/pki/ca.crt -cert /etc/etcd/pki/etcd.crt -key
+        /etc/etcd/pki/etcd.key </dev/null | openssl x509 -noout
+        -fingerprint -sha256 -serial
+      args: {executable: "/bin/bash"}
+      register: vagrant_rotated_endpoint_certificate
+      changed_when: false
+      no_log: true
+    - name: "Assert this endpoint certificate fingerprint and serial changed"
+      ansible.builtin.assert:
+        that:
+          - >-
+            (vagrant_original_endpoint_certificate.stdout | regex_search('(?i)sha256 fingerprint=.*')) !=
+            (vagrant_rotated_endpoint_certificate.stdout | regex_search('(?i)sha256 fingerprint=.*'))
+          - >-
+            (vagrant_original_endpoint_certificate.stdout | regex_search('serial=.*')) !=
+            (vagrant_rotated_endpoint_certificate.stdout | regex_search('serial=.*'))
+        fail_msg: "The TLS certificate served by {{ inventory_hostname }} did not change after rotation."
+      no_log: true
+
+    - name: "Verify Patroni DCS and API continuity after rotation"
+      ansible.builtin.uri:
+        url: "http://pg01:8008/cluster"
+        url_username: "patroni"
+        url_password: "patroni_password"
+        force_basic_auth: true
+        return_content: true
+      delegate_to: pg01
+      register: vagrant_patroni_continuity
+      no_log: true
+      failed_when: false
+      retries: 30
+      delay: 2
+      until:
+        - vagrant_patroni_continuity.status | default(0) == 200
+        - ((vagrant_patroni_continuity.json | default({})).members | default([]) | length == 3)
+        - ((vagrant_patroni_continuity.json | default({})).members | default([]) | selectattr('role', 'equalto', 'leader') | list | length == 1)
+        - ((vagrant_patroni_continuity.json | default({})).members | default([]) | selectattr('role', 'equalto', 'replica') | list | length == 2)
+
+    - name: "Assert PostgreSQL and DCS continuity markers"
+      ansible.builtin.assert:
+        that:
+          - vagrant_pg_marker.stdout | trim == "before-tls-rotation"
+          - "'before-tls-rotation' in vagrant_dcs_marker.stdout"
+          - ((vagrant_patroni_continuity.json | default({})).members | default([]) | length == 3)
+          - ((vagrant_patroni_continuity.json | default({})).members | default([]) | selectattr('role', 'equalto', 'leader') | list | length == 1)
+          - ((vagrant_patroni_continuity.json | default({})).members | default([]) | selectattr('role', 'equalto', 'replica') | list | length == 2)
+
+    - name: "Derive the Patroni leader from cluster membership"
+      ansible.builtin.set_fact:
+        vagrant_patroni_continuity_leader: >-
+          {{ (vagrant_patroni_continuity.json | default({})).members | default([])
+          | selectattr('role', 'equalto', 'leader')
+          | map(attribute='host') | list | first }}
+
+    - name: "Assert one Patroni leader remains after rotation"
+      ansible.builtin.assert:
+        that:
+          - >-
+            vagrant_patroni_continuity.status | default(0) == 200
+          - >-
+            (vagrant_patroni_continuity.json | default({})).members | default([]) | length == 3
+          - >-
+            (vagrant_patroni_continuity.json | default({})).members | default([])
+            | selectattr('role', 'equalto', 'leader') | list | length == 1
+          - >-
+            (vagrant_patroni_continuity.json | default({})).members | default([])
+            | selectattr('role', 'equalto', 'replica') | list | length == 2
+          - vagrant_patroni_continuity_leader in groups['all']

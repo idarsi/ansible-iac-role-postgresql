@@ -106,6 +106,9 @@
     - name: "Wait for Patroni and PostgreSQL to become ready before the idempotency run"
       ansible.builtin.uri:
         url: http://127.0.0.1:8008/readiness
+        url_username: patroni
+        url_password: patroni_password
+        force_basic_auth: true
         status_code: 200
       register: initial_patroni_readiness
       retries: 90
@@ -150,6 +153,9 @@
     - name: "Wait for the restarted Patroni member to become ready"
       ansible.builtin.uri:
         url: http://127.0.0.1:8008/readiness
+        url_username: patroni
+        url_password: patroni_password
+        force_basic_auth: true
         status_code: 200
       register: restarted_patroni_readiness
       retries: 90
@@ -163,6 +169,9 @@
     - name: "Wait for local Patroni and PostgreSQL readiness"
       ansible.builtin.uri:
         url: http://127.0.0.1:8008/readiness
+        url_username: patroni
+        url_password: patroni_password
+        force_basic_auth: true
         status_code: 200
       register: local_patroni_health
       retries: 90
@@ -176,6 +185,9 @@
     - name: "Wait for Patroni to elect one leader and register all members"
       ansible.builtin.uri:
         url: http://127.0.0.1:8008/cluster
+        url_username: patroni
+        url_password: patroni_password
+        force_basic_auth: true
         return_content: true
       register: initial_cluster
       retries: 60
@@ -256,6 +268,9 @@
     - name: "Wait for each non-primary member to become a healthy replica"
       ansible.builtin.uri:
         url: http://127.0.0.1:8008/replica
+        url_username: patroni
+        url_password: patroni_password
+        force_basic_auth: true
         status_code: 200
       register: replica_status
       retries: 90
@@ -286,6 +301,9 @@
     - name: "Verify Patroni remains healthy during the etcd outage"
       ansible.builtin.uri:
         url: http://127.0.0.1:8008/cluster
+        url_username: patroni
+        url_password: patroni_password
+        force_basic_auth: true
         return_content: true
       register: cluster_during_etcd_outage
       retries: 30
@@ -341,6 +359,9 @@
     - name: "Verify the removed member is absent from the cluster"
       ansible.builtin.uri:
         url: http://127.0.0.1:8008/cluster
+        url_username: patroni
+        url_password: patroni_password
+        force_basic_auth: true
         return_content: true
       register: cluster_after_member_removal
       retries: 30
@@ -363,6 +384,9 @@
     - name: "Wait for the re-added member to become a replica"
       ansible.builtin.uri:
         url: http://127.0.0.1:8008/replica
+        url_username: patroni
+        url_password: patroni_password
+        force_basic_auth: true
         status_code: 200
       register: readded_member_status
       retries: 90
@@ -376,6 +400,9 @@
     - name: "Read the cluster after member re-addition"
       ansible.builtin.uri:
         url: http://127.0.0.1:8008/cluster
+        url_username: patroni
+        url_password: patroni_password
+        force_basic_auth: true
         return_content: true
       register: cluster_after_member_readdition
       retries: 30
@@ -540,6 +567,9 @@
     - name: "Wait for the rejoined member to become a healthy replica"
       ansible.builtin.uri:
         url: http://127.0.0.1:8008/replica
+        url_username: patroni
+        url_password: patroni_password
+        force_basic_auth: true
         status_code: [200, 503]
       register: rejoined_replica_status
       retries: 90
@@ -585,6 +615,9 @@
     - name: "Wait until the remaining members elect a new primary"
       ansible.builtin.uri:
         url: http://127.0.0.1:8008/cluster
+        url_username: patroni
+        url_password: patroni_password
+        force_basic_auth: true
         return_content: true
       register: failover_cluster
       retries: 60
@@ -635,6 +668,9 @@
     - name: "Wait for the failed member to become a healthy replica"
       ansible.builtin.uri:
         url: http://127.0.0.1:8008/replica
+        url_username: patroni
+        url_password: patroni_password
+        force_basic_auth: true
         status_code: [200, 503]
       register: pg01_replica_status
       retries: 90

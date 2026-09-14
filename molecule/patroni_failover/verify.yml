@@ -10,6 +10,9 @@
     - name: "Read final local cluster state"
       ansible.builtin.uri:
         url: http://127.0.0.1:8008/cluster
+        url_username: patroni
+        url_password: patroni_password
+        force_basic_auth: true
         return_content: true
       register: final_cluster
 

@@ -1,0 +1,45 @@
+---
+- name: "Check live Patroni health after isolated restore startup"
+  ansible.builtin.uri:
+    url: "http://pg01:8008/health"
+    url_username: "patroni"
+    url_password: "patroni_password"
+    force_basic_auth: true
+  register: vagrant_live_patroni_health
+  no_log: true
+- name: "Read live Patroni cluster and PostgreSQL continuity"
+  ansible.builtin.uri:
+    url: "http://pg01:8008/cluster"
+    url_username: "patroni"
+    url_password: "patroni_password"
+    force_basic_auth: true
+    return_content: true
+  register: vagrant_live_patroni_cluster
+  no_log: true
+- name: "Read PostgreSQL continuity marker"
+  ansible.builtin.command: runuser -u postgres -- psql -tA -d postgres -c "SELECT value FROM molecule_snapshot_restore WHERE id = 1"
+  register: vagrant_pg_continuity
+  changed_when: false
+  no_log: true
+- name: "Read the live sentinel and identities"
+  ansible.builtin.command: "{{ vagrant_identity_command.command }}"
+  environment: {ETCDCTL_API: "3"}
+  loop:
+    - {command: "etcdctl --endpoints=https://pg01:2379 --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd.crt --key=/etc/etcd/pki/etcd.key get /molecule/snapshot-marker --print-value-only"}
+    - {command: "etcdctl --endpoints=https://pg01:2379 --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd.crt --key=/etc/etcd/pki/etcd.key endpoint status -w json"}
+    - {command: "etcdctl --endpoints=http://127.0.0.1:32379 endpoint status -w json"}
+  loop_control: {loop_var: vagrant_identity_command}
+  register: vagrant_identity_results
+  changed_when: false
+  no_log: true
+- name: "Assert live data and isolated restore identity"
+  ansible.builtin.assert:
+    that:
+      - vagrant_live_patroni_health.status == 200
+      - vagrant_live_patroni_cluster.status == 200
+      - vagrant_live_patroni_cluster.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+      - vagrant_pg_continuity.stdout | trim == "before-snapshot"
+      - vagrant_identity_results.results[0].stdout | trim == "retained"
+      - (vagrant_identity_results.results[1].stdout | from_json)[0].Status.header.cluster_id != (vagrant_identity_results.results[2].stdout | from_json)[0].Status.header.cluster_id
+    fail_msg: "The isolated restore was not independent or live PostgreSQL/etcd data was not retained."
+  no_log: true

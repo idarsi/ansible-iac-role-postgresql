@@ -1,0 +1,216 @@
+---
+- name: "Distinguish etcd quorum loss from Patroni primary failure"
+  hosts: pg01
+  become: true
+  vars:
+    vagrant_patroni_private_addresses:
+      pg01: "192.168.250.201"
+      pg02: "192.168.250.202"
+      pg03: "192.168.250.203"
+    vagrant_patroni_restapi_username: patroni
+    vagrant_patroni_restapi_password: patroni_password
+  tasks:
+    - name: "Check SELinux mode on every guest"
+      ansible.builtin.command: getenforce
+      loop: "{{ groups['all'] }}"
+      loop_control: {loop_var: vagrant_guest}
+      delegate_to: "{{ vagrant_guest }}"
+      changed_when: false
+      register: vagrant_selinux
+
+    - name: "Assert SELinux is enforcing on every guest"
+      ansible.builtin.assert:
+        that: vagrant_security_result.stdout | trim == "Enforcing"
+      loop: "{{ vagrant_selinux.results }}"
+      loop_control: {loop_var: vagrant_security_result}
+
+    - name: "Check etcd private listeners on every guest"
+      ansible.builtin.command: ss -ltn
+      loop: "{{ groups['all'] }}"
+      loop_control: {loop_var: vagrant_guest}
+      delegate_to: "{{ vagrant_guest }}"
+      changed_when: false
+      register: vagrant_listeners
+
+    - name: "Assert etcd and Patroni listen on each guest private address"
+      ansible.builtin.assert:
+        that:
+          - (vagrant_listener.stdout | regex_search(vagrant_patroni_private_addresses[vagrant_listener.vagrant_guest] ~ ':2379')) is not none
+          - (vagrant_listener.stdout | regex_search(vagrant_patroni_private_addresses[vagrant_listener.vagrant_guest] ~ ':2380')) is not none
+          - vagrant_patroni_private_addresses[vagrant_listener.vagrant_guest] ~ ':8008' in vagrant_listener.stdout
+      loop: "{{ vagrant_listeners.results }}"
+      loop_control: {loop_var: vagrant_listener}
+
+    - name: "Check etcd key metadata on every guest"
+      ansible.builtin.stat:
+        path: /etc/etcd/pki/etcd.key
+      loop: "{{ groups['all'] }}"
+      loop_control: {loop_var: vagrant_guest}
+      delegate_to: "{{ vagrant_guest }}"
+      register: vagrant_key_stats
+
+    - name: "Assert etcd key metadata"
+      ansible.builtin.assert:
+        that:
+          - vagrant_key_stat.stat.exists
+          - vagrant_key_stat.stat.mode == "0640"
+          - vagrant_key_stat.stat.pw_name == "etcd"
+          - vagrant_key_stat.stat.gr_name == "postgres"
+      loop: "{{ vagrant_key_stats.results }}"
+      loop_control: {loop_var: vagrant_key_stat}
+
+    - name: "Check effective PostgreSQL access to the etcd key"
+      ansible.builtin.command: runuser -u postgres -- test -r /etc/etcd/pki/etcd.key
+      loop: "{{ groups['all'] }}"
+      loop_control: {loop_var: vagrant_guest}
+      delegate_to: "{{ vagrant_guest }}"
+      changed_when: false
+
+    - name: "Write a DCS continuity key through all endpoints"
+      ansible.builtin.command:
+        argv:
+          - etcdctl
+          - "--endpoints=https://pg01:2379,https://pg02:2379,https://pg03:2379"
+          - --cacert=/etc/etcd/pki/ca.crt
+          - --cert=/etc/etcd/pki/etcd.crt
+          - --key=/etc/etcd/pki/etcd.key
+          - put
+          - /molecule/quorum-marker
+          - before-quorum-loss
+      environment: {ETCDCTL_API: "3"}
+      changed_when: true
+
+    - name: "Stop two etcd members and remove quorum"
+      block:
+        - name: "Stop etcd members"
+          ansible.builtin.systemd_service:
+            name: etcd.service
+            state: stopped
+          loop: [pg02, pg03]
+          loop_control: {loop_var: vagrant_quorum_member}
+          delegate_to: "{{ vagrant_quorum_member }}"
+
+        - name: "Prove a client write fails without etcd quorum"
+          ansible.builtin.command:
+            argv:
+              - etcdctl
+              - "--endpoints=https://pg01:2379"
+              - --cacert=/etc/etcd/pki/ca.crt
+              - --cert=/etc/etcd/pki/etcd.crt
+              - --key=/etc/etcd/pki/etcd.key
+              - put
+              - /molecule/quorum-probe
+              - must-not-commit
+          environment: {ETCDCTL_API: "3"}
+          register: vagrant_quorum_write
+          changed_when: false
+          failed_when: false
+
+        - name: "Assert quorum loss is observable"
+          ansible.builtin.assert:
+            that: vagrant_quorum_write.rc != 0
+      always:
+        - name: "Guaranteed restoration of both etcd members"
+          ansible.builtin.systemd_service:
+            name: etcd.service
+            state: started
+          loop: [pg02, pg03]
+          loop_control: {loop_var: vagrant_quorum_member}
+          delegate_to: "{{ vagrant_quorum_member }}"
+
+    - name: "Verify endpoint health after quorum recovery"
+      ansible.builtin.command:
+        argv:
+          - etcdctl
+          - "--endpoints=https://pg01:2379,https://pg02:2379,https://pg03:2379"
+          - --cacert=/etc/etcd/pki/ca.crt
+          - --cert=/etc/etcd/pki/etcd.crt
+          - --key=/etc/etcd/pki/etcd.key
+          - endpoint
+          - health
+          - -w
+          - json
+      environment: {ETCDCTL_API: "3"}
+      register: vagrant_endpoint_health
+      changed_when: false
+      retries: 60
+      delay: 2
+      until: vagrant_endpoint_health.rc == 0 and (vagrant_endpoint_health.stdout | from_json | selectattr('health', 'equalto', true) | list | length) == 3
+
+    - name: "Assert every recovered etcd endpoint is healthy"
+      ansible.builtin.assert:
+        that:
+          - (vagrant_endpoint_health.stdout | from_json | map(attribute='endpoint') | sort) == ["https://pg01:2379", "https://pg02:2379", "https://pg03:2379"]
+          - vagrant_endpoint_health.stdout | from_json | selectattr('health', 'equalto', true) | list | length == 3
+
+    - name: "Verify recovered etcd membership explicitly"
+      ansible.builtin.command:
+        argv:
+          - etcdctl
+          - "--endpoints=https://pg01:2379"
+          - --cacert=/etc/etcd/pki/ca.crt
+          - --cert=/etc/etcd/pki/etcd.crt
+          - --key=/etc/etcd/pki/etcd.key
+          - member
+          - list
+          - -w
+          - json
+      environment: {ETCDCTL_API: "3"}
+      register: vagrant_member_list
+      changed_when: false
+      retries: 60
+      delay: 2
+      until: >-
+        vagrant_member_list.rc == 0 and
+        (vagrant_member_list.stdout | from_json).members | length == 3
+
+    - name: "Assert expected recovered etcd member names and client URLs"
+      ansible.builtin.assert:
+        that:
+          - (vagrant_member_list.stdout | from_json).members | map(attribute='name') | sort == ['pg01', 'pg02', 'pg03']
+          - (vagrant_member_list.stdout | from_json).members | selectattr('clientURLs', 'defined') | list | length == 3
+        fail_msg: "Recovered etcd membership does not contain the expected three members and client URLs"
+
+    - name: "Read the original committed continuity key after quorum recovery"
+      ansible.builtin.command:
+        argv:
+          - etcdctl
+          - "--endpoints=https://pg01:2379,https://pg02:2379,https://pg03:2379"
+          - --cacert=/etc/etcd/pki/ca.crt
+          - --cert=/etc/etcd/pki/etcd.crt
+          - --key=/etc/etcd/pki/etcd.key
+          - get
+          - /molecule/quorum-marker
+      environment: {ETCDCTL_API: "3"}
+      register: vagrant_quorum_read
+      changed_when: false
+      until: vagrant_quorum_read.rc == 0 and 'before-quorum-loss' in vagrant_quorum_read.stdout
+      retries: 60
+      delay: 2
+
+    - name: "Clean up the no-quorum write probe"
+      ansible.builtin.command:
+        argv:
+          - etcdctl
+          - "--endpoints=https://pg01:2379,https://pg02:2379,https://pg03:2379"
+          - --cacert=/etc/etcd/pki/ca.crt
+          - --cert=/etc/etcd/pki/etcd.crt
+          - --key=/etc/etcd/pki/etcd.key
+          - del
+          - /molecule/quorum-probe
+      environment: {ETCDCTL_API: "3"}
+      changed_when: true
+
+    - name: "Assert Patroni has a leader after etcd quorum recovery"
+      ansible.builtin.uri:
+        url: "http://{{ vagrant_patroni_private_addresses[inventory_hostname] }}:8008/cluster"
+        url_username: "{{ vagrant_patroni_restapi_username }}"
+        url_password: "{{ vagrant_patroni_restapi_password }}"
+        force_basic_auth: true
+        return_content: true
+      register: vagrant_recovered_patroni
+      until:
+        - vagrant_recovered_patroni.status == 200
+        - vagrant_recovered_patroni.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+      retries: 30
+      delay: 2

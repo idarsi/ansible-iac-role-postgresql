@@ -10,6 +10,7 @@
     pg_patroni_group: root
     pg_patroni_config_directory: /tmp/patroni
     pg_systemd_service_dir: /tmp/systemd
+    pg_patroni_restapi_listen_address: "0.0.0.0"
     iac_blueprint:
       postgresql:
         - version: 17

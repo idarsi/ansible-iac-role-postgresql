@@ -1,0 +1,14 @@
+---
+dependency: {name: galaxy}
+driver:
+  name: vagrant
+  provider: {name: libvirt}
+platforms:
+  - {name: pg01, box: generic/rocky9, box_version: "4.3.12", memory: 2048, cpus: 2, provider_options: {uri: "qemu:///system"}, interfaces: [{network_name: "private_network", libvirt__network_name: "idarsi-postgresql-molecule", libvirt__always_destroy: false, mac: "52:54:00:fa:25:01"}]}
+  - {name: pg02, box: generic/rocky9, box_version: "4.3.12", memory: 2048, cpus: 2, provider_options: {uri: "qemu:///system"}, interfaces: [{network_name: "private_network", libvirt__network_name: "idarsi-postgresql-molecule", libvirt__always_destroy: false, mac: "52:54:00:fa:25:02"}]}
+  - {name: pg03, box: generic/rocky9, box_version: "4.3.12", memory: 2048, cpus: 2, provider_options: {uri: "qemu:///system"}, interfaces: [{network_name: "private_network", libvirt__network_name: "idarsi-postgresql-molecule", libvirt__always_destroy: false, mac: "52:54:00:fa:25:03"}]}
+provisioner:
+  name: ansible
+  env: {ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/..", ANSIBLE_REMOTE_TMP: "/tmp"}
+scenario: {test_sequence: [dependency, cleanup, destroy, syntax, create, prepare, converge, verify, cleanup, destroy]}
+verifier: {name: ansible}

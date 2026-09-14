@@ -1,0 +1,13 @@
+<network>
+  <name>idarsi-postgresql-molecule</name>
+  <forward mode="nat"/>
+  <bridge name="virbr250" stp="on" delay="0"/>
+  <ip address="192.168.250.1" netmask="255.255.255.0">
+    <dhcp>
+      <range start="192.168.250.100" end="192.168.250.199"/>
+      <host mac="52:54:00:fa:25:01" name="pg01" ip="192.168.250.201"/>
+      <host mac="52:54:00:fa:25:02" name="pg02" ip="192.168.250.202"/>
+      <host mac="52:54:00:fa:25:03" name="pg03" ip="192.168.250.203"/>
+    </dhcp>
+  </ip>
+</network>

@@ -1,0 +1,184 @@
+---
+- name: "Prove no unsafe promotion while DCS quorum and primary are absent"
+  hosts: pg01
+  become: true
+  vars:
+    vagrant_patroni_private_addresses:
+      pg01: "192.168.250.201"
+      pg02: "192.168.250.202"
+      pg03: "192.168.250.203"
+  tasks:
+    - name: "Require SELinux enforcing on every guest"
+      ansible.builtin.command: getenforce
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['all'] }}"
+      changed_when: false
+      register: vagrant_selinux
+    - name: "Assert SELinux is enforcing on every guest"
+      ansible.builtin.assert:
+        that:
+          - >-
+            vagrant_selinux.results | map(attribute='stdout') | map('trim')
+            | select('equalto', 'Enforcing') | list | length == 3
+    - name: "Remove quorum and stop the primary in a guarded block"
+      block:
+        - name: "Discover the actual Patroni leader"
+          ansible.builtin.uri:
+            url: "http://{{ item }}:8008/cluster"
+            url_username: patroni
+            url_password: patroni_password
+            force_basic_auth: true
+            return_content: true
+          delegate_to: "{{ item }}"
+          loop: [pg01, pg02, pg03]
+          register: vagrant_before_failure
+          failed_when: false
+        - name: "Set the actual primary host"
+          ansible.builtin.set_fact:
+            vagrant_leader_candidates: >-
+              {{ vagrant_before_failure.results | selectattr('status', 'equalto', 200) |
+              map(attribute='json.members') | list | flatten |
+              selectattr('role', 'equalto', 'leader') | map(attribute='host') | unique | list }}
+        - name: "Select the unique actual primary host"
+          ansible.builtin.set_fact:
+            vagrant_primary_host: "{{ vagrant_leader_candidates | first | default('') }}"
+        - name: "Require a discovered primary"
+          ansible.builtin.assert:
+            that:
+              - vagrant_primary_host in groups['all']
+              - vagrant_leader_candidates | length == 1
+            fail_msg: "The authoritative Patroni responses did not identify exactly one cluster leader."
+        - name: "Select the etcd members that will remove quorum"
+          ansible.builtin.set_fact:
+            vagrant_quorum_members: "{{ groups['all'] | reject('equalto', vagrant_primary_host) | list }}"
+        - name: "Write a continuity marker before failure"
+          ansible.builtin.command: >-
+            runuser -u postgres -- psql -v ON_ERROR_STOP=1 -d postgres -c
+            "CREATE TABLE IF NOT EXISTS quorum_failure_marker (value text); INSERT INTO quorum_failure_marker VALUES ('before')"
+          delegate_to: "{{ vagrant_primary_host }}"
+          changed_when: true
+        - name: "Stop etcd on both quorum members"
+          ansible.builtin.systemd_service:
+            name: "etcd.service"
+            state: "stopped"
+          delegate_to: "{{ item }}"
+          loop: "{{ vagrant_quorum_members }}"
+        - name: "Stop Patroni on the primary"
+          ansible.builtin.systemd_service:
+            name: "patroni-17-main.service"
+            state: "stopped"
+          delegate_to: "{{ vagrant_primary_host }}"
+        - name: "Stop PostgreSQL on the failed primary"
+          ansible.builtin.systemd_service:
+            name: "postgresql-17-main.service"
+            state: "stopped"
+          delegate_to: "{{ vagrant_primary_host }}"
+        - name: "Verify the failed primary cannot serve PostgreSQL"
+          ansible.builtin.command: systemctl is-active postgresql-17-main.service
+          delegate_to: "{{ vagrant_primary_host }}"
+          register: vagrant_failed_postgresql
+          changed_when: false
+          failed_when: false
+        - name: "Verify DCS quorum is actually gone before safety assertions"
+          ansible.builtin.command: >-
+            etcdctl --endpoints=https://pg01:2379,https://pg02:2379,https://pg03:2379
+            --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd.crt
+            --key=/etc/etcd/pki/etcd.key endpoint health
+          environment: {ETCDCTL_API: "3"}
+          register: vagrant_no_quorum
+          changed_when: false
+          failed_when: false
+        - name: "Assert the failed primary and DCS quorum are stopped"
+          ansible.builtin.assert:
+            that:
+              - vagrant_failed_postgresql.rc != 0
+              - vagrant_no_quorum.rc != 0
+            fail_msg: "Safety assertions must not run until PostgreSQL is stopped and the etcd endpoint reports lost quorum."
+        - name: "Check surviving Patroni observers report their non-leader roles"
+          ansible.builtin.uri:
+            url: "http://{{ item }}:8008/cluster"
+            url_username: "patroni"
+            url_password: "patroni_password"
+            force_basic_auth: true
+            return_content: true
+          delegate_to: "{{ item }}"
+          loop: "{{ vagrant_quorum_members }}"
+          register: vagrant_no_dcs_leader
+          failed_when: false
+        - name: "Require reachable surviving observers with explicit non-leader roles"
+          ansible.builtin.assert:
+            that:
+              - item.status | default(0) == 200
+              - item.json.members is defined
+              - >-
+                (item.json.members | selectattr('host', 'equalto', item.item)
+                | selectattr('role', 'defined') | list | length) == 1
+              - >-
+                (item.json.members | selectattr('host', 'equalto', item.item)
+                | selectattr('role', 'defined') | selectattr('role', 'ne', 'leader')
+                | list | length) == 1
+            fail_msg: >-
+              Surviving observer {{ item.item }} must be reachable and must report
+              its own Patroni role as non-leader.
+          loop: "{{ vagrant_no_dcs_leader.results }}"
+        - name: "Reject writes on every surviving replica"
+          ansible.builtin.command: runuser -u postgres -- psql -v ON_ERROR_STOP=1 -d postgres -c "CREATE TABLE molecule_must_not_write(v text)"
+          delegate_to: "{{ item }}"
+          loop: "{{ vagrant_quorum_members }}"
+          register: vagrant_unsafe_write
+          changed_when: false
+          failed_when: false
+        - name: "Assert writes are rejected without DCS quorum"
+          ansible.builtin.assert:
+            that:
+              - vagrant_unsafe_write.results | selectattr('rc', 'ne', 0) | list | length == 2
+      always:
+        - name: "Restore Patroni on the primary"
+          ansible.builtin.systemd_service:
+            name: "patroni-17-main.service"
+            state: "started"
+          delegate_to: "{{ vagrant_primary_host | default('pg01') }}"
+        - name: "Restore PostgreSQL on the primary"
+          ansible.builtin.systemd_service:
+            name: "postgresql-17-main.service"
+            state: "started"
+          delegate_to: "{{ vagrant_primary_host | default('pg01') }}"
+        - name: "Restore etcd quorum members"
+          ansible.builtin.systemd_service:
+            name: "etcd.service"
+            state: "started"
+          delegate_to: "{{ item }}"
+          loop: [pg02, pg03]
+        - name: "Wait for SSH recovery on every restored guest"
+          ansible.builtin.wait_for_connection:
+            delay: 2
+            timeout: 180
+            connect_timeout: 10
+            sleep: 3
+          delegate_to: "{{ item }}"
+          loop: "{{ groups['all'] }}"
+    - name: "Wait for post-recovery leader"
+      ansible.builtin.uri:
+        url: "http://{{ vagrant_patroni_private_addresses[vagrant_quorum_members | first] }}:8008/cluster"
+        url_username: "patroni"
+        url_password: "patroni_password"
+        force_basic_auth: true
+        return_content: true
+      register: vagrant_recovered
+      failed_when: false
+      retries: 60
+      delay: 2
+      until:
+        - vagrant_recovered.status | default(0) == 200
+        - vagrant_recovered.json.members is defined
+        - vagrant_recovered.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+    - name: "Verify recovered leader has the continuity marker"
+      ansible.builtin.command: >-
+        runuser -u postgres -- psql -tA -d postgres -c
+        "SELECT value FROM quorum_failure_marker LIMIT 1"
+      delegate_to: "{{ (vagrant_recovered.json.members | selectattr('role', 'equalto', 'leader') | list | first).host }}"
+      register: vagrant_recovered_data
+      changed_when: false
+      until: vagrant_recovered_data.stdout | trim == "before"
+      retries: 30
+      delay: 2

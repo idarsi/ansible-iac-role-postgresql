@@ -1,0 +1,132 @@
+---
+- name: "Create the PostgreSQL continuity marker on the current leader"
+  hosts: all
+  become: true
+  vars:
+    vagrant_patroni_private_addresses:
+      pg01: "192.168.250.201"
+      pg02: "192.168.250.202"
+      pg03: "192.168.250.203"
+  tasks:
+    - name: "Discover the current Patroni leader"
+      ansible.builtin.uri:
+        url: "http://{{ vagrant_patroni_private_addresses[item] }}:8008/cluster"
+        url_username: "patroni"
+        url_password: "patroni_password"
+        force_basic_auth: true
+        return_content: true
+      delegate_to: "{{ item }}"
+      loop: [pg01, pg02, pg03]
+      register: vagrant_marker_cluster
+      failed_when: false
+      no_log: true
+      run_once: true
+
+    - name: "Record the current Patroni leader"
+      ansible.builtin.set_fact:
+        vagrant_restart_leader: >-
+          {{ vagrant_marker_cluster.results | selectattr('status', 'equalto', 200)
+          | map(attribute='json.members') | list | flatten
+          | selectattr('role', 'equalto', 'leader') | map(attribute='host') | first }}
+
+    - name: "Require a leader before creating the continuity marker"
+      ansible.builtin.assert:
+        that: vagrant_restart_leader in groups['all']
+        fail_msg: "Unable to discover a writable Patroni leader for the restart marker."
+
+    - name: "Select a replica as the restart target"
+      ansible.builtin.set_fact:
+        vagrant_restart_target: >-
+          {{ (vagrant_marker_cluster.results | selectattr('status', 'equalto', 200)
+          | map(attribute='json.members') | list | flatten
+          | selectattr('role', 'equalto', 'replica') | map(attribute='host') | first) }}
+
+    - name: "Require a replica before restarting a member"
+      ansible.builtin.assert:
+        that: vagrant_restart_target in groups['all']
+        fail_msg: "The restart smoke test requires a current non-leader replica."
+
+    - name: "Share the selected restart target with every guest"
+      ansible.builtin.set_fact:
+        vagrant_restart_target: "{{ hostvars[ansible_play_hosts[0]].vagrant_restart_target }}"
+      delegate_to: "{{ item }}"
+      delegate_facts: true
+      loop: "{{ groups['all'] }}"
+      run_once: true
+
+    - name: "Create the PostgreSQL continuity marker locally as postgres"
+      ansible.builtin.command: >-
+        /usr/pgsql-17/bin/psql -v ON_ERROR_STOP=1 -d postgres -c
+        "CREATE TABLE IF NOT EXISTS restart_smoke_marker
+        (id integer primary key, value text); INSERT INTO restart_smoke_marker
+        VALUES (1, 'before-restart') ON CONFLICT (id) DO UPDATE SET value =
+        EXCLUDED.value;"
+      delegate_to: "{{ vagrant_restart_leader }}"
+      become: true
+      become_user: postgres
+      run_once: true
+      changed_when: true
+
+- name: "Restart smoke test (one non-leader replica)"
+  hosts: all
+  become: true
+  serial: 1
+  vars:
+    vagrant_patroni_private_addresses:
+      pg01: "192.168.250.201"
+      pg02: "192.168.250.202"
+      pg03: "192.168.250.203"
+  tasks:
+    - name: "Run the smoke restart only on the selected replica"
+      when: inventory_hostname == vagrant_restart_target
+      block:
+        - name: "Require SELinux enforcing on the restart target"
+          ansible.builtin.command: getenforce
+          changed_when: false
+          register: vagrant_selinux
+        - name: "Assert SELinux is enforcing"
+          ansible.builtin.assert:
+            that: vagrant_selinux.stdout | trim == "Enforcing"
+        - name: "Restart the selected Patroni replica"
+          ansible.builtin.systemd_service:
+            name: "patroni-17-main.service"
+            state: "restarted"
+        - name: "Check local PostgreSQL readiness"
+          ansible.builtin.command: /usr/pgsql-17/bin/pg_isready -h 127.0.0.1 -p 5432
+          changed_when: false
+          retries: 60
+          delay: 2
+          until: vagrant_postgresql_ready.rc == 0
+          register: vagrant_postgresql_ready
+        - name: "Read cluster membership after the replica restart"
+          ansible.builtin.uri:
+            url: "http://{{ vagrant_patroni_private_addresses[groups['all'] | difference([vagrant_restart_target]) | first] }}:8008/cluster"
+            url_username: "patroni"
+            url_password: "patroni_password"
+            force_basic_auth: true
+            return_content: true
+          delegate_to: "{{ groups['all'] | difference([vagrant_restart_target]) | first }}"
+          register: vagrant_restart_cluster
+          retries: 60
+          delay: 2
+          until:
+            - vagrant_restart_cluster.status | default(0) == 200
+            - vagrant_restart_cluster.json.members is defined
+            - vagrant_restart_cluster.json.members | length == 3
+            - vagrant_restart_cluster.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+        - name: "Verify exactly one leader and replica membership after restart"
+          ansible.builtin.assert:
+            that:
+              - vagrant_restart_cluster.json.members | length == 3
+              - vagrant_restart_cluster.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+              - >-
+                vagrant_restart_cluster.json.members
+                | selectattr('host', 'equalto', vagrant_restart_target)
+                | selectattr('role', 'equalto', 'replica') | list | length == 1
+        - name: "Verify PostgreSQL data continuity after restart"
+          ansible.builtin.command: runuser -u postgres -- psql -tA -d postgres -c "SELECT value FROM restart_smoke_marker WHERE id = 1"
+          register: vagrant_restart_marker
+          changed_when: false
+        - name: "Assert the restarted replica returned with data continuity"
+          ansible.builtin.assert:
+            that: vagrant_restart_marker.stdout | trim == "before-restart"
