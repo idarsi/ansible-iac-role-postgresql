@@ -3,6 +3,17 @@
   hosts: pg01
   become: false
   tasks:
+    - name: "Read the Patroni configuration"
+      ansible.builtin.slurp:
+        src: /etc/patroni/17-main.yml
+      register: patroni_config
+
+    - name: "Assert the non-TLS REST API is loopback-only"
+      ansible.builtin.assert:
+        that:
+          - "'listen: \"127.0.0.1:8008\"' in (patroni_config.content | b64decode)"
+          - "'cafile:' not in (patroni_config.content | b64decode)"
+
     - name: "Check the PGDG Patroni etcd package is installed"
       ansible.builtin.command: rpm -q patroni-etcd
       changed_when: false
@@ -19,6 +30,19 @@
           - final_cluster.json.members | length == 3
           - final_cluster.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
           - final_cluster.json.members | selectattr('role', 'equalto', 'replica') | list | length == 2
+
+    - name: "Read the second cluster state"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8009/cluster
+        return_content: true
+      register: final_secondary_cluster
+
+    - name: "Check the second same-host same-version cluster is ready"
+      ansible.builtin.assert:
+        that:
+          - final_secondary_cluster.json.members | length == 3
+          - final_secondary_cluster.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+          - final_secondary_cluster.json.members | selectattr('role', 'equalto', 'replica') | list | length == 2
 
     - name: "Check Patroni post-bootstrap finalization created role and database"
       ansible.builtin.command:

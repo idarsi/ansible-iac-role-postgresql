@@ -5,25 +5,264 @@
       - pg_replication_role in ['primary', 'standby']
     fail_msg: "PostgreSQL replication.role must be either 'primary' or 'standby'"
 
+- name: "Checking primary replication prerequisites"
+  ansible.builtin.assert:
+    that:
+      # Validate the blueprint record, not the effective variables below. The
+      # latter intentionally default missing values for task composition.
+      - pg_replication.replication_user is defined
+      - pg_replication.replication_user is not none
+      - pg_replication.replication_user | default('') | string | trim | length > 0
+      - pg_replication.replication_password is defined
+      - pg_replication.replication_password is not none
+      - pg_replication.replication_password | default('') | string | trim | length > 0
+      - pg_replication.allowed_standby_addresses is defined
+      - pg_replication.allowed_standby_addresses is not none
+      - pg_replication.allowed_standby_addresses | default([]) | length > 0
+    fail_msg: >-
+      Primary replication requires replication_user, replication_password, and
+      allowed_standby_addresses
+  when: pg_replication_role == 'primary'
+
+- name: "Checking standby replication prerequisites"
+  ansible.builtin.assert:
+    that:
+      # Use the original record so default primary_port/user/password values
+      # cannot hide an omitted or empty standby prerequisite.
+      - pg_replication.primary_host is defined
+      - pg_replication.primary_host is not none
+      - pg_replication.primary_host | default('') | string | trim | length > 0
+      - pg_replication.primary_port is defined
+      - pg_replication.primary_port is not none
+      - pg_replication.primary_port | default('') | string | trim | length > 0
+      - pg_replication.replication_user is defined
+      - pg_replication.replication_user is not none
+      - pg_replication.replication_user | default('') | string | trim | length > 0
+      - pg_replication.replication_password is defined
+      - pg_replication.replication_password is not none
+      - pg_replication.replication_password | default('') | string | trim | length > 0
+    fail_msg: "Standby replication requires primary_host, primary_port, replication_user, and replication_password"
+  when: pg_replication_role == 'standby'
+
+- name: "Checking allow_broad_hba type"
+  ansible.builtin.assert:
+    that:
+      - pg_replication.allow_broad_hba is not defined or pg_replication.allow_broad_hba is boolean
+    fail_msg: "PostgreSQL replication.allow_broad_hba must be a YAML boolean when provided"
+
+- name: "Checking standby replication primary port"
+  ansible.builtin.assert:
+    that:
+      - >-
+        pg_replication.primary_port is integer or
+        (pg_replication.primary_port is string and
+        pg_replication.primary_port is match('^(0|[1-9][0-9]*)$'))
+      - >-
+        (pg_replication.primary_port is integer and
+        pg_replication.primary_port in range(1, 65536)) or
+        (pg_replication.primary_port is string and
+        (pg_replication.primary_port | int) in range(1, 65536))
+    fail_msg: "Standby replication primary_port must be an integer or canonical numeric string from 1 to 65535"
+  when: pg_replication_role == 'standby'
+
+- name: "Normalizing standby replication primary port"
+  ansible.builtin.set_fact:
+    pg_replication_primary_port: "{{ pg_replication.primary_port | int }}"
+  when: pg_replication_role == 'standby'
+
+- name: "Checking primary replication standby address collection"
+  ansible.builtin.assert:
+    that:
+      - pg_replication_allowed_standby_addresses is defined
+      - pg_replication_allowed_standby_addresses is not none
+      - pg_replication_allowed_standby_addresses | type_debug == 'list'
+      - pg_replication_allowed_standby_addresses | length > 0
+    fail_msg: "PostgreSQL replication.allowed_standby_addresses must be a non-empty list"
+  when: pg_replication_role == 'primary'
+
+- name: "Checking each primary replication standby address"
+  ansible.builtin.assert:
+    that:
+      - pg_replication_address is defined
+      - pg_replication_address is not none
+      - pg_replication_address is string
+      - pg_replication_address | trim | length > 0
+    fail_msg: "Each PostgreSQL replication standby address must be a non-empty string"
+  loop: "{{ pg_replication_allowed_standby_addresses }}"
+  loop_control:
+    loop_var: pg_replication_address
+  when: pg_replication_role == 'primary'
+
+- name: "Checking each primary replication standby address is parseable"
+  ansible.builtin.assert:
+    that:
+      - >-
+        pg_replication_address in ['0.0.0.0/0', '::/0'] or
+        (pg_replication_address | ansible.utils.ipaddr('unicast'))
+    fail_msg: >-
+      Each PostgreSQL replication standby address must be a valid IPv4 or IPv6
+      address or CIDR; invalid values must be rejected before normalization
+  loop: "{{ pg_replication_allowed_standby_addresses }}"
+  loop_control:
+    loop_var: pg_replication_address
+  when:
+    - pg_replication_role == 'primary'
+    - pg_replication_address is defined
+    - pg_replication_address is not none
+    - pg_replication_address is string
+    - pg_replication_address | trim | length > 0
+
+- name: "Checking SQL replication identifiers"
+  ansible.builtin.assert:
+    that:
+      - pg_replication_user is string
+      - pg_replication_user is match('^[A-Za-z_][A-Za-z0-9_]*$')
+      - pg_replication_user | length <= 63
+      - pg_replication_slot_name is string
+      - pg_replication_slot_name | length == 0 or (pg_replication_slot_name is match('^[A-Za-z_][A-Za-z0-9_]*$') and pg_replication_slot_name | length <= 63)
+    fail_msg: >-
+      replication_user and slot_name must be safe PostgreSQL identifiers: begin
+      with a letter or underscore, contain only ASCII letters, digits, and
+      underscores, and be at most 63 characters; slot_name may be empty
+
 - name: "Checking primary replication configuration"
   ansible.builtin.assert:
     that:
+      - pg_replication.allow_broad_hba is not defined or pg_replication.allow_broad_hba is boolean
       - pg_replication_user | length > 0
       - pg_replication_password | length > 0
+      - pg_replication_user is not search('[\\x00-\\x1f\\x7f]')
+      - pg_replication_password is not search('[\\x00-\\x1f\\x7f]')
       - (pg_replication_allowed_standby_addresses | length) > 0
+      - >-
+         (pg_replication.allow_broad_hba | default(false) | bool
+         or ('0.0.0.0/0' not in pg_replication_allowed_standby_addresses
+         and '::/0' not in pg_replication_allowed_standby_addresses))
+         and '0.0.0.0' not in pg_replication_allowed_standby_addresses
+         and '::' not in pg_replication_allowed_standby_addresses
       - pg_replication_hba_type_effective in ['host', 'hostssl']
       - pg_replication_hba_method_effective in ['scram-sha-256', 'md5']
+      - pg_replication_hba_type_effective == 'hostssl'
     fail_msg: >-
       PostgreSQL primary replication configuration requires replication_user,
       replication_password, allowed_standby_addresses, and supported hba settings
+  when: pg_replication_role == 'primary'
+
+- name: "Parsing replication standby addresses"
+  ansible.builtin.set_fact:
+    pg_replication_allowed_standby_addresses_parsed: []
+  when: pg_replication_role == 'primary'
+
+- name: "Parsing validated replication standby address"
+  ansible.builtin.set_fact:
+    pg_replication_allowed_standby_addresses_parsed: >-
+      {{ pg_replication_allowed_standby_addresses_parsed +
+         [pg_replication_address | ansible.utils.ipaddr('network/prefix')] }}
+  loop: "{{ pg_replication_allowed_standby_addresses }}"
+  loop_control:
+    loop_var: pg_replication_address
+  when:
+    - pg_replication_role == 'primary'
+    - pg_replication_address is defined
+    - pg_replication_address is not none
+    - pg_replication_address is string
+    - pg_replication_address | trim | length > 0
+
+- name: "Checking replication standby address safety"
+  ansible.builtin.assert:
+    that:
+      - pg_replication_allowed_standby_addresses | select('string') | list | length == pg_replication_allowed_standby_addresses | length
+      - >-
+        pg_replication_allowed_standby_addresses | select('string')
+        | select('search', '[.:]') | list | length ==
+        pg_replication_allowed_standby_addresses | length
+      - pg_replication_allowed_standby_addresses | select('string') | select('search', '[\\s\\x00-\\x1f\\x7f#]') | list | length == 0
+      - pg_replication_allowed_standby_addresses_parsed | reject('equalto', false) | list | length == pg_replication_allowed_standby_addresses | length
+      - >-
+        pg_replication.allow_broad_hba | default(false) | bool
+        or ('0.0.0.0/0' not in pg_replication_allowed_standby_addresses_parsed
+        and '::/0' not in pg_replication_allowed_standby_addresses_parsed)
+      - >-
+        not (pg_replication.allow_broad_hba | default(false) | bool)
+        or (pg_replication_allowed_standby_addresses_parsed
+        | select('in', ['0.0.0.0/0', '::/0']) | list | length) ==
+        (pg_replication_allowed_standby_addresses
+         | select('in', ['0.0.0.0/0', '::/0']) | list | length)
+    fail_msg: >-
+      allowed_standby_addresses must contain only strict IPv4/IPv6 addresses or
+      CIDRs without whitespace, controls, comments, or broad ranges
+  when: pg_replication_role == 'primary'
+
+- name: "Normalizing replication standby addresses"
+  ansible.builtin.set_fact:
+    pg_replication_allowed_standby_addresses: "{{ pg_replication_allowed_standby_addresses_parsed }}"
   when: pg_replication_role == 'primary'
 
 - name: "Checking standby replication configuration"
   ansible.builtin.assert:
     that:
       - pg_replication_primary_host | length > 0
+      - >-
+        pg_replication_primary_host is match('^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$')
+        or pg_replication_primary_host is match('^(?=.*:)(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}$')
+        or pg_replication_primary_host is match('^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$')
       - pg_replication_primary_port is defined
+      - pg_replication_primary_port is integer
+      - pg_replication_primary_port in range(1, 65536)
       - pg_replication_user | length > 0
       - pg_replication_password | length > 0
-    fail_msg: "PostgreSQL standby replication configuration requires primary_host, primary_port, replication_user, and replication_password"
+      - pg_replication_sslmode_effective == 'verify-full'
+      - pg_replication_sslrootcert_effective | string is match('^/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$')
+      - pg_replication_sslrootcert_effective.split('/') | select('equalto', '.') | list | length == 0
+      - pg_replication_sslrootcert_effective.split('/') | select('equalto', '..') | list | length == 0
+      - (pg_replication_sslrootcert_content_effective | string | length > 0) or (pg_replication_sslrootcert_src_effective | string | length > 0)
+      - pg_replication.primary_certificate_subject_alt_names | type_debug == 'list'
+      - pg_replication.primary_certificate_subject_alt_names | select('string') | list | length == pg_replication.primary_certificate_subject_alt_names | length
+      - pg_replication_primary_host in (pg_replication.primary_certificate_subject_alt_names | default([]))
+      - pg_replication_user is match('^[A-Za-z_][A-Za-z0-9_.-]*$')
+      - pg_replication_user is not search('[\\x00-\\x1f\\x7f]')
+      - pg_replication_password is not search('[\\x00-\\x1f\\x7f]')
+      - pg_replication_application_name is match('^[A-Za-z0-9_.-]+$')
+    fail_msg: >-
+      PostgreSQL standby replication configuration requires primary_host, primary_port, replication_user, and replication_password
+  when: pg_replication_role == 'standby'
+
+- name: "Checking standby replication CA source path safety"
+  ansible.builtin.assert:
+    that:
+      - pg_replication.sslrootcert_src is not defined or pg_replication.sslrootcert_src is string
+      - >-
+        pg_replication.sslrootcert_src is not defined or
+        (pg_replication.sslrootcert_src is string and
+        pg_replication.sslrootcert_src | trim | length > 0)
+      - >-
+        pg_replication.sslrootcert_src is not defined or
+        (pg_replication.sslrootcert_src is string and
+        pg_replication.sslrootcert_src is match('^/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$'))
+      - >-
+        pg_replication.sslrootcert_src is not defined or
+        (pg_replication.sslrootcert_src is string and
+          pg_replication.sslrootcert_src.split('/') | select('equalto', '.') | list | length == 0
+          and pg_replication.sslrootcert_src.split('/') | select('equalto', '..') | list | length == 0
+        )
+      - >-
+        pg_replication.sslrootcert_src is not defined or
+        pg_replication.sslrootcert_src not in
+        ['/', '/etc', '/usr', '/var', '/tmp', '/home']
+    fail_msg: >-
+      Standby replication sslrootcert_src must be a native, non-empty absolute
+      file path without dot components and must not name a filesystem root
+      directory
+  when:
+    - pg_replication_role == 'standby'
+    - pg_replication.sslrootcert_src is defined
+
+- name: "Rejecting simultaneous standby replication CA inputs"
+  ansible.builtin.assert:
+    that:
+      - not (
+        pg_replication_sslrootcert_content_effective | string | trim | length > 0
+        and pg_replication_sslrootcert_src_effective | string | trim | length > 0
+        )
+    fail_msg: "Standby replication must not define both non-empty sslrootcert_content and sslrootcert_src"
   when: pg_replication_role == 'standby'

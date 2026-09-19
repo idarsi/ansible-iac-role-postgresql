@@ -1,0 +1,76 @@
+---
+# Build the complete host-wide Patroni endpoint index after inventory
+# validation. This is deliberately model-only: it must run before bootstrap,
+# package, file, or service tasks.
+- name: "Initializing host-wide Patroni endpoint collision index"
+  ansible.builtin.set_fact:
+    pg_validation_patroni_endpoint_index: []
+    pg_validation_patroni_endpoint_index_candidates: []
+
+- name: "Normalizing every Patroni member endpoint"
+  ansible.builtin.include_tasks: normalize_patroni_endpoint_record.yml
+  loop: "{{ pg_validation_patroni_endpoint_records }}"
+  loop_control:
+    loop_var: pg_validation_patroni_endpoint_record
+
+- name: "Checking the normalized Patroni endpoint index schema"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_patroni_endpoint_index_candidates is sequence
+      - >-
+        pg_validation_patroni_endpoint_index_models | length
+        == pg_validation_patroni_endpoint_index_candidates | list | length
+      - pg_validation_patroni_endpoint_index_record.key ==
+        (pg_validation_patroni_endpoint_index_record.version | string) ~ ':' ~
+        pg_validation_patroni_endpoint_index_record.cluster ~ ':' ~
+        pg_validation_patroni_endpoint_index_record.member ~ ':' ~
+        (pg_validation_patroni_endpoint_index_record.instance | string)
+      - pg_validation_patroni_endpoint_index_record.host_scope ==
+        pg_validation_patroni_endpoint_index_record.member
+      - pg_validation_patroni_endpoint_index_record.key is string
+      - pg_validation_patroni_endpoint_index_record.version is string
+      - pg_validation_patroni_endpoint_index_record.cluster is string
+      - pg_validation_patroni_endpoint_index_record.member is string
+      - pg_validation_patroni_endpoint_index_record.instance is string
+      - >-
+        (pg_validation_patroni_endpoint_index_record.keys() | list | sort) ==
+         ['advertised_connect', 'cluster', 'connect', 'connect_address_family',
+          'connect_collision_key', 'connect_is_wildcard', 'connect_port',
+          'host', 'host_scope', 'instance', 'key', 'listen', 'listen_address_family',
+          'listen_collision_key', 'listen_is_wildcard', 'listen_port', 'member',
+          'rendered_listener', 'san_identities', 'scheme', 'uri', 'version']
+    fail_msg: >-
+      Every Patroni endpoint index record must use the exact
+      version:cluster:member:instance composite key and matching identity fields
+  vars:
+    pg_validation_patroni_endpoint_index_models: >-
+      {{ pg_validation_patroni_endpoint_index_candidates | list
+         | map('type_debug') | select('equalto', 'dict') | list }}
+  loop: "{{ pg_validation_patroni_endpoint_index_candidates }}"
+  loop_control:
+    loop_var: pg_validation_patroni_endpoint_index_record
+
+- name: "Checking Patroni endpoint index composite key uniqueness"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (pg_validation_patroni_endpoint_index_candidates | map(attribute='key') | list | unique | length)
+        == (pg_validation_patroni_endpoint_index_candidates | length)
+    fail_msg: "Patroni endpoint index composite keys must be unique before publication"
+
+# Compare each record only with records before it. Every unordered pair is
+# visited once, so wildcard/specific overlap is independent of input ordering.
+- name: "Checking every prior Patroni endpoint pair"
+  ansible.builtin.include_tasks: check_patroni_endpoint_pairs.yml
+  loop: "{{ pg_validation_patroni_endpoint_index_candidates }}"
+  vars:
+    pg_validation_patroni_current_record: >-
+      {{ pg_validation_patroni_endpoint_record }}
+  loop_control:
+    loop_var: pg_validation_patroni_endpoint_record
+    index_var: pg_validation_patroni_index_position
+
+- name: "Publishing the validated Patroni endpoint index"
+  ansible.builtin.set_fact:
+    pg_validation_patroni_endpoint_index: >-
+      {{ pg_validation_patroni_endpoint_index_candidates | list }}

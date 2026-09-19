@@ -1,0 +1,73 @@
+---
+- name: "Resetting managed etcd member case result"  # noqa syntax-check[specific] -- task fragment
+  ansible.builtin.set_fact:  # noqa syntax-check[specific] -- task fragment
+    pg_etcd_member_role_succeeded: false
+    pg_shared_failure_messages: []
+    pg_shared_failure_results: []
+    pg_validation_etcd_members_normalized: []
+
+- name: "Applying managed etcd member case {{ pg_etcd_member_case.name }}"
+  block:
+    - name: "Running managed etcd member validation"
+      ansible.builtin.include_tasks: ../../tasks/validate/validate_etcd_members.yml
+      vars:
+        pg_validation_etcd_members: ["{{ pg_etcd_member_case.member }}"]
+
+    - name: "Marking managed etcd member validation as returned"
+      ansible.builtin.set_fact:
+        pg_etcd_member_role_succeeded: true
+
+    - name: "Recording unexpected managed etcd member acceptance"
+      ansible.builtin.set_fact:
+        pg_etcd_member_validation_outcomes: >-
+          {{ (pg_etcd_member_validation_outcomes | default([])) + [{
+            'name': pg_etcd_member_case.name | default('unnamed', true),
+            'failed': false,
+            'message_matches': false,
+            'exact_message_matches': false,
+            'passed': false,
+            'message': 'Unexpected acceptance: validation returned successfully'
+          }] }}
+      when: pg_etcd_member_role_succeeded | default(false) | bool
+  rescue:
+    - name: "Capturing managed etcd member validation failure message"
+      ansible.builtin.set_fact:
+        # Start at results so the generic include_tasks wrapper and its
+        # metadata cannot satisfy a case's expected task message.
+        pg_shared_failure_messages: []
+        pg_shared_failure_results: []
+
+    - name: "Collecting underlying managed etcd validation task messages"
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/../shared/collect_failure_messages.yml"
+      vars:
+        pg_failure_nodes: "{{ [ansible_failed_result | default({})] }}"
+
+    - name: "Recording managed etcd member validation outcome"
+      ansible.builtin.set_fact:
+        pg_etcd_member_validation_outcomes: >-
+          {{ (pg_etcd_member_validation_outcomes | default([])) + [{
+            'name': pg_etcd_member_case.name | default('unnamed', true),
+             'failed': true,
+              'message_matches': (pg_etcd_member_case.expected | default('', true) | string | length > 0)
+                and (pg_shared_failure_messages
+                  | select('search', pg_etcd_member_case.expected | string | regex_escape)
+                  | list | length > 0),
+              'exact_message_matches': (pg_etcd_member_case.expected_exact | default('', true) | string | length == 0)
+                or (pg_shared_failure_results
+                  | selectattr('msg', 'equalto', pg_etcd_member_case.expected_exact | string)
+                  | list | length > 0),
+             'forbidden_message_matches': (pg_etcd_member_case.forbidden | default('', true) | string | length > 0)
+                and (pg_shared_failure_messages
+                 | select('search', pg_etcd_member_case.forbidden | string | regex_escape)
+                 | list | length > 0),
+             'passed': (pg_etcd_member_case.expected | default('', true) | string | length > 0)
+                and (pg_shared_failure_messages
+                 | select('search', pg_etcd_member_case.expected | string | regex_escape)
+                 | list | length > 0)
+               and not ((pg_etcd_member_case.forbidden | default('', true) | string | length > 0)
+                  and (pg_shared_failure_messages
+                   | select('search', pg_etcd_member_case.forbidden | string | regex_escape)
+                   | list | length > 0)),
+               'messages': pg_shared_failure_messages | default([]),
+               'failed_task_results': pg_shared_failure_results | default([])
+            }] }}

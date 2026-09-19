@@ -1,0 +1,26 @@
+---
+# Construct a host:port value in one place.  IPv6 literals are always rendered
+# in URI-safe brackets; callers must not concatenate host and port themselves.
+- name: "Checking host and port for endpoint construction"
+  ansible.builtin.assert:
+    that:
+      - pg_host_port_host is string
+      - pg_host_port_host | length > 0
+      - pg_host_port_port is integer
+      - pg_host_port_port > 0
+      - pg_host_port_port < 65536
+      - >-
+        (not pg_host_port_host.startswith('[')
+         and not pg_host_port_host.endswith(']'))
+        or (pg_host_port_host.startswith('[')
+            and pg_host_port_host.endswith(']')
+            and (pg_host_port_host[1:-1] is ansible.utils.ip_address)
+            and ':' in pg_host_port_host[1:-1])
+    fail_msg: "{{ pg_host_port_label | default('Endpoint') }} requires a valid host and port"
+
+- name: "Publishing canonical host and port"
+  ansible.builtin.set_fact:
+    "{{ pg_host_port_result_fact }}": >-
+      {{ (('[' ~ (pg_host_port_host | regex_replace('^\[|\]$', '')) ~ ']')
+          if ':' in pg_host_port_host else pg_host_port_host)
+         ~ ':' ~ (pg_host_port_port | string) }}

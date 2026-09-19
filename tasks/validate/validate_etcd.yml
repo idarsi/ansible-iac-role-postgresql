@@ -5,113 +5,229 @@
 #
 ###############################################################################
 
-- name: "Checking managed etcd configuration type"
+- name: "Checking managed etcd mapping"
   ansible.builtin.assert:
-    that:
-      - pg_validation_cluster_record.dcs.etcd | type_debug == 'dict'
-      - pg_validation_cluster_record.dcs.etcd.members is defined
-      - pg_validation_cluster_record.dcs.etcd.members | type_debug == 'list'
-      - pg_validation_cluster_record.dcs.etcd.members | length > 0
-      - pg_validation_cluster_record.dcs.etcd.initial_cluster_token is defined
-      - pg_validation_cluster_record.dcs.etcd.initial_cluster_token | string | length > 0
-      - pg_etcd_bind_address is string
-      - pg_etcd_bind_address | length > 0
-      - pg_etcd_bind_address is not in ['0.0.0.0', '::', '*']
-      - pg_etcd_bind_address is not search('[\\s/]')
-      - (pg_validation_cluster_record.dcs.etcd.tls | default({})).enabled | default(false) | bool
-    fail_msg: >-
-      Managed etcd requires a non-empty initial_cluster_token, an explicit
-      non-wildcard pg_etcd_bind_address, and enabled TLS
+    that: ["pg_validation_cluster_record.dcs.etcd is mapping"]
+    fail_msg: "Patroni dcs.etcd must be a mapping when managed etcd is enabled"
 
-- name: "Checking managed etcd member records"
+- name: "Checking managed etcd scalar field types"
   ansible.builtin.assert:
     that:
-      - pg_validation_etcd_member | type_debug == 'dict'
-      - pg_validation_etcd_member.name is defined
-      - pg_validation_etcd_member.name | string | length > 0
-      - pg_validation_etcd_member.host is defined
-      - pg_validation_etcd_member.host | string | length > 0
-      - pg_validation_etcd_member.peer_url is defined
-      - pg_validation_etcd_member.peer_url | string | length > 0
-      - pg_validation_etcd_member.peer_url is match('^https://')
-      - pg_validation_etcd_member.client_url is defined
-      - pg_validation_etcd_member.client_url | string | length > 0
-      - pg_validation_etcd_member.client_url is match('^https://')
-    fail_msg: "Each managed etcd member must define name, host, peer_url, and client_url"
-  loop: "{{ pg_validation_cluster_record.dcs.etcd.members }}"
+      - pg_validation_cluster_record.dcs.etcd.initial_cluster_token is defined
+      - pg_validation_cluster_record.dcs.etcd.initial_cluster_token is string
+      - pg_validation_cluster_record.dcs.etcd.data_dir is not defined or pg_validation_cluster_record.dcs.etcd.data_dir is string
+      - pg_validation_cluster_record.dcs.etcd.initial_cluster_state is not defined or pg_validation_cluster_record.dcs.etcd.initial_cluster_state is string
+      - pg_etcd_bind_address is string
+      - pg_etcd_data_directory_root is string
+    fail_msg: >-
+      Managed etcd initial_cluster_token, data_dir, pg_etcd_bind_address, and
+      pg_etcd_data_directory_root must be strings
+
+- name: "Checking managed etcd TLS type"
+  ansible.builtin.assert:
+    that: ["pg_validation_cluster_record.dcs.etcd.tls is not defined or pg_validation_cluster_record.dcs.etcd.tls is mapping"]
+    fail_msg: "Managed etcd tls must be a mapping when present"
+
+- name: "Checking managed etcd TLS scalar types"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_etcd_tls.enabled is not defined or pg_validation_etcd_tls.enabled is boolean
+      - pg_validation_etcd_tls.auto_generate is not defined or pg_validation_etcd_tls.auto_generate is boolean
+    fail_msg: "Managed etcd tls.enabled and tls.auto_generate must be native booleans"
+  vars:
+    pg_validation_etcd_tls: "{{ pg_validation_cluster_record.dcs.etcd.tls | default({}) if pg_validation_cluster_record.dcs.etcd.tls is mapping else {} }}"
+  when: pg_validation_cluster_record.dcs.etcd.tls is defined
+
+- name: "Checking managed etcd TLS access group type"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_etcd_tls.access_group is not defined or pg_validation_etcd_tls.access_group is string
+    fail_msg: "Managed etcd tls.access_group must be a string when present"
+  vars:
+    pg_validation_etcd_tls: "{{ pg_validation_cluster_record.dcs.etcd.tls | default({}) if pg_validation_cluster_record.dcs.etcd.tls is mapping else {} }}"
+  when: pg_validation_cluster_record.dcs.etcd.tls is defined
+
+- name: "Checking managed etcd scalar values"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_cluster_record.dcs.etcd.initial_cluster_state | default(pg_etcd_initial_cluster_state) in ['new', 'existing']
+      - pg_validation_cluster_record.dcs.etcd.initial_cluster_token | length >= 1
+      - pg_validation_cluster_record.dcs.etcd.initial_cluster_token | length <= 128
+      - pg_validation_cluster_record.dcs.etcd.initial_cluster_token is match('^[A-Za-z0-9][A-Za-z0-9._-]*$')
+      - pg_validation_cluster_record.dcs.etcd.tls is defined
+      - pg_validation_etcd_tls is mapping
+      - pg_validation_etcd_tls.enabled is defined
+      - pg_validation_etcd_tls.enabled is boolean
+      - pg_validation_etcd_tls.enabled == true
+    fail_msg: >-
+      Managed etcd requires a non-empty valid initial_cluster_token, tls.enabled:
+      true, and initial_cluster_state new or existing; define tls as a mapping
+      with enabled: true
+  vars:
+    pg_validation_etcd_tls: "{{ pg_validation_cluster_record.dcs.etcd.tls | default({}) if pg_validation_cluster_record.dcs.etcd.tls is mapping else {} }}"
+
+- name: "Checking managed etcd data paths and bind address"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_etcd_data_dir | trim == pg_validation_etcd_data_dir
+      - pg_validation_etcd_data_dir is match('^/[^\x00-\x1f\x7f]*$')
+      - pg_validation_etcd_data_dir is not search('(^|/)\.\.(/|$)')
+      - pg_etcd_data_directory_root | trim == pg_etcd_data_directory_root
+      - pg_etcd_data_directory_root is match('^/[A-Za-z0-9_-][A-Za-z0-9_.-]*(?:/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$')
+      - pg_etcd_data_directory_root is match('^/var/lib/etcd(?:/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$')
+      - pg_etcd_data_directory_root not in ['/', '/var', '/var/lib', '/etc']
+      - pg_etcd_data_directory_root is not search('(^|/)\.\.?(/|$)')
+      - pg_validation_etcd_data_dir is match('^' ~ (pg_etcd_data_directory_root | regex_escape) ~ '/[^/].*$')
+      - pg_validation_etcd_data_dir != pg_etcd_metadata_directory
+      - not pg_validation_etcd_data_dir.startswith(pg_etcd_metadata_directory ~ '/')
+      - pg_validation_etcd_bind_address | length > 0
+      - pg_validation_etcd_bind_address is not in ['0.0.0.0', '::', '*']
+      - pg_validation_etcd_bind_address is not search('[\\s/]')
+      - >-
+        pg_validation_etcd_bind_address is ansible.utils.ip_address or
+        (pg_validation_etcd_bind_address is match(
+          '^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$'
+        ) and pg_validation_etcd_bind_address is not match('^[0-9.]+$'))
+    fail_msg: >-
+      Managed etcd requires safe data_dir below the data root but outside the
+      metadata root, and a non-wildcard bind address
+  vars:
+    pg_validation_etcd_data_dir: "{{ pg_validation_cluster_record.dcs.etcd.data_dir | default(pg_etcd_data_directory) }}"
+    pg_validation_etcd_bind_address: >-
+      {{ pg_etcd_bind_address[1:-1] if pg_etcd_bind_address.startswith('[')
+         and pg_etcd_bind_address.endswith(']') else pg_etcd_bind_address }}
+
+- name: "Publishing normalized etcd bind address"
+  ansible.builtin.set_fact:
+    pg_etcd_bind_address_normalized: >-
+      {{ pg_etcd_bind_address[1:-1] if pg_etcd_bind_address.startswith('[')
+         and pg_etcd_bind_address.endswith(']') else pg_etcd_bind_address }}
+
+- name: "Normalizing managed etcd member models"
+  ansible.builtin.include_tasks: normalize_etcd_member.yml
+  loop: "{{ pg_validation_etcd_members }}"
   loop_control:
     loop_var: pg_validation_etcd_member
 
-- name: "Checking managed etcd member names are unique"
+- name: "Checking managed etcd TLS structure"
   ansible.builtin.assert:
     that:
+      - pg_validation_etcd_tls | type_debug == 'dict'
+      - pg_validation_etcd_tls.client is not defined or pg_validation_etcd_tls.client is mapping
+      - pg_validation_etcd_tls.peer is not defined or pg_validation_etcd_tls.peer is mapping
       - >-
-        (
-          pg_validation_cluster_record.dcs.etcd.members
-          | map(attribute='name') | list | unique | length
-        ) == (pg_validation_cluster_record.dcs.etcd.members | length)
-    fail_msg: "Managed etcd member names must be unique"
+        pg_validation_etcd_tls.auto_generate | default(false) | bool
+        or (
+          (pg_validation_etcd_tls.access_group
+           | default(pg_etcd_external_tls_access_group)) is string
+          and (pg_validation_etcd_tls.access_group
+               | default(pg_etcd_external_tls_access_group)) | trim | length > 0
+          and (pg_validation_etcd_tls.access_group
+               | default(pg_etcd_external_tls_access_group)) is match('^[A-Za-z_][A-Za-z0-9_-]*$')
+        )
+    fail_msg: >-
+      Managed etcd TLS is incomplete: client and peer settings must be mappings.
+      External TLS must also define a pre-provisioned access_group containing
+      both etcd and Patroni service accounts for client CA/certificate/key
+      material; peer material must remain root:etcd and unreadable by Patroni.
+      The role will not change that access contract.
+  vars:
+    pg_validation_etcd_tls: "{{ pg_validation_cluster_record.dcs.etcd.tls | default({}) }}"
 
-- name: "Checking managed etcd member hosts are unique"
+- name: "Rejecting incomplete managed etcd TLS material"
   ansible.builtin.assert:
     that:
       - >-
-        (
-          pg_validation_cluster_record.dcs.etcd.members
-          | map(attribute='host') | list | unique | length
-        ) == (pg_validation_cluster_record.dcs.etcd.members | length)
-    fail_msg: "Managed etcd member hosts must be unique"
+        pg_validation_etcd_tls.auto_generate | default(false) | bool
+        or (
+          (pg_validation_etcd_tls.client is not defined
+           or (pg_validation_etcd_tls.client.cert_file is defined
+               and pg_validation_etcd_tls.client.key_file is defined))
+          and
+          (pg_validation_etcd_tls.peer is not defined
+           or (pg_validation_etcd_tls.peer.cert_file is defined
+               and pg_validation_etcd_tls.peer.key_file is defined))
+        )
+    fail_msg: >-
+      Managed etcd TLS is incomplete: provide client and peer CA, certificate,
+      and key paths, or set tls.auto_generate: true; a CA-only client or peer
+      definition is not sufficient.
+  vars:
+    pg_validation_etcd_tls: "{{ pg_validation_cluster_record.dcs.etcd.tls | default({}) }}"
+
+- name: "Normalizing managed etcd TLS configuration"
+  ansible.builtin.set_fact:
+    pg_validation_etcd_tls_effective: >-
+      {{
+        pg_validation_etcd_tls
+        | combine({
+            'ca_file': pg_validation_etcd_tls.ca_file | default('/etc/etcd/pki/ca.crt'),
+            'client': pg_validation_etcd_tls.client | default({}) | combine({
+              'ca_file': (pg_validation_etcd_tls.client | default({})).ca_file | default(pg_validation_etcd_tls.ca_file | default('/etc/etcd/pki/ca.crt')),
+              'cert_file': (pg_validation_etcd_tls.client | default({})).cert_file | default('/etc/etcd/pki/etcd-client.crt'),
+              'key_file': (pg_validation_etcd_tls.client | default({})).key_file | default('/etc/etcd/pki/etcd-client.key')
+            }),
+            'peer': pg_validation_etcd_tls.peer | default({}) | combine({
+              'ca_file': (pg_validation_etcd_tls.peer | default({})).ca_file | default(pg_validation_etcd_tls.ca_file | default('/etc/etcd/pki/ca.crt')),
+              'cert_file': (pg_validation_etcd_tls.peer | default({})).cert_file | default('/etc/etcd/pki/etcd-peer.crt'),
+              'key_file': (pg_validation_etcd_tls.peer | default({})).key_file | default('/etc/etcd/pki/etcd-peer.key')
+            })
+          }, recursive=true)
+      }}
+  vars:
+    pg_validation_etcd_tls: "{{ pg_validation_cluster_record.dcs.etcd.tls | default({}) }}"
+
+- name: "Setting normalized managed etcd TLS paths"
+  ansible.builtin.set_fact:
+    pg_validation_etcd_tls_paths:
+      - "{{ pg_validation_etcd_tls_effective.ca_file }}"
+      - "{{ pg_validation_etcd_tls_effective.client.ca_file }}"
+      - "{{ pg_validation_etcd_tls_effective.client.cert_file }}"
+      - "{{ pg_validation_etcd_tls_effective.client.key_file }}"
+      - "{{ pg_validation_etcd_tls_effective.peer.ca_file }}"
+      - "{{ pg_validation_etcd_tls_effective.peer.cert_file }}"
+      - "{{ pg_validation_etcd_tls_effective.peer.key_file }}"
+
+- name: "Rejecting shared managed etcd client and peer key paths"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_etcd_tls_effective.client.key_file != pg_validation_etcd_tls_effective.peer.key_file
+    fail_msg: >-
+      Managed etcd client and peer key_file destinations must be different so
+      Patroni can be isolated from the peer private key
 
 - name: "Checking managed etcd TLS configuration"
   ansible.builtin.assert:
     that:
       - pg_validation_etcd_tls.auto_generate is not defined or pg_validation_etcd_tls.auto_generate | type_debug == 'bool'
       - >-
-        pg_validation_etcd_tls.auto_generate | default(false) | bool
-        or (
-          pg_validation_etcd_tls.client.ca_file is defined
-          and pg_validation_etcd_tls.client.cert_file is defined
-          and pg_validation_etcd_tls.client.key_file is defined
-          and pg_validation_etcd_tls.peer.ca_file is defined
-          and pg_validation_etcd_tls.peer.cert_file is defined
-          and pg_validation_etcd_tls.peer.key_file is defined
-        )
+        pg_validation_etcd_tls_paths
+        | map('regex_search',
+          ('^/etc/etcd/pki/[A-Za-z0-9_-][A-Za-z0-9_.-]*$'
+           if pg_validation_etcd_tls.auto_generate | default(false) | bool
+           else '^/[A-Za-z0-9_-][A-Za-z0-9_.-]*(?:/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$'))
+        | select('string') | list | length == pg_validation_etcd_tls_paths | length
       - >-
         pg_validation_etcd_tls.auto_generate | default(false) | bool
-        or pg_validation_etcd_tls.client.ca_file | string is match('^/etc/etcd/')
-      - >-
-        pg_validation_etcd_tls.auto_generate | default(false) | bool
-        or pg_validation_etcd_tls.client.cert_file | string is match('^/etc/etcd/')
-      - >-
-        pg_validation_etcd_tls.auto_generate | default(false) | bool
-        or pg_validation_etcd_tls.client.key_file | string is match('^/etc/etcd/')
-      - >-
-        pg_validation_etcd_tls.auto_generate | default(false) | bool
-        or pg_validation_etcd_tls.peer.ca_file | string is match('^/etc/etcd/')
-      - >-
-        pg_validation_etcd_tls.auto_generate | default(false) | bool
-        or pg_validation_etcd_tls.peer.cert_file | string is match('^/etc/etcd/')
-      - >-
-        pg_validation_etcd_tls.auto_generate | default(false) | bool
-        or pg_validation_etcd_tls.peer.key_file | string is match('^/etc/etcd/')
+        or (pg_validation_etcd_tls.access_group | default(pg_etcd_external_tls_access_group) | trim | length > 0)
     fail_msg: >-
-      Managed etcd TLS requires client and peer CA, certificate, and key paths
-      under /etc/etcd/
+      Managed etcd TLS generated paths must remain below /etc/etcd/pki;
+      external paths must be absolute normalized paths without traversal
+      aliases.
   vars:
     pg_validation_etcd_tls: "{{ pg_validation_cluster_record.dcs.etcd.tls | default({}) }}"
 
 - name: "Checking managed etcd client endpoints use TLS"
   ansible.builtin.assert:
     that:
-      - pg_validation_etcd_endpoint is match('^https://')
+      - pg_validation_etcd_endpoint.scheme == 'https'
     fail_msg: "Managed etcd client endpoints must use HTTPS"
-  loop: "{{ pg_validation_cluster_record.dcs.endpoints | default([]) }}"
+  loop: "{{ pg_dcs_endpoint_model }}"
   loop_control:
     loop_var: pg_validation_etcd_endpoint
 
 - name: "Checking managed etcd proxy uses TLS"
   ansible.builtin.assert:
     that:
-      - pg_validation_cluster_record.dcs.proxy is not defined
-        or pg_validation_cluster_record.dcs.proxy is match('^https://')
+      - pg_dcs_proxy_model is not mapping or pg_dcs_proxy_model.scheme == 'https'
     fail_msg: "Managed etcd proxy must use HTTPS"

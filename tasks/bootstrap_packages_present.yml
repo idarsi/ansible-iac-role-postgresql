@@ -1,0 +1,15 @@
+---
+# This is the only unavoidable mutation before tool-dependent certificate
+# checks.  It installs inspection tools only; no application, configuration, or
+# PostgreSQL data is changed here.
+- name: "Ensuring certificate inspection bootstrap packages are installed"
+  ansible.builtin.include_tasks: package_present.yml
+  loop:
+    - "acl"
+    - "coreutils"
+    - "openssl"
+    - "util-linux"
+  loop_control:
+    loop_var: pg_certificate_bootstrap_package
+  vars:
+    pg_package: "{{ pg_certificate_bootstrap_package }}"

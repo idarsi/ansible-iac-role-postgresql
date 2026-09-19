@@ -13,7 +13,7 @@
 
 - name: "Setting what variables are configured"
   ansible.builtin.set_fact:
-    pg_extension: "{{ pg_extension_record.name | default(omit) }}"
+    pg_extension: "{{ pg_extension_record.name | default('') }}"
     pg_timescaledb_source: "{{ pg_extension_record.source | default('pgdg') }}"
     pg_instance: "{{ pg_instance_record.1.name }}"
     pg_version: "{{ pg_instance_record.0.version | string }}"

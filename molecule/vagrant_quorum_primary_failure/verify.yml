@@ -24,7 +24,8 @@
       block:
         - name: "Discover the actual Patroni leader"
           ansible.builtin.uri:
-            url: "http://{{ item }}:8008/cluster"
+            url: "https://{{ item }}:8008/cluster"
+            ca_path: /etc/patroni/pki/ca.crt
             url_username: patroni
             url_password: patroni_password
             force_basic_auth: true
@@ -82,8 +83,8 @@
         - name: "Verify DCS quorum is actually gone before safety assertions"
           ansible.builtin.command: >-
             etcdctl --endpoints=https://pg01:2379,https://pg02:2379,https://pg03:2379
-            --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd.crt
-            --key=/etc/etcd/pki/etcd.key endpoint health
+            --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd-client.crt
+            --key=/etc/etcd/pki/etcd-client.key endpoint health
           environment: {ETCDCTL_API: "3"}
           register: vagrant_no_quorum
           changed_when: false
@@ -96,7 +97,8 @@
             fail_msg: "Safety assertions must not run until PostgreSQL is stopped and the etcd endpoint reports lost quorum."
         - name: "Check surviving Patroni observers report their non-leader roles"
           ansible.builtin.uri:
-            url: "http://{{ item }}:8008/cluster"
+            url: "https://{{ item }}:8008/cluster"
+            ca_path: /etc/patroni/pki/ca.crt
             url_username: "patroni"
             url_password: "patroni_password"
             force_basic_auth: true
@@ -159,7 +161,8 @@
           loop: "{{ groups['all'] }}"
     - name: "Wait for post-recovery leader"
       ansible.builtin.uri:
-        url: "http://{{ vagrant_patroni_private_addresses[vagrant_quorum_members | first] }}:8008/cluster"
+        url: "https://{{ vagrant_patroni_private_addresses[vagrant_quorum_members | first] }}:8008/cluster"
+        ca_path: /etc/patroni/pki/ca.crt
         url_username: "patroni"
         url_password: "patroni_password"
         force_basic_auth: true

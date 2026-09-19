@@ -1,0 +1,55 @@
+---
+- name: "Normalizing Patroni regression endpoint listen address"
+  ansible.builtin.include_tasks: ../endpoint_normalize.yml
+  vars:
+    pg_endpoint_normalize_input: "{{ pg_validation_patroni_endpoint_record.listen }}"
+    pg_endpoint_normalize_result_fact: "pg_validation_patroni_listen_model"
+    pg_endpoint_normalize_default_scheme: "{{ 'https' if pg_validation_patroni_endpoint_record.tls_enabled | bool else 'http' }}"
+    pg_endpoint_normalize_label: "Patroni member listen"
+
+- name: "Normalizing Patroni regression advertised address"
+  ansible.builtin.include_tasks: ../endpoint_normalize.yml
+  vars:
+    pg_endpoint_normalize_input: "{{ pg_validation_patroni_endpoint_record.connect }}"
+    pg_endpoint_normalize_result_fact: "pg_validation_patroni_connect_model"
+    pg_endpoint_normalize_default_scheme: "{{ 'https' if pg_validation_patroni_endpoint_record.tls_enabled | bool else 'http' }}"
+    pg_endpoint_normalize_label: "Patroni member connect_address"
+
+- name: "Checking indexed Patroni endpoint schemes agree with TLS"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_patroni_connect_model.scheme == ('https' if pg_validation_patroni_endpoint_record.tls_enabled | bool else 'http')
+      - not pg_validation_patroni_listen_model.has_scheme
+        or pg_validation_patroni_listen_model.scheme == ('https' if pg_validation_patroni_endpoint_record.tls_enabled | bool else 'http')
+    fail_msg: >-
+      Patroni listen and connect endpoint schemes must match the effective REST
+      API TLS setting during inventory validation
+
+- name: "Publishing normalized Patroni endpoint index record"
+  ansible.builtin.set_fact:
+    pg_validation_patroni_endpoint_index_candidates: >-
+      {{ pg_validation_patroni_endpoint_index_candidates + [{
+        'key': pg_validation_patroni_endpoint_record.key,
+        'version': pg_validation_patroni_endpoint_record.version,
+        'cluster': pg_validation_patroni_endpoint_record.cluster,
+        'member': pg_validation_patroni_endpoint_record.member,
+         'instance': pg_validation_patroni_endpoint_record.instance,
+         'host_scope': pg_validation_patroni_endpoint_record.host_scope,
+         'scheme': pg_validation_patroni_connect_model.scheme,
+         'host': pg_validation_patroni_connect_model.canonical_host,
+         'uri': pg_validation_patroni_connect_model.uri,
+         'connect': pg_validation_patroni_connect_model.uri,
+         'rendered_listener': pg_validation_patroni_listen_model.scheme_free_endpoint,
+         'listen': pg_validation_patroni_listen_model.scheme_free_endpoint,
+        'advertised_connect': pg_validation_patroni_connect_model.uri,
+        'listen_port': pg_validation_patroni_listen_model.port,
+        'listen_address_family': ('ipv6' if pg_validation_patroni_listen_model.host_is_ipv6 | bool else 'ipv4'),
+         'listen_is_wildcard': pg_validation_patroni_listen_model.is_wildcard,
+        'connect_port': pg_validation_patroni_connect_model.port,
+        'connect_address_family': ('ipv6' if pg_validation_patroni_connect_model.host_is_ipv6 | bool else 'ipv4'),
+         'connect_is_wildcard': pg_validation_patroni_connect_model.is_wildcard,
+         'san_identities': [pg_validation_patroni_connect_model.canonical_host,
+           pg_validation_patroni_listen_model.canonical_host] | unique,
+        'listen_collision_key': pg_validation_patroni_endpoint_record.host_scope ~ ':' ~ pg_validation_patroni_listen_model.canonical_endpoint,
+        'connect_collision_key': pg_validation_patroni_endpoint_record.host_scope ~ ':' ~ pg_validation_patroni_connect_model.canonical_endpoint
+      }] }}

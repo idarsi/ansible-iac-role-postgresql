@@ -3,8 +3,9 @@
   hosts: all
   become: false
   vars:
+    ansible_become_method: "su"
     state: install
-    pg_patroni_restapi_listen_address: "0.0.0.0"
+    pg_patroni_restapi_listen_address: "127.0.0.1"
     pg_lang: "en"
     pg_locale: "US"
     pg_disable_postgresql_module: false
@@ -31,8 +32,7 @@
                     - {name: etcd03, host: etcd03, peer_url: https://etcd03:2380, client_url: https://etcd03:2379}
                   tls:
                     enabled: true
-                    client: {ca_file: /etc/etcd/pki/ca.crt, cert_file: /etc/etcd/pki/etcd.crt, key_file: /etc/etcd/pki/etcd.key}
-                    peer: {ca_file: /etc/etcd/pki/ca.crt, cert_file: /etc/etcd/pki/etcd.crt, key_file: /etc/etcd/pki/etcd.key}
+                    auto_generate: true
               patroni:
                 ttl: 30
                 loop_wait: 5
@@ -42,7 +42,10 @@
                   replication_username: replicator
                 replication_password: replication_password
                 restapi:
+                  auto_generate: true
+                  verify_client: optional
                   port: 8008
+                  connect_address: "127.0.0.1:8008"
                   authentication:
                     username: patroni
                     password: patroni_password
@@ -59,8 +62,58 @@
             - name: main18
               configuration: {listen_addresses: "*", port: 5433, max_connections: 50}
   pre_tasks:
+    - name: "Require an explicit controller-side Podman runtime classification"
+      ansible.builtin.assert:
+        that:
+          - pg_tls_host_runtime_rootless_podman | string | lower in ['true', 'false']
+        fail_msg: >-
+          Set MOLECULE_HOST_RUNTIME_ROOTLESS_PODMAN to true or false on the
+          Molecule controller; unknown runtime classification is not accepted.
+
+    - name: "Checking for an active SELinux policy required by managed TLS"
+      ansible.builtin.command: "{{ item }}"
+      loop:
+        - "getenforce"
+        - "restorecon -V"
+      register: pg_tls_selinux_checks
+      changed_when: false
+      failed_when: false
+
+    - name: "Determine whether SELinux capability is available"
+      ansible.builtin.set_fact:
+        pg_tls_selinux_supported: >-
+           {{ pg_tls_selinux_checks.results | map(attribute='rc') | list == [0, 0]
+              and pg_tls_selinux_checks.results[0].stdout | trim in ['Enforcing', 'Permissive'] }}
+
+    - name: "Determine whether this is explicitly unsupported rootless Podman"
+      ansible.builtin.set_fact:
+        pg_tls_rootless_podman: >-
+          {{ (pg_tls_host_runtime_rootless_podman | string | lower) == 'true' }}
+
+    - name: "Skip only unsupported rootless Podman without SELinux capability"
+      ansible.builtin.debug:
+        msg: "Skipping managed TLS coverage: explicitly detected rootless Podman lacks SELinux policy/tooling"
+      when: pg_tls_rootless_podman and not pg_tls_selinux_supported
+
+    - name: "End only explicitly unsupported rootless Podman scenario"
+      ansible.builtin.meta: end_play
+      when: pg_tls_rootless_podman and not pg_tls_selinux_supported
+
+    - name: "Require SELinux capability on non-rootless hosts"
+      ansible.builtin.assert:
+        that:
+          - pg_tls_host_runtime_rootless_podman | string | lower != 'unknown'
+          - pg_tls_selinux_supported
+        fail_msg: "TLS coverage requires SELinux policy with getenforce and restorecon on non-rootless hosts"
+
     - name: "Discover the local container IPv4 address"
-      ansible.builtin.command: "getent ahostsv4 {{ inventory_hostname }}"
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_facts['python']['executable'] }}"
+          - "-c"
+          - >-
+            import socket; print(socket.getaddrinfo("{{ inventory_hostname }}", None,
+            socket.AF_INET)[0][4][0])
       register: pg_etcd_local_address
       changed_when: false
 

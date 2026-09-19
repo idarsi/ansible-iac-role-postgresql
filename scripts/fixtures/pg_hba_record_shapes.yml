@@ -1,0 +1,9 @@
+# Regression fixture for the pg_hba renderer: raw lines are supported only by
+# the dedicated Patroni input, while instance access records remain mappings.
+raw_patroni:
+  - "host all reporting 10.0.0.0/24 scram-sha-256"
+structured_instance:
+  - name: "reporting"
+    address: "10.0.0.0/24"
+    type: "host"
+    method: "scram-sha-256"

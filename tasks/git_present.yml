@@ -1,3 +1,17 @@
 ---
 - name: "Including shared git present tasks"
   ansible.builtin.include_tasks: shared/git_present.yml
+
+- name: "Marking managed git working tree"
+  ansible.builtin.copy:
+    content: "Managed by ansible-iac-role-postgresql.\n"
+    dest: "{{ iac_git_repo_record.dest }}/{{ pg_git_cleanup_marker_filename }}"
+    owner: "root"
+    group: "root"
+    mode: "0600"
+  become: true
+  loop: "{{ iac_git_repos | default([]) }}"
+  loop_control:
+    loop_var: iac_git_repo_record
+    label: "{{ iac_git_repo_record.dest }}"
+  when: (iac_git_repos | default([])) | length > 0

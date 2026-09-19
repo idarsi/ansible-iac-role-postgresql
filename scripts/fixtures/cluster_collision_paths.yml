@@ -1,0 +1,36 @@
+---
+- name: "Execute cluster certificate collision contract fixture"
+  hosts: "localhost"
+  connection: "local"
+  gather_facts: false
+  # This controller-local fixture is intentionally unprivileged.  The
+  # production normalization and preflight task files remain the contract
+  # under test; only this disposable fixture avoids privilege escalation.
+  become: false
+  vars:
+    ansible_become: false
+    pg_etcd_metadata_directory: "{{ fixture_paths.metadata_directory }}"
+    pg_cluster_certificate_seed_directory: "{{ fixture_paths.seed_directory }}"
+    pg_cluster_registry_directory_source: >-
+      {{ fixture_paths.registry_directory }}
+    pg_cluster_lock_directory_source: >-
+      {{ fixture_paths.lock_directory }}
+    pg_cluster_registry_path_source: "{{ fixture_paths.registry_path }}"
+    pg_cluster_lock_path_source: "{{ fixture_paths.lock_path }}"
+  tasks:
+    - name: "Include the production collision preflight"
+      ansible.builtin.include_tasks: "{{ fixture_preflight_path }}"
+
+    - name: "Assert every collision occurrence role is represented"
+      ansible.builtin.assert:
+        that:
+          - >-
+            (pg_cluster_collision_occurrences | map(attribute="role")
+             | unique | list)
+            is superset([
+               "generated-etcd", "generated-patroni", "seed-artifact",
+               "registry",
+              "lock", "metadata", "managed", "shared-ca", "certificate"
+            ])
+        fail_msg: "The collision model does not cover every occurrence role"
+      when: fixture_role_coverage_case | default(false) | bool

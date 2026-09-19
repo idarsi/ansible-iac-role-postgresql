@@ -1,0 +1,36 @@
+---
+- name: "Publishing the host-wide etcd endpoint index"
+  ansible.builtin.set_fact:
+    pg_validation_etcd_endpoint_index: >-
+      {% set ns = namespace(records=[]) %}
+      {% for cluster_model in pg_validation_cluster_models %}
+      {% for member in (cluster_model.record.dcs.etcd.members_normalized | default([])) %}
+      {% set endpoint = member.client_endpoint_model %}
+      {% set projected_endpoint = endpoint
+         | dict2items
+         | selectattr('key', 'in', [
+           'canonical_endpoint', 'canonical_host', 'has_scheme', 'host',
+           'host_is_ipv6', 'path', 'protocol', 'rendered_endpoint',
+           'rendered_host', 'san_identities', 'scheme', 'scheme_free_endpoint',
+           'uri'
+         ])
+         | list
+         | items2dict %}
+      {% set ns.records = ns.records + [projected_endpoint | combine({
+        'key': cluster_model.key ~ ':' ~ member.host,
+        'version': cluster_model.version | string,
+        'cluster': cluster_model.record.name | string,
+        'member': member.host | string,
+        'name': member.name | string,
+        'peer_url': member.peer_url | string,
+        'client_url': member.client_url | string,
+        'san_identities': (member.peer_endpoint_model.san_identities + endpoint.san_identities) | unique
+      })] %}
+      {% endfor %}{% endfor %}{{ ns.records }}
+
+- name: "Normalizing the host-wide etcd endpoint index as a list"
+  ansible.builtin.set_fact:
+    pg_validation_etcd_endpoint_index: >-
+      {{ pg_validation_etcd_endpoint_index
+         if pg_validation_etcd_endpoint_index is not string
+         else pg_validation_etcd_endpoint_index | trim | from_yaml }}

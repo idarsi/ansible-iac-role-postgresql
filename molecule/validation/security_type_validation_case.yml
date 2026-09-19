@@ -1,0 +1,53 @@
+---
+- name: "Check the native type of {{ pg_security_type_case.name }}"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (pg_security_type_case.security_profile is string)
+        == (pg_security_type_case.profile_type == "string")
+      - >-
+        (pg_security_type_case.security_ssl is string)
+        == (pg_security_type_case.ssl_type == "string")
+    fail_msg: >-
+      The {{ pg_security_type_case.name }} fixture did not preserve its intended
+      native YAML types; quote safe/off when a string is required.
+
+- name: "Validate {{ pg_security_type_case.name }}"
+  block:
+    - name: "Applying {{ pg_security_type_case.name }} security fixture"
+      ansible.builtin.include_role:
+        name: ansible-iac-role-postgresql
+      vars:
+        iac_blueprint:
+          postgresql:
+            - version: 17
+              clusters:
+                - name: "security-type-{{ pg_security_type_case.name }}"
+                  provider: "standalone"
+                  members:
+                    - host: "instance-idarsi-validation"
+                      instance: "main"
+                      name: "main"
+              instances:
+                - name: "main"
+                  cluster: "security-type-{{ pg_security_type_case.name }}"
+                  security_profile: "{{ pg_security_type_case.security_profile }}"
+                  security_ssl: "{{ pg_security_type_case.security_ssl }}"
+    - name: "Fail if invalid {{ pg_security_type_case.name }} was accepted"
+      ansible.builtin.fail:
+        msg: "Invalid security type fixture {{ pg_security_type_case.name }} was accepted"
+      when: pg_security_type_case.expected_failure
+  rescue:
+    - name: "Check actionable failure for {{ pg_security_type_case.name }}"
+      ansible.builtin.assert:
+        that:
+          - pg_security_type_case.expected_failure
+          - ansible_failed_result is defined
+          - >-
+            "security_profile and security_ssl must be strings" in
+            (ansible_failed_result | to_nice_json)
+          - >-
+            "safe or off" in (ansible_failed_result | to_nice_json)
+        fail_msg: >-
+          {{ pg_security_type_case.name }} did not fail with the native security
+          type validation message.

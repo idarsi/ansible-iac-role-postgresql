@@ -48,8 +48,8 @@ servers:
                   access:
                     - name: myuser
                       address: 10.89.0.1/32
-                      type: host
-                      method: scram-sha-256
+                      type: "hostssl"
+                      method: "scram-sha-256"
               roles:
                 - name: myuser
                   password: jepujee!
@@ -95,8 +95,8 @@ postgres_primary:
                   access:
                     - name: app_user
                       address: 192.168.1.0/24
-                      type: host
-                      method: scram-sha-256
+                      type: "hostssl"
+                      method: "scram-sha-256"
 
 postgres_secondary:
   hosts:
@@ -119,6 +119,12 @@ postgres_secondary:
                 replication_password: changeme
                 slot_name: standby1
                 application_name: pg-standby-1
+                sslrootcert: "/var/lib/pgsql/17/data/primary-root-ca.crt"
+                # Clearly fake, non-secret example source; install the real
+                # CA at this path before running the standby configuration.
+                sslrootcert_src: "/etc/pki/tls/certs/example.invalid-primary-ca.crt"
+                primary_certificate_subject_alt_names:
+                  - "192.168.1.10"
               databases:
                 - name: appdb
                   extensions:

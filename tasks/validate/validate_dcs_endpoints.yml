@@ -1,0 +1,96 @@
+---
+- name: "Initializing normalized DCS endpoint models"
+  ansible.builtin.set_fact:
+    pg_dcs_endpoint_model: []
+    pg_dcs_proxy_model: []
+    pg_validation_dcs_effective_scheme: >-
+      {{ 'https' if pg_validation_cluster_record.dcs.provider == 'etcd3'
+         and (((pg_validation_cluster_record.dcs.etcd | default({})).tls | default({})).enabled
+              | default(false) | bool) else 'http' }}
+
+- name: "Normalizing DCS server endpoints"
+  ansible.builtin.include_tasks: normalize_dcs_endpoint.yml
+  loop: "{{ pg_validation_cluster_record.dcs.endpoints }}"
+  loop_control:
+    loop_var: pg_validation_dcs_endpoint
+
+- name: "Validating the optional DCS proxy"
+  ansible.builtin.include_tasks: validate_dcs_proxy.yml
+  when: pg_validation_cluster_record.dcs.proxy is defined
+
+- name: "Checking provider-specific DCS endpoint support"
+  ansible.builtin.assert:
+    that:
+      - >-
+        pg_validation_cluster_record.dcs.provider == 'etcd3'
+        or 'https' not in pg_dcs_endpoint_schemes
+      - >-
+        pg_validation_cluster_record.dcs.provider == 'etcd3'
+        or pg_dcs_proxy_model is not mapping
+    fail_msg: >-
+      HTTPS DCS endpoints and proxies are supported by this role only for the
+      etcd3 provider, which uses the etcd client TLS model. Consul and
+      Kubernetes TLS settings are not managed; use HTTP for those providers or
+      configure their TLS model in a role version that supports it. DCS proxy
+      settings are likewise supported only for etcd3.
+  vars:
+    pg_dcs_endpoint_schemes: >-
+      {{ pg_dcs_endpoint_model | map(attribute='scheme') | list
+         + ([pg_dcs_proxy_model.scheme] if pg_dcs_proxy_model is mapping else []) }}
+
+- name: "Checking DCS endpoint schemes are uniform and TLS-compatible"
+  ansible.builtin.assert:
+    that:
+      - pg_dcs_endpoint_schemes | unique | length == 1
+      - pg_dcs_endpoint_schemes | difference(['http', 'https']) | length == 0
+      - >-
+        pg_dcs_endpoint_schemes[0] != 'https'
+        or (
+          pg_validation_cluster_record.dcs.provider == 'etcd3'
+          and (((pg_validation_cluster_record.dcs.etcd | default({})).tls | default({})).enabled | default(false) | bool)
+        )
+    fail_msg: >-
+      All DCS endpoints and the optional proxy must use one supported scheme.
+      For etcd3, HTTPS requires enabled, configured DCS TLS; HTTP must not
+      render TLS. Consul and Kubernetes HTTPS endpoints are rejected because
+      their provider-specific TLS models are not managed by this role.
+  vars:
+    pg_dcs_endpoint_schemes: >-
+      {{ (pg_dcs_endpoint_model | map(attribute='scheme') | list)
+         + ([pg_dcs_proxy_model.scheme] if pg_dcs_proxy_model is mapping else []) }}
+
+- name: "Publishing the version and cluster keyed DCS model"
+  ansible.builtin.set_fact:
+    pg_dcs_models_by_cluster: >-
+      {{ (pg_dcs_models_by_cluster | default({})) | combine({
+        (pg_validation_version_record.version | string) ~ ':' ~ pg_validation_cluster_record.name:
+         {'provider': pg_validation_cluster_record.dcs.provider,
+          'servers': pg_dcs_endpoint_model, 'proxy': pg_dcs_proxy_model | default(None),
+         'protocol': (pg_dcs_endpoint_model | first).protocol}
+      }) }}
+    pg_dcs_endpoints_normalized: "{{ pg_dcs_endpoint_model | map(attribute='rendered_endpoint') | list }}"
+
+- name: "Checking rendered DCS addresses are covered by SAN identities"
+  ansible.builtin.assert:
+    that:
+      - pg_normalized_dcs_endpoint.port is integer
+      - pg_normalized_dcs_endpoint.canonical_host in pg_normalized_dcs_endpoint.san_identities
+      - pg_normalized_dcs_endpoint.rendered_endpoint is string
+      - pg_normalized_dcs_endpoint.rendered_endpoint | length > 0
+    fail_msg: >-
+      Rendered DCS endpoint {{ pg_normalized_dcs_endpoint.rendered_endpoint }}
+      is not covered by its normalized SAN model
+  loop: "{{ pg_dcs_endpoint_model }}"
+  loop_control:
+    loop_var: pg_normalized_dcs_endpoint
+
+- name: "Checking normalized etcd3 proxy identity is covered by its SAN model"
+  ansible.builtin.assert:
+    that:
+      - pg_dcs_proxy_model.port is integer
+      - pg_dcs_proxy_model.canonical_host in pg_dcs_proxy_model.san_identities
+      - pg_dcs_proxy_model.san_identities | length > 0
+    fail_msg: "The normalized etcd3 DCS proxy host must be covered by its SAN model"
+  when:
+    - pg_validation_cluster_record.dcs.provider == 'etcd3'
+    - pg_dcs_proxy_model is mapping

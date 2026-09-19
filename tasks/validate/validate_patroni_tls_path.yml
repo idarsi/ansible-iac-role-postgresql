@@ -1,0 +1,29 @@
+---
+- name: "Initializing canonical Patroni TLS path records"
+  ansible.builtin.set_fact:
+    pg_patroni_tls_canonical_paths: []
+
+- name: "Checking explicit Patroni TLS path syntax"
+  ansible.builtin.include_tasks: normalize_path.yml
+  loop: "{{ pg_patroni_tls_path_records }}"
+  loop_control:
+    loop_var: pg_patroni_tls_path_record
+  vars:
+    pg_path_normalize_input: "{{ pg_patroni_tls_path_record.path }}"
+    pg_path_normalize_result_fact: "pg_patroni_tls_canonical_path"
+    pg_path_normalize_accumulator: "pg_patroni_tls_canonical_paths"
+    pg_path_normalize_label: "Patroni TLS {{ pg_patroni_tls_path_name }}"
+    pg_patroni_tls_path_name: "{{ pg_patroni_tls_path_record.name }}"
+
+- name: "Checking canonical Patroni TLS file paths are distinct"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (pg_patroni_tls_canonical_paths | unique | length)
+        == (pg_patroni_tls_canonical_paths | length)
+    fail_msg: >-
+      Patroni TLS cafile, certfile, and keyfile must resolve to three distinct
+      canonical file paths
+  when: >-
+    (pg_patroni_tls_path_records | map(attribute='name') | list)
+    | intersect(['cafile', 'certfile', 'keyfile']) | length == 3

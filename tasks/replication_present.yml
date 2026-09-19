@@ -32,6 +32,10 @@
     pg_replication_application_name: "{{ pg_replication.application_name | default(inventory_hostname) }}"
     pg_replication_hba_type_effective: "{{ pg_replication.hba_type | default(pg_replication_hba_type) }}"
     pg_replication_hba_method_effective: "{{ pg_replication.hba_method | default(pg_replication_hba_method) }}"
+    pg_replication_sslmode_effective: "{{ pg_replication.sslmode | default(pg_replication_sslmode) }}"
+    pg_replication_sslrootcert_effective: "{{ pg_replication.sslrootcert | default(pg_replication_sslrootcert) }}"
+    pg_replication_sslrootcert_content_effective: "{{ pg_replication.sslrootcert_content | default(pg_replication_sslrootcert_content) }}"
+    pg_replication_sslrootcert_src_effective: "{{ pg_replication.sslrootcert_src | default('') }}"
     pg_replication_wal_level_effective: "{{ pg_replication.wal_level | default(pg_replication_wal_level) }}"
     pg_replication_max_wal_senders_effective: "{{ pg_replication.max_wal_senders | default(pg_replication_max_wal_senders) }}"
     pg_replication_max_replication_slots_effective: "{{ pg_replication.max_replication_slots | default(pg_replication_max_replication_slots) }}"
@@ -40,6 +44,23 @@
     pg_replication_reinitialize_effective: "{{ pg_replication.reinitialize | default(pg_replication_reinitialize) | bool }}"
     pg_data_directory: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}"
     pg_service_name: "postgresql-{{ pg_version }}-{{ pg_instance }}.service"
+  when: pg_replication is defined
+
+- name: "Setting durable replication connection values"
+  ansible.builtin.set_fact:
+    pg_replication_pgpass_path: "{{ pg_data_directory }}/.pgpass"
+    pg_replication_pgpass_line: >-
+      *:*:*:{{ pg_replication_user | replace("\\", "\\\\") | replace(":", "\\:") }}:{{ pg_replication_password | replace("\\", "\\\\") | replace(":", "\\:") }}
+    pg_replication_primary_conninfo: >-
+      host={{ pg_replication_primary_host }} port={{ pg_replication_primary_port }}
+      user={{ pg_replication_user }} application_name={{ pg_replication_application_name }}
+      passfile={{ pg_data_directory }}/.pgpass sslmode={{ pg_replication_sslmode_effective }}
+      sslrootcert={{ pg_replication_sslrootcert_effective }}
+  when: pg_replication is defined
+
+- name: "Setting durable standby pgpass path"
+  ansible.builtin.set_fact:
+    pg_replication_pgpass_path: "{{ pg_data_directory }}/.pgpass"
   when: pg_replication is defined
 
 - name: "Checking if required replication variables are defined"
@@ -54,6 +75,126 @@
 - name: "Validating replication configuration if defined"
   ansible.builtin.include_tasks: validate/validate_replication_record.yml
   when: pg_replication_enabled | default(false)
+
+- name: "Rejecting unsafe replication CA destination path"
+  ansible.builtin.assert:
+    that:
+      - pg_replication_sslrootcert_effective is match('^/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$')
+      - pg_replication_sslrootcert_effective.split('/') | select('equalto', '.') | list | length == 0
+      - pg_replication_sslrootcert_effective.split('/') | select('equalto', '..') | list | length == 0
+    fail_msg: "Replication sslrootcert must be a normalized absolute path without dot components"
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
+
+- name: "Checking replication CA destination parent is safe"
+  ansible.builtin.stat:
+    path: "{{ pg_replication_sslrootcert_effective | dirname }}"
+    follow: false
+  register: pg_replication_ca_destination_parent
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
+
+- name: "Rejecting unsafe replication CA destination"
+  ansible.builtin.assert:
+    that:
+      - pg_replication_sslrootcert_effective is match('^/[A-Za-z0-9_./-]+$')
+      - pg_replication_sslrootcert_effective not in ['/', '/etc', '/usr', '/var', '/tmp', '/home']
+      - pg_replication_ca_destination_parent.stat.exists
+      - pg_replication_ca_destination_parent.stat.isdir
+      - not (pg_replication_ca_destination_parent.stat.islnk | default(false))
+    fail_msg: "Replication sslrootcert must be a safe file below an existing non-symlink directory"
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
+
+- name: "Checking replication CA destination itself is not a symlink"
+  ansible.builtin.stat:
+    path: "{{ pg_replication_sslrootcert_effective }}"
+    follow: false
+  register: pg_replication_ca_destination_stat
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
+
+- name: "Rejecting pre-existing symlink at replication CA destination"
+  ansible.builtin.assert:
+    that:
+      - not (pg_replication_ca_destination_stat.stat.islnk | default(false))
+    fail_msg: "Replication sslrootcert destination must not be a symlink"
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
+
+- name: "Checking every replication CA destination component"
+  ansible.builtin.command:
+    argv:
+      - namei
+      - -mo
+      - "{{ pg_replication_sslrootcert_effective | dirname }}"
+  register: pg_replication_ca_destination_components
+  changed_when: false
+  failed_when: false
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
+
+- name: "Rejecting symlinked replication CA destination components"
+  ansible.builtin.assert:
+    that:
+      - pg_replication_ca_destination_components.rc == 0
+      - pg_replication_ca_destination_components.stdout is not search(' -> ')
+    fail_msg: "Replication sslrootcert destination or one of its parent components must not be symlinked"
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
+
+- name: "Checking standby replication CA source before host mutation"
+  ansible.builtin.stat:
+    path: "{{ pg_replication_sslrootcert_src_effective }}"
+    follow: false
+  delegate_to: localhost
+  register: pg_replication_ca_source_stat
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
+    - pg_replication_sslrootcert_src_effective | length > 0
+
+- name: "Requiring standby replication CA source ownership and permissions"
+  ansible.builtin.assert:
+    that:
+      - pg_replication_ca_source_stat.stat.exists
+      - pg_replication_ca_source_stat.stat.isreg | default(false)
+      - not (pg_replication_ca_source_stat.stat.islnk | default(false))
+      - pg_replication_ca_source_stat.stat.uid | default(-1) == 0
+      - (pg_replication_ca_source_stat.stat.mode | default('')) is match(pg_secure_source_mode_regex)
+    fail_msg: "Replication CA source must be a root-owned, non-symlink regular file with owner-readable mode and no group/other write"
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
+    - pg_replication_sslrootcert_src_effective | length > 0
+
+- name: "Reading standby replication CA source with descriptor-safe reader"
+  ansible.builtin.command:
+    argv:
+      - "{{ pg_replication_python_executable }}"
+      - "{{ role_path }}/files/read_secure_metadata.py"
+      - "--uid"
+      - "0"
+      - "--mode"
+      - "{{ pg_replication_ca_source_stat.stat.mode }}"
+      - "--raw"
+      - "{{ pg_replication_sslrootcert_src_effective }}"
+  delegate_to: localhost
+  register: pg_replication_ca_source_content
+  changed_when: false
+  no_log: true
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
+    - pg_replication_sslrootcert_content_effective | length == 0
+    - pg_replication_sslrootcert_src_effective | length > 0
 
 ###############################################################################
 # PRIMARY REPLICATION PREREQUISITES
@@ -215,36 +356,247 @@
     - pg_replication_role == 'standby'
     - pg_replication_reinitialize_effective or not pg_standby_data_directory.stat.exists
 
-- name: "Setting pg_basebackup command"
+- name: "Setting pg_basebackup arguments"
   ansible.builtin.set_fact:
-    pg_cli_command: >-
-      /usr/pgsql-{{ pg_version }}/bin/pg_basebackup
-      -h {{ pg_replication_primary_host }}
-      -p {{ pg_replication_primary_port }}
-      -D {{ pg_data_directory }}
-      -U {{ pg_replication_user }}
-      -X stream
-      -R
-      {% if pg_replication_slot_name | length > 0 %}-S {{ pg_replication_slot_name }}{% endif %}
+    pg_basebackup_argv: >-
+      {{ [
+        '/usr/pgsql-' ~ pg_version ~ '/bin/pg_basebackup', '-h', pg_replication_primary_host,
+        '-p', pg_replication_primary_port | string, '-D', pg_data_directory, '-U', pg_replication_user,
+        '--dbname', 'host=' ~ pg_replication_primary_host ~ ' port=' ~ (pg_replication_primary_port | string)
+         ~ ' user=' ~ pg_replication_user
+           ~ ' sslmode=' ~ pg_replication_sslmode_effective ~ ' sslrootcert=' ~ pg_replication_sslrootcert_effective, '-X', 'stream', '-R'
+      ] + (['-S', pg_replication_slot_name] if pg_replication_slot_name | length > 0 else []) }}
   when:
     - pg_replication_enabled | default(false)
     - pg_replication_role == 'standby'
     - pg_replication_reinitialize_effective or not pg_standby_data_directory.stat.exists
 
-- name: "Running pg_basebackup for standby"
-  become: true
-  become_user: "{{ pg_os_user }}"
-  ansible.builtin.command: "{{ pg_cli_command }}"
-  environment:
-    PGAPPNAME: "{{ pg_replication_application_name }}"
-    PGPASSWORD: "{{ pg_replication_password }}"
-  register: pg_basebackup_result
-  changed_when: pg_basebackup_result.rc == 0
+- name: "Checking standby replication TLS contract"
+  ansible.builtin.assert:
+    that:
+      - pg_replication_sslmode_effective == 'verify-full'
+      - pg_replication_sslrootcert_effective is match('^/')
+    fail_msg: "Standby replication requires sslmode=verify-full and an absolute sslrootcert"
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
+
+- name: "Installing managed standby replication CA certificate from content"
+  ansible.builtin.copy:
+    content: "{{ pg_replication_sslrootcert_content_effective }}"
+    dest: "{{ pg_replication_sslrootcert_effective }}"
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0600"
   no_log: true
   when:
     - pg_replication_enabled | default(false)
     - pg_replication_role == 'standby'
+    - pg_replication_sslrootcert_content_effective | length > 0
+
+- name: "Installing managed standby replication CA certificate from source"
+  ansible.builtin.copy:
+    content: "{{ pg_replication_ca_source_content.stdout }}"
+    dest: "{{ pg_replication_sslrootcert_effective }}"
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0600"
+  no_log: true
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
+    - pg_replication_sslrootcert_content_effective | length == 0
+    - pg_replication_sslrootcert_src_effective | length > 0
+
+- name: "Checking standby replication CA certificate"
+  ansible.builtin.stat:
+    path: "{{ pg_replication_sslrootcert_effective }}"
+  register: pg_replication_sslrootcert_stat
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
     - pg_replication_reinitialize_effective or not pg_standby_data_directory.stat.exists
+
+- name: "Requiring standby replication CA certificate"
+  ansible.builtin.assert:
+    that:
+      - pg_replication_sslrootcert_stat.stat.exists
+      - pg_replication_sslrootcert_stat.stat.isreg
+    fail_msg: "Standby replication sslrootcert must point to an existing regular CA certificate"
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
+    - pg_replication_reinitialize_effective or not pg_standby_data_directory.stat.exists
+
+- name: "Bootstrapping standby with a temporary pgpass"
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
+    - pg_replication_reinitialize_effective or not pg_standby_data_directory.stat.exists
+  block:
+    - name: "Creating temporary secure pgpass outside standby target"
+      ansible.builtin.tempfile:
+        path: "/tmp"
+        state: file
+        prefix: "postgresql-bootstrap-"
+      register: pg_replication_bootstrap_pgpass
+      become: true
+      become_user: "{{ pg_os_user }}"
+
+    - name: "Writing temporary bootstrap pgpass"
+      ansible.builtin.copy:
+        content: "{{ pg_replication_pgpass_line }}\n"
+        dest: "{{ pg_replication_bootstrap_pgpass.path }}"
+        owner: "{{ pg_os_user }}"
+        group: "{{ pg_os_group }}"
+        mode: "0600"
+      no_log: true
+
+    - name: "Checking temporary bootstrap pgpass permissions"
+      ansible.builtin.stat:
+        path: "{{ pg_replication_bootstrap_pgpass.path }}"
+        follow: false
+      register: pg_replication_bootstrap_pgpass_stat
+      become: true
+      become_user: "root"
+
+    - name: "Requiring restrictive temporary bootstrap pgpass permissions"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_bootstrap_pgpass_stat.stat.isreg
+          - pg_replication_bootstrap_pgpass_stat.stat.mode == '0600'
+        fail_msg: "Temporary PostgreSQL bootstrap credentials must be a regular mode-0600 file"
+      no_log: true
+
+    - name: "Running pg_basebackup for standby"
+      become: true
+      become_user: "{{ pg_os_user }}"
+      ansible.builtin.command:
+        argv: "{{ pg_basebackup_argv }}"
+      environment:
+        PGAPPNAME: "{{ pg_replication_application_name }}"
+        PGPASSFILE: "{{ pg_replication_bootstrap_pgpass.path }}"
+      register: pg_basebackup_result
+      changed_when: pg_basebackup_result.rc == 0
+      no_log: true
+  always:
+    - name: "Securely removing temporary standby bootstrap pgpass"
+      become: true
+      become_user: "root"
+      ansible.builtin.command:
+        argv:
+          - shred
+          - --remove=unlink
+          - --zero
+          - "{{ pg_replication_bootstrap_pgpass.path }}"
+      register: pg_replication_bootstrap_pgpass_cleanup
+      changed_when: pg_replication_bootstrap_pgpass_cleanup.rc == 0
+      failed_when: false
+      no_log: true
+      when:
+        - pg_replication_bootstrap_pgpass is defined
+        - pg_replication_bootstrap_pgpass.path is defined
+
+    - name: "Removing bootstrap pgpass when secure shredding is unavailable"
+      become: true
+      become_user: "root"
+      ansible.builtin.file:
+        path: "{{ pg_replication_bootstrap_pgpass.path }}"
+        state: absent
+      register: pg_replication_bootstrap_pgpass_fallback_cleanup
+      failed_when: false
+      no_log: true
+      when:
+        - pg_replication_bootstrap_pgpass_cleanup is defined
+        - pg_replication_bootstrap_pgpass_cleanup.rc != 0
+        - pg_replication_bootstrap_pgpass is defined
+        - pg_replication_bootstrap_pgpass.path is defined
+
+    - name: "Checking temporary standby bootstrap pgpass was removed"
+      ansible.builtin.stat:
+        path: "{{ pg_replication_bootstrap_pgpass.path }}"
+        follow: false
+      register: pg_replication_bootstrap_pgpass_after_cleanup
+      failed_when: false
+      no_log: true
+      when:
+        - pg_replication_bootstrap_pgpass is defined
+        - pg_replication_bootstrap_pgpass.path is defined
+
+    - name: "Reporting temporary bootstrap pgpass cleanup failure safely"
+      ansible.builtin.assert:
+        that:
+          - not pg_replication_bootstrap_pgpass_after_cleanup.stat.exists
+        fail_msg: "Temporary PostgreSQL bootstrap credential cleanup failed; no credential contents were logged"
+      when:
+        - pg_replication_bootstrap_pgpass_after_cleanup is defined
+- name: "Reconciling durable standby pgpass"
+  ansible.builtin.stat:
+    path: "{{ pg_replication_pgpass_path }}"
+    follow: false
+  register: pg_replication_pgpass_stat
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
+
+- name: "Rejecting symlinked durable standby pgpass"
+  ansible.builtin.assert:
+    that:
+      - not (pg_replication_pgpass_stat.stat.islnk | default(false))
+    fail_msg: "Standby pgpass destination must not be a symlink"
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
+
+- name: "Checking every durable pgpass parent component"
+  ansible.builtin.command:
+    argv:
+      - namei
+      - -mo
+      - "{{ pg_data_directory }}"
+  register: pg_replication_pgpass_parent_check
+  changed_when: false
+  failed_when: false
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
+
+- name: "Rejecting unsafe durable pgpass parent components"
+  ansible.builtin.assert:
+    that:
+      - pg_data_directory is match('^/')
+      - pg_replication_pgpass_parent_check.rc == 0
+      - pg_replication_pgpass_parent_check.stdout is not search(' -> ')
+    fail_msg: "PostgreSQL data directory or one of its parent components is missing or symlinked"
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
+
+- name: "Reconciling durable standby pgpass"
+  ansible.builtin.copy:
+    content: "{{ pg_replication_pgpass_line }}\n"
+    dest: "{{ pg_replication_pgpass_path }}"
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0600"
+  no_log: true
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
+
+- name: "Reconciling durable standby primary_conninfo"
+  ansible.builtin.lineinfile:
+    path: "{{ pg_data_directory }}/postgresql.auto.conf"
+    regexp: '^primary_conninfo\\s*='
+    line: "primary_conninfo = '{{ pg_replication_primary_conninfo | replace(\"'\", \"''\") }}'"
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0600"
+    create: true
+  no_log: true
+  when:
+    - pg_replication_enabled | default(false)
+    - pg_replication_role == 'standby'
 
 - name: "Ensuring standby.signal exists after basebackup"
   ansible.builtin.stat:

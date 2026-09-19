@@ -1,18 +1,235 @@
 ---
+- name: Discover and validate the shared container network
+  hosts: instance-idarsi-rl9-primary:instance-idarsi-rl9-standby
+  gather_facts: true
+  become: false
+  vars:
+    primary_host: "instance-idarsi-rl9-primary"
+    standby_host: "instance-idarsi-rl9-standby"
+    pg_replication_network_name: "podman"
+    pg_replication_podman_executable: >-
+      {{ lookup('env', 'MOLECULE_PODMAN_EXECUTABLE') | default(
+         lookup('pipe', 'command -v podman') | trim, true) }}
+    pg_replication_network_metadata_path: "/run/postgresql-replication/standby-network.json"
+    pg_replication_metadata_reader: "/usr/local/bin/read_secure_metadata.py"
+    pg_replication_external_network_subnet_fixtures: >-
+      {{ lookup('ansible.builtin.file', playbook_dir ~
+         '/../../scripts/fixtures/replication_external_network_subnets.json') | from_json }}
+    pg_replication_invalid_external_network_cases: >-
+      {{ lookup('ansible.builtin.file', playbook_dir ~
+         '/../../scripts/fixtures/replication_external_network_invalid_values.json') | from_json }}
+  tasks:
+    - name: "Install the descriptor-based secure file reader on the primary"
+      become: true
+      ansible.builtin.copy:
+        content: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../../files/read_secure_metadata.py') }}"
+        dest: "{{ pg_replication_metadata_reader }}"
+        owner: root
+        group: root
+        mode: "0700"
+      delegate_to: "{{ primary_host }}"
+      run_once: true
+    - name: "Create the run-scoped metadata directory on the primary"
+      become: true
+      ansible.builtin.file:
+        path: "{{ pg_replication_network_metadata_path | dirname }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      delegate_to: "{{ primary_host }}"
+      run_once: true
+
+    - name: "Inspect the run-scoped network metadata path on the primary"
+      ansible.builtin.stat:
+        path: "{{ pg_replication_network_metadata_path }}"
+        follow: false
+      delegate_to: "{{ primary_host }}"
+      register: pg_replication_old_metadata
+      run_once: true
+
+    - name: "Refuse an unexpected existing network metadata file"
+      ansible.builtin.assert:
+        that:
+          - not pg_replication_old_metadata.stat.exists
+          - not (pg_replication_old_metadata.stat.islnk | default(false))
+        fail_msg: >-
+          The run-scoped replication network metadata path must not already
+          exist (and must never be a symlink)
+      run_once: true
+
+    - name: "Require the primary host in inventory"
+      ansible.builtin.assert:
+        that:
+          - primary_host in groups['all']
+        fail_msg: "The configured primary host must be present in inventory"
+
+    - name: "Inspect the configured external replication network subnets"
+      ansible.builtin.command:
+        argv:
+          - "{{ pg_replication_podman_executable }}"
+          - network
+          - inspect
+          - "{{ pg_replication_network_name }}"
+          - --format
+          - "{{ '{{json .Subnets}}' }}"
+      delegate_to: localhost
+      register: pg_replication_subnets
+      changed_when: false
+      run_once: true
+
+    - name: "Inspect this container on the configured external network"
+      ansible.builtin.command:
+        argv:
+          - "{{ pg_replication_podman_executable }}"
+          - container
+          - inspect
+          - "{{ inventory_hostname }}"
+          - --format
+          - "{{ '{{json .NetworkSettings.Networks}}' }}"
+      delegate_to: localhost
+      register: pg_replication_container_network
+      changed_when: false
+
+    - name: "Parse the external-network inspection results"
+      ansible.builtin.set_fact:
+        pg_replication_container_network_data: "{{ pg_replication_container_network.stdout | from_json }}"
+        pg_replication_subnets_data: "{{ pg_replication_subnets.stdout | from_json }}"
+
+    - name: "Validate the external-network inspection structure before indexing"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_container_network_data is mapping
+          - pg_replication_subnets_data | type_debug == "list"
+        fail_msg: >-
+          The configured external replication network returned an incomplete or
+          ambiguous Podman structure; exactly one subnet is required
+
+    - name: "Validate the inspected network keys and subnet count before indexing"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_container_network_data.keys() | list | sort == ["podman"]
+          - pg_replication_subnets_data | length == 1
+        fail_msg: >-
+          The configured external replication network must expose only podman
+          and exactly one subnet
+
+    - name: "Validate the inspected Podman network keys before indexing"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_container_network_data["podman"] is mapping
+          - >-
+            "IPAddress" in pg_replication_container_network_data["podman"]
+        fail_msg: "The inspected Podman network must contain a podman.IPAddress value"
+
+    - name: "Validate the selected subnet structure before indexing"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_subnets_data | first is mapping
+          - >-
+            "subnet" in (pg_replication_subnets_data | first)
+          - >-
+            "Subnet" not in (pg_replication_subnets_data | first)
+        fail_msg: "The inspected Podman network must contain exactly one subnet mapping"
+
+    - name: "Build invalid external-network cases from subnet-count fixtures"
+      ansible.builtin.set_fact:
+        pg_replication_invalid_external_network_cases: >-
+          {{ pg_replication_invalid_external_network_cases | combine({
+             'zero_subnets': {'ipv4': '10.88.0.2',
+                              'subnets': pg_replication_external_network_subnet_fixtures.zero,
+                              'expected_message': 'exactly one subnet'},
+             'multiple_subnets': {'ipv4': '10.88.0.2',
+                                  'subnets': pg_replication_external_network_subnet_fixtures.multiple,
+                                   'expected_message': 'exactly one subnet'}
+           }) | combine(pg_replication_invalid_external_network_cases) }}
+
+    - name: "Exercise invalid external-network values in the actual validation path"
+      ansible.builtin.include_tasks: validate_external_network_invalid_case.yml
+      loop: "{{ pg_replication_invalid_external_network_cases | dict2items }}"
+      loop_control:
+        loop_var: pg_replication_invalid_network_case
+      vars:
+        pg_replication_external_case: >-
+          {{ pg_replication_invalid_network_case.value | combine(
+             {'name': pg_replication_invalid_network_case.key}) }}
+
+    - name: "Require every invalid external-network fixture case to be rejected"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_invalid_external_network_outcomes is defined
+          - pg_replication_invalid_external_network_outcomes | length == pg_replication_invalid_external_network_cases | length
+          - >-
+            pg_replication_invalid_external_network_outcomes |
+            selectattr('rejected', 'equalto', true) | list | length ==
+            pg_replication_invalid_external_network_cases | length
+        fail_msg: >-
+          One or more invalid external-network fixture cases were accepted:
+          {{ pg_replication_invalid_external_network_outcomes | default([]) }}
+
+    - name: "Require expected messages for invalid external-network cases"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_invalid_outcome.rejected
+          - >-
+            pg_replication_invalid_outcome.observed_messages
+            | select('search', pg_replication_invalid_outcome.expected_message | regex_escape)
+            | list | length > 0
+          - pg_replication_invalid_outcome.observed_messages | length > 0
+          - >-
+            pg_replication_invalid_outcome.observed_messages
+            | reject('search', '(?i)(one or more items failed|included task.*failed|include.*failed)')
+            | list | length == pg_replication_invalid_outcome.observed_messages | length
+          - pg_replication_invalid_outcome.published_facts == pg_replication_invalid_outcome.expected_published_facts
+        fail_msg: >-
+          Invalid external-network case {{ pg_replication_invalid_outcome.name }}
+          returned an unexpected message or published facts:
+          {{ pg_replication_invalid_outcome.observed_messages }}
+          {{ pg_replication_invalid_outcome.published_facts }}
+      loop: "{{ pg_replication_invalid_external_network_outcomes }}"
+      loop_control:
+        loop_var: pg_replication_invalid_outcome
+
+    - name: "Validate and publish the valid external-network case"
+      ansible.builtin.include_tasks: validate_external_network_case.yml
+      vars:
+        pg_replication_external_network_case:
+          name: "valid"
+          ipv4: "{{ pg_replication_container_network_data['podman'].get('IPAddress') }}"
+          subnets: "{{ pg_replication_subnets_data }}"
+
+    - name: "Persisting non-secret standby network metadata on the primary"
+      become: true
+      ansible.builtin.copy:
+        content: >-
+          {{ {'standby_host': standby_host, 'network': 'podman',
+              'address': pg_replication_external_ipv4,
+              'cidr': pg_replication_external_ipv4 ~ '/32',
+              'network_cidr': pg_replication_external_subnet} | to_nice_json }}
+        dest: "{{ pg_replication_network_metadata_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      delegate_to: "{{ primary_host }}"
+      when: inventory_hostname == standby_host
+
 - name: Converge primary
   hosts: instance-idarsi-rl9-primary
   become: false
   vars:
-    ansible_become_method: su
     state: present
     pg_lang: "en"
     pg_locale: "US"
     pg_disable_postgresql_module: false
+    pg_replication_network_metadata_path: "/run/postgresql-replication/standby-network.json"
+    pg_replication_metadata_reader: "/usr/local/bin/read_secure_metadata.py"
     iac_blueprint:
       postgresql:
         - version: 17
           instances:
             - name: main
+              certificate_subject_alt_names:
+                - instance-idarsi-rl9-primary
               security_profile: safe
               configuration:
                 listen_addresses: "*"
@@ -23,7 +240,7 @@
                 replication_user: replicator
                 replication_password: replicate_me
                 allowed_standby_addresses:
-                  - 0.0.0.0/0
+                  - "{{ pg_replication_metadata.cidr }}"
                 slot_name: standby1
               roles:
                 - name: app_user
@@ -34,48 +251,118 @@
                   owner: app_user
                   extensions:
                     - name: plpython3u
-                  access:
-                    - name: app_user
-                      address: 10.0.0.1/32
-                      type: host
-                      method: scram-sha-256
+  pre_tasks:
+    - name: "Inspect persisted metadata parent before reading it"
+      become: true
+      ansible.builtin.stat:
+        path: "{{ pg_replication_network_metadata_path | dirname }}"
+        follow: false
+      register: pg_replication_metadata_parent_stat
+      no_log: true
+    - name: "Inspect persisted standby network metadata before reading it"
+      become: true
+      ansible.builtin.stat:
+        path: "{{ pg_replication_network_metadata_path }}"
+        follow: false
+      register: pg_replication_metadata_stat
+      no_log: true
+    - name: "Require secure persisted standby network metadata"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_metadata_parent_stat.stat.isdir
+          - not (pg_replication_metadata_parent_stat.stat.islnk | default(false))
+          - pg_replication_metadata_stat.stat.isreg
+          - not (pg_replication_metadata_stat.stat.islnk | default(false))
+          - pg_replication_metadata_stat.stat.pw_name == "root"
+          - pg_replication_metadata_stat.stat.gr_name == "root"
+          - pg_replication_metadata_stat.stat.mode == "0600"
+        fail_msg: "Persisted standby metadata must be a root-owned regular mode-0600 file below a real directory"
+      no_log: true
+    - name: "Read persisted standby network metadata before building the primary blueprint"
+      become: true
+      ansible.builtin.command:
+        argv:
+          - "{{ pg_replication_target_python_executable }}"
+          - "{{ pg_replication_metadata_reader }}"
+          - "{{ pg_replication_network_metadata_path }}"
+      register: pg_replication_metadata_file
+      changed_when: false
+      no_log: true
+    - name: "Validate persisted standby network metadata"
+      ansible.builtin.set_fact:
+        pg_replication_metadata: "{{ pg_replication_metadata_file.stdout | from_json }}"
+      no_log: true
+    - name: "Require a valid persisted standby IPv4 CIDR"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_metadata is mapping
+          - pg_replication_metadata.network_cidr is string
+          - pg_replication_metadata.network_cidr is match('^(?:[0-9]{1,3}\.){3}[0-9]{1,3}/(?:[0-9]|[1-2][0-9]|3[0-2])$')
+          - pg_replication_metadata.network_cidr | ansible.utils.ipaddr('network/prefix') == pg_replication_metadata.network_cidr
+           - pg_replication_metadata.address is ansible.utils.ipv4
+           - pg_replication_metadata.address | ansible.utils.ipaddr('unicast') == pg_replication_metadata.address
+           - pg_replication_metadata.cidr is string
+           - pg_replication_metadata.cidr == pg_replication_metadata.address ~ '/32'
+           - pg_replication_metadata.cidr is ansible.utils.ipv4
+           - pg_replication_metadata.address | ansible.utils.ipaddr(pg_replication_metadata.network_cidr)
+        fail_msg: "Persisted standby metadata must contain a valid IPv4 subnet and address"
+      no_log: true
   roles:
     - role: ansible-iac-role-postgresql
 
 - name: Configure and start primary instance
   hosts: instance-idarsi-rl9-primary
   become: false
+  pre_tasks:
+    - name: "Ensuring the fixture PostgreSQL TLS directory exists"
+      become: true
+      ansible.builtin.file:
+        path: /var/lib/pgsql/17/main/ssl
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: "0700"
+    - name: "Generating the fixture PostgreSQL private key"
+      become: true
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - genrsa
+          - -out
+          - /var/lib/pgsql/17/main/ssl/postgresql.key
+          - "2048"
+        creates: /var/lib/pgsql/17/main/ssl/postgresql.key
+      register: fixture_postgresql_key
+      changed_when: fixture_postgresql_key.rc == 0
+      no_log: true
+    - name: "Issuing a fixture CA and signing the primary certificate"
+      become: true
+      ansible.builtin.shell: |
+        set -e
+        ssl_dir=/var/lib/pgsql/17/main/ssl
+        openssl genrsa -out "$ssl_dir/fixture-ca.key" 2048
+        openssl req -new -x509 -key "$ssl_dir/fixture-ca.key" -out "$ssl_dir/ca.crt" \
+          -days 365 -subj /CN=molecule-replication-ca \
+          -addext basicConstraints=critical,CA:TRUE \
+          -addext keyUsage=critical,keyCertSign,cRLSign
+        printf 'subjectAltName=DNS:instance-idarsi-rl9-primary\n' > "$ssl_dir/fixture-server.ext"
+        openssl req -new -key "$ssl_dir/postgresql.key" -out "$ssl_dir/fixture-server.csr" \
+          -subj /CN=instance-idarsi-rl9-primary
+        openssl x509 -req -in "$ssl_dir/fixture-server.csr" -CA "$ssl_dir/ca.crt" \
+          -CAkey "$ssl_dir/fixture-ca.key" -CAcreateserial -out "$ssl_dir/postgresql.crt" \
+          -days 365 -sha256 -extfile "$ssl_dir/fixture-server.ext"
+        chown postgres:postgres "$ssl_dir/ca.crt" "$ssl_dir/postgresql.crt"
+        chmod 0644 "$ssl_dir/ca.crt"; chmod 0640 "$ssl_dir/postgresql.crt"
+      args:
+        executable: /bin/bash
+        creates: /var/lib/pgsql/17/main/ssl/postgresql.crt
+      register: fixture_postgresql_certificate
+      changed_when: fixture_postgresql_certificate.rc == 0
+      no_log: false
   vars:
-    ansible_become_method: su
     pg_lang: "en"
     pg_locale: "US"
     pg_disable_postgresql_module: false
-    iac_blueprint:
-      postgresql:
-        - version: 17
-          instances:
-            - name: main
-              security_profile: safe
-              configuration:
-                listen_addresses: "*"
-                port: 5432
-                max_connections: 50
-              replication:
-                role: primary
-                replication_user: replicator
-                replication_password: replicate_me
-                allowed_standby_addresses:
-                  - 0.0.0.0/0
-                slot_name: standby1
-              roles:
-                - name: app_user
-                  password: app_password
-                  login: true
-              databases:
-                - name: appdb
-                  owner: app_user
-                  extensions:
-                    - name: plpython3u
   roles:
     - role: ansible-iac-role-postgresql
       state: instances_present
@@ -92,6 +379,116 @@
   hosts: instance-idarsi-rl9-standby
   become: false
   pre_tasks:
+    - name: "Inspect issuing CA parent before descriptor-safe read"
+      become: true
+      ansible.builtin.stat:
+        path: /var/lib/pgsql/17/main/ssl
+        follow: false
+      delegate_to: "{{ primary_host }}"
+      register: pg_primary_certificate_parent_stat
+      run_once: true
+      no_log: true
+    - name: "Inspect issuing CA before descriptor-safe read"
+      become: true
+      ansible.builtin.stat:
+        path: /var/lib/pgsql/17/main/ssl/ca.crt
+        follow: false
+      delegate_to: "{{ primary_host }}"
+      register: pg_primary_certificate_stat
+      run_once: true
+      no_log: true
+    - name: "Require secure issuing CA before descriptor-safe read"
+      ansible.builtin.assert:
+        that:
+          - pg_primary_certificate_parent_stat.stat.isdir
+          - not (pg_primary_certificate_parent_stat.stat.islnk | default(false))
+          - pg_primary_certificate_stat.stat.isreg
+          - not (pg_primary_certificate_stat.stat.islnk | default(false))
+          - pg_primary_certificate_stat.stat.pw_name == "postgres"
+          - pg_primary_certificate_stat.stat.mode == "0644"
+        fail_msg: "The primary issuing CA must be a postgres-owned regular mode-0644 file below a real directory"
+      no_log: true
+    - name: "Reading issuing CA certificate as the replication trust anchor"
+      ansible.builtin.command:
+        argv:
+          - "{{ pg_replication_target_python_executable }}"
+          - "{{ pg_replication_metadata_reader }}"
+          - --uid
+          - "{{ pg_primary_certificate_stat.stat.uid }}"
+          - --mode
+          - "0644"
+          - --raw
+          - /var/lib/pgsql/17/main/ssl/ca.crt
+      delegate_to: "{{ primary_host }}"
+      register: pg_primary_certificate
+      run_once: true
+      changed_when: false
+    - name: "Creating replication trust-anchor directory"
+      become: true
+      ansible.builtin.file:
+        path: /etc/postgresql-replication
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+    - name: "Persisting the primary CA through the standby secure file contract"
+      become: true
+      ansible.builtin.copy:
+        content: "{{ pg_primary_certificate.stdout }}"
+        dest: /etc/postgresql-replication/primary-ca.crt
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+    - name: "Inspect persisted primary CA parent before reading it"
+      become: true
+      ansible.builtin.stat:
+        path: /etc/postgresql-replication
+        follow: false
+      register: pg_test_primary_ca_parent_stat
+      no_log: true
+    - name: "Inspect persisted primary CA before reading it"
+      become: true
+      ansible.builtin.stat:
+        path: /etc/postgresql-replication/primary-ca.crt
+        follow: false
+      register: pg_test_primary_ca_stat
+      no_log: true
+    - name: "Require secure persisted primary CA before reading it"
+      ansible.builtin.assert:
+        that:
+          - pg_test_primary_ca_parent_stat.stat.isdir
+          - not (pg_test_primary_ca_parent_stat.stat.islnk | default(false))
+          - pg_test_primary_ca_stat.stat.isreg
+          - not (pg_test_primary_ca_stat.stat.islnk | default(false))
+          - pg_test_primary_ca_stat.stat.pw_name == "root"
+          - pg_test_primary_ca_stat.stat.gr_name == "root"
+          - pg_test_primary_ca_stat.stat.mode == "0600"
+        fail_msg: "The persisted primary CA must be a root-owned regular mode-0600 file below a real directory"
+      no_log: true
+    - name: "Read the persisted primary CA for the standby blueprint"
+      become: true
+      ansible.builtin.command:
+        argv:
+          - "{{ pg_replication_target_python_executable }}"
+          - "{{ pg_replication_metadata_reader }}"
+          - --raw
+          - /etc/postgresql-replication/primary-ca.crt
+      register: pg_test_primary_ca_file
+      changed_when: false
+      no_log: true
+    - name: "Require the persisted primary CA certificate fixture"
+      ansible.builtin.assert:
+        that:
+          - pg_test_primary_ca_file.stdout is defined
+          - pg_test_primary_ca_file.stdout | trim | length > 0
+          - >-
+            (pg_test_primary_ca_file.stdout | trim)
+            is match('^-----BEGIN CERTIFICATE-----[\s\S]+-----END CERTIFICATE-----$')
+        fail_msg: >-
+          The primary fixture must publish a non-empty CA certificate in PEM
+          format before the standby blueprint is built
+
     - name: "Building standby blueprint"
       ansible.builtin.set_fact:
         iac_blueprint:
@@ -99,6 +496,8 @@
             - version: 17
               instances:
                 - name: main
+                  certificate_subject_alt_names:
+                    - instance-idarsi-rl9-primary
                   security_profile: safe
                   configuration:
                     listen_addresses: "*"
@@ -106,18 +505,23 @@
                     max_connections: 50
                   replication:
                     role: standby
-                    primary_host: host.containers.internal
-                    primary_port: 15432
+                    primary_host: instance-idarsi-rl9-primary
+                    primary_port: 5432
                     replication_user: replicator
                     replication_password: replicate_me
                     slot_name: standby1
                     application_name: molecule-standby
+                    primary_certificate_subject_alt_names:
+                      - instance-idarsi-rl9-primary
+                    sslrootcert: /etc/postgresql-replication/primary-ca.crt
+                    sslrootcert_content: "{{ pg_test_primary_ca_file.stdout }}"
                   databases:
                     - name: appdb
                       extensions:
                         - name: plpython3u
   vars:
-    ansible_become_method: su
+    primary_host: "instance-idarsi-rl9-primary"
+    pg_replication_metadata_reader: "/usr/local/bin/read_secure_metadata.py"
     state: present
     pg_lang: "en"
     pg_locale: "US"
@@ -129,6 +533,55 @@
   hosts: instance-idarsi-rl9-standby
   become: false
   pre_tasks:
+    - name: "Inspect persisted primary CA parent before reading it"
+      become: true
+      ansible.builtin.stat:
+        path: /etc/postgresql-replication
+        follow: false
+      register: pg_test_primary_ca_parent_stat
+      no_log: true
+    - name: "Inspect persisted primary CA before reading it"
+      become: true
+      ansible.builtin.stat:
+        path: /etc/postgresql-replication/primary-ca.crt
+        follow: false
+      register: pg_test_primary_ca_stat
+      no_log: true
+    - name: "Require secure persisted primary CA before reading it"
+      ansible.builtin.assert:
+        that:
+          - pg_test_primary_ca_parent_stat.stat.isdir
+          - not (pg_test_primary_ca_parent_stat.stat.islnk | default(false))
+          - pg_test_primary_ca_stat.stat.isreg
+          - not (pg_test_primary_ca_stat.stat.islnk | default(false))
+          - pg_test_primary_ca_stat.stat.pw_name == "root"
+          - pg_test_primary_ca_stat.stat.gr_name == "root"
+          - pg_test_primary_ca_stat.stat.mode == "0600"
+        fail_msg: "The persisted primary CA must be a root-owned regular mode-0600 file below a real directory"
+      no_log: true
+    - name: "Read the persisted primary CA before building the standby blueprint"
+      become: true
+      ansible.builtin.command:
+        argv:
+          - "{{ pg_replication_target_python_executable }}"
+          - "{{ pg_replication_metadata_reader }}"
+          - --raw
+          - /etc/postgresql-replication/primary-ca.crt
+      register: pg_test_primary_ca_file
+      changed_when: false
+      no_log: true
+    - name: "Require the persisted primary CA certificate fixture"
+      ansible.builtin.assert:
+        that:
+          - pg_test_primary_ca_file.stdout is defined
+          - pg_test_primary_ca_file.stdout | trim | length > 0
+          - >-
+            (pg_test_primary_ca_file.stdout | trim)
+            is match('^-----BEGIN CERTIFICATE-----[\s\S]+-----END CERTIFICATE-----$')
+        fail_msg: >-
+          The primary fixture must publish a non-empty CA certificate in PEM
+          format before the standby bootstrap blueprint is built
+
     - name: "Building standby bootstrap blueprint"
       ansible.builtin.set_fact:
         iac_blueprint:
@@ -143,18 +596,23 @@
                     max_connections: 50
                   replication:
                     role: standby
-                    primary_host: host.containers.internal
-                    primary_port: 15432
+                    primary_host: instance-idarsi-rl9-primary
+                    primary_port: 5432
                     replication_user: replicator
                     replication_password: replicate_me
                     slot_name: standby1
                     application_name: molecule-standby
+                    primary_certificate_subject_alt_names:
+                      - instance-idarsi-rl9-primary
+                    sslrootcert: /etc/postgresql-replication/primary-ca.crt
+                    sslrootcert_content: "{{ pg_test_primary_ca_file.stdout }}"
                   databases:
                     - name: appdb
                       extensions:
                         - name: plpython3u
   vars:
-    ansible_become_method: su
+    primary_host: "instance-idarsi-rl9-primary"
+    pg_replication_metadata_reader: "/usr/local/bin/read_secure_metadata.py"
     pg_lang: "en"
     pg_locale: "US"
     pg_disable_postgresql_module: false

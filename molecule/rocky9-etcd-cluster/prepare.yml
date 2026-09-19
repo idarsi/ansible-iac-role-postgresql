@@ -59,10 +59,13 @@
         mode: "0644"
       loop:
         - /etc/etcd/pki/ca.crt
-        - /etc/etcd/pki/etcd.crt
+        - /etc/etcd/pki/etcd-client.crt
 
     - name: "Install the local etcd private key"
       ansible.builtin.copy:
         content: "{{ shared_etcd_key.content | b64decode }}"
-        dest: /etc/etcd/pki/etcd.key
+        dest: "{{ item }}"
         mode: "0644"
+      loop:
+        - /etc/etcd/pki/etcd-client.key
+        - /etc/etcd/pki/etcd-peer.key

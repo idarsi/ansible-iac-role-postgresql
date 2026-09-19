@@ -131,9 +131,10 @@ pg_replication_wal_level: "replica"
 pg_replication_max_wal_senders: 10
 pg_replication_max_replication_slots: 10
 pg_replication_wal_keep_size: "1GB"
-pg_replication_hba_type: "host"
+pg_replication_hba_type: "hostssl"
 pg_replication_hba_method: "scram-sha-256"
 pg_replication_reinitialize: false
+pg_replication_sslrootcert_content: ""
 
 ###############################################################################
 # CLUSTERING
@@ -144,20 +145,50 @@ pg_patroni_etcd_package: "patroni-etcd"
 pg_etcd_package: "etcd"
 pg_etcd_config_directory: "/etc/etcd"
 pg_etcd_config_file: "/etc/etcd/etcd.conf"
-pg_etcd_data_directory: "/var/lib/etcd"
+pg_etcd_data_directory: "/var/lib/etcd/data"
+pg_etcd_data_directory_root: "/var/lib/etcd"
+pg_etcd_metadata_directory: "/var/lib/etcd/.idarsi-managed"
+pg_etcd_data_directory_marker: "managed-etcd"
 # Required for managed etcd; define per host in inventory/host_vars.
 pg_etcd_bind_address: ""
 pg_etcd_initial_cluster_state: "new"
+# External etcd TLS material is immutable.  When TLS is externally supplied,
+# inventory must name a pre-existing shared group containing both service
+# accounts; the role only verifies that contract.
+pg_etcd_external_tls_access_group: ""
 pg_patroni_additional_packages: []
 pg_patroni_python_packages: []
 pg_patroni_python_interpreter: "{{ pg_package_module_interpreter | default('/usr/bin/python3') }}"
+# Replication's descriptor-safe helper and Molecule target use one interpreter
+# contract. The wrapper supplies REPLICATION_PYTHON_COMMAND from the shared
+# testing venv; direct Ansible runs fall back to the controller interpreter.
+pg_replication_python_executable: >-
+  {{ lookup('env', 'REPLICATION_PYTHON_COMMAND') | default(ansible_playbook_python, true) }}
 pg_patroni_reinitialize: false
 pg_patroni_config_directory: "/etc/patroni"
 pg_patroni_user: "postgres"
 pg_patroni_group: "postgres"
 pg_patroni_restapi_port: 8008
-pg_patroni_restapi_listen_address: "{{ inventory_hostname }}"
+# Advertise each member through its inventory-resolved address by default.  An
+# explicit pg_patroni_restapi_endpoint_fallback_address overrides this
+# member-derived value; both paths are normalized into the same endpoint model.
+# The listener remains loopback-only unless explicitly overridden below.
+# Keep the unauthenticated HTTP exception strictly local.  A routable REST
+# endpoint must opt into TLS (and retain the required authentication mapping).
+pg_patroni_restapi_listen_address: "127.0.0.1"
 pg_patroni_readiness_retries: 60
 pg_patroni_readiness_delay: 2
 pg_cluster_certificate_key_bits: 3072
 pg_cluster_certificate_days: 3650
+pg_cluster_certificate_seed_directory: "/var/lib/postgresql-pki-seed"
+pg_replication_sslmode: "verify-full"
+# All CA files supplied as controller-side sources use this single policy:
+# root-owned regular non-symlink files, owner-readable, and no group/other
+# write permission.  Keep this expression aligned with the runtime checks.
+pg_secure_source_mode_regex: "^0?[4-7][0145][0145]$"
+# Instance-less Patroni clusters use this explicit default for HBA validation.
+# Clusters with instances derive the profile from those instances.
+pg_patroni_default_security_profile: "safe"
+# Standby replication requires an explicitly supplied CA (content or source).
+pg_replication_sslrootcert: ""
+pg_git_cleanup_marker_filename: ".ansible-iac-role-postgresql-git-managed"

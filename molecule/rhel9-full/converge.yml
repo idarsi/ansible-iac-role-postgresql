@@ -190,6 +190,9 @@
     - name: "Checking whether PostgreSQL services are already active"
       ansible.builtin.command: >-
         systemctl list-units --type=service --state=active --no-legend 'postgresql-*.service'
+      # systemd_service cannot query active units with this wildcard; this is
+      # deliberately read-only and its result controls failed-run cleanup.
+      # noqa command-instead-of-module
       register: pg_molecule_active_service_units
       changed_when: false
       failed_when: false
@@ -215,6 +218,8 @@
       ansible.builtin.command: "umount -l /var/lib/pgsql"
       tags:
         - molecule-idempotence-notest
+      register: pg_molecule_lazy_umount_result
+      changed_when: pg_molecule_lazy_umount_result.rc == 0
       when:
         - pg_molecule_existing_bind_mount.rc == 0
         - (pg_molecule_active_service_units.stdout | default('') | trim) == ""
@@ -242,6 +247,8 @@
       ansible.builtin.command: "umount -l /tmp/pgsql16-shared"
       tags:
         - molecule-idempotence-notest
+      register: pg_molecule_version_lazy_umount_result
+      changed_when: pg_molecule_version_lazy_umount_result.rc == 0
       when:
         - pg_molecule_existing_version_bind_mount.rc == 0
         - (pg_molecule_active_service_units.stdout | default('') | trim) == ""
@@ -380,7 +387,7 @@
           - --initial-branch=main
           - /tmp/pg-molecule-source
       changed_when: true
-      when: not pg_molecule_git_source_repo.stat.exists
+      when: "not (pg_molecule_git_source_repo.stat.exists | default(false) | bool)"
 
     - name: "Configuring Molecule git source repository user email"
       ansible.builtin.command:
@@ -392,7 +399,7 @@
           - user.email
           - molecule@example.org
       changed_when: true
-      when: not pg_molecule_git_source_repo.stat.exists
+      when: "not (pg_molecule_git_source_repo.stat.exists | default(false) | bool)"
 
     - name: "Configuring Molecule git source repository user name"
       ansible.builtin.command:
@@ -404,7 +411,7 @@
           - user.name
           - Molecule Fixture
       changed_when: true
-      when: not pg_molecule_git_source_repo.stat.exists
+      when: "not (pg_molecule_git_source_repo.stat.exists | default(false) | bool)"
 
     - name: "Checking whether Molecule git source fixture commit already exists"
       ansible.builtin.command:

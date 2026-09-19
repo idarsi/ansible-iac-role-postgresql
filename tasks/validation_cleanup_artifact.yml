@@ -1,0 +1,77 @@
+---
+# Shared validation-artifact cleanup. Destroy and tamper tests call this file.
+- name: "Validate validation artifact cleanup target"
+  ansible.builtin.assert:
+    that:
+      - iac_validation_cleanup_root is match('^/[^/]')
+      - iac_validation_cleanup_root not in ['/', '/run', '/tmp']
+      - iac_validation_cleanup_root_stat.stat.isdir | default(false)
+      - not (iac_validation_cleanup_root_stat.stat.islnk | default(false))
+      - iac_validation_cleanup_root_stat.stat.pw_name == iac_validation_cleanup_owner
+      - iac_validation_cleanup_root_stat.stat.mode == iac_validation_cleanup_root_mode
+      - iac_validation_cleanup_marker.content | b64decode == iac_validation_cleanup_marker_content
+    fail_msg: "Validation artifact root is unsafe or tampered; preserving it"
+
+- name: "Read validation artifact manifest"
+  ansible.builtin.slurp:
+    src: "{{ iac_validation_cleanup_root }}/{{ iac_validation_cleanup_manifest_name }}"
+  register: iac_validation_cleanup_manifest
+  no_log: true
+
+- name: "Inspect every validation artifact entry"
+  ansible.builtin.find:
+    paths: "{{ iac_validation_cleanup_root }}"
+    recurse: true
+    file_type: "any"
+    hidden: true
+    follow: false
+  register: iac_validation_cleanup_entries
+
+- name: "Reject unexpected validation artifact content"
+  ansible.builtin.assert:
+    that:
+      - (iac_validation_cleanup_manifest.content | b64decode | from_json).files == iac_validation_cleanup_allowlist
+      - >-
+        (iac_validation_cleanup_entries.files | map(attribute='path')
+        | map('regex_replace', '^' ~ iac_validation_cleanup_root ~ '/', '')
+        | sort | list) == (iac_validation_cleanup_allowlist | sort)
+    fail_msg: "Validation artifact root contains unexpected content; preserving it"
+
+- name: "Inspect validation artifact component types"
+  ansible.builtin.stat:
+    path: "{{ iac_validation_cleanup_root }}/{{ item }}"
+    follow: false
+  loop: "{{ iac_validation_cleanup_allowlist }}"
+  register: iac_validation_cleanup_components
+
+- name: "Reject unsafe validation artifact components"
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists | default(false)
+      - >-
+        ((item.item in iac_validation_cleanup_directories and item.stat.isdir and
+          not (item.stat.islnk | default(false))) or
+         (item.item in iac_validation_cleanup_symlinks and item.stat.islnk) or
+         (item.item not in iac_validation_cleanup_directories and
+          item.item not in iac_validation_cleanup_symlinks and item.stat.isreg and
+          not (item.stat.islnk | default(false))))
+    fail_msg: "Validation artifact component is missing or unsafe; preserving the root"
+  loop: "{{ iac_validation_cleanup_components.results }}"
+
+- name: "Remove only the validated validation artifact root"
+  ansible.builtin.file:
+    path: "{{ iac_validation_cleanup_root }}"
+    state: "absent"
+  no_log: true
+
+- name: "Verify validated validation artifact cleanup"
+  ansible.builtin.stat:
+    path: "{{ iac_validation_cleanup_root }}"
+    follow: false
+  register: iac_validation_cleanup_root_after
+
+- name: "Assert validated validation artifact root was removed"
+  ansible.builtin.assert:
+    that:
+      - not iac_validation_cleanup_root_after.stat.exists | default(false)
+    fail_msg: "Validated validation artifact cleanup did not remove the root"

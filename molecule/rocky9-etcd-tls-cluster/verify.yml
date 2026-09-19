@@ -1,22 +1,210 @@
 ---
 - name: "Verify the managed three-member TLS etcd cluster"
   hosts: all
-  become: false
+  become: true
+  vars:
+    ansible_become_method: "su"
+  pre_tasks:
+    - name: "Require an explicit controller-side Podman runtime classification"
+      ansible.builtin.assert:
+        that:
+          - pg_tls_host_runtime_rootless_podman | string | lower in ['true', 'false']
+        fail_msg: >-
+          Set MOLECULE_HOST_RUNTIME_ROOTLESS_PODMAN to true or false on the
+          Molecule controller; unknown runtime classification is not accepted.
+
+    - name: "Checking for an active SELinux policy required by managed TLS verification"
+      ansible.builtin.command: "{{ item }}"
+      loop:
+        - "getenforce"
+        - "restorecon -V"
+      register: pg_tls_selinux_checks
+      changed_when: false
+      failed_when: false
+
+    - name: "Determine whether SELinux capability is available"
+      ansible.builtin.set_fact:
+        pg_tls_selinux_supported: >-
+          {{ pg_tls_selinux_checks.results | map(attribute='rc') | list == [0, 0]
+             and pg_tls_selinux_checks.results[0].stdout | trim in ['Enforcing', 'Permissive'] }}
+
+    - name: "Determine whether this is explicitly unsupported rootless Podman"
+      ansible.builtin.set_fact:
+        pg_tls_rootless_podman: >-
+          {{ (pg_tls_host_runtime_rootless_podman | string | lower) == 'true' }}
+
+    - name: "Skipping TLS verification only for unsupported rootless Podman"
+      ansible.builtin.debug:
+        msg: "Skipping managed TLS verification: explicitly detected rootless Podman lacks SELinux policy/tooling"
+      when: pg_tls_rootless_podman and not pg_tls_selinux_supported
+
+    - name: "End verification only for unsupported rootless Podman"
+      ansible.builtin.meta: end_play
+      when: pg_tls_rootless_podman and not pg_tls_selinux_supported
+
+    - name: "Require SELinux capability on non-rootless hosts"
+      ansible.builtin.assert:
+        that:
+          - pg_tls_host_runtime_rootless_podman | string | lower != 'unknown'
+          - pg_tls_selinux_supported
+        fail_msg: "TLS verification requires SELinux policy with getenforce and restorecon on non-rootless hosts"
+
   tasks:
     - name: "Check TLS key and certificate permissions"
       ansible.builtin.stat:
         path: "{{ item }}"
+        follow: false
       loop:
         - /etc/etcd/pki/ca.crt
-        - /etc/etcd/pki/etcd.crt
-        - /etc/etcd/pki/etcd.key
+        - /etc/etcd/pki/etcd-client.crt
+        - /etc/etcd/pki/etcd-client.key
+        - /etc/etcd/pki/etcd-peer.crt
+        - /etc/etcd/pki/etcd-peer.key
       register: tls_files
 
-    - name: "Assert TLS files are present and not writable by group/others"
+    - name: "Check TLS directory permissions"
+      ansible.builtin.stat:
+        path: /etc/etcd/pki
+        follow: false
+      register: tls_directory
+
+    - name: "Check Patroni REST API PKI files"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+      loop:
+        - /etc/patroni/pki/ca.crt
+        - /etc/patroni/pki/server.crt
+        - /etc/patroni/pki/server.key
+      register: patroni_tls_files
+
+    - name: "Assert TLS files have exact secure ownership and modes"
       ansible.builtin.assert:
         that:
-          - tls_files.results | map(attribute='stat.exists') | select('equalto', true) | list | length == 3
-          - tls_files.results | map(attribute='stat.mode') | map('regex_search', '^0?6[04][04]$') | select('string') | list | length == 3
+          - >-
+            tls_files.results | map(attribute='stat.exists')
+            | select('equalto', true) | list | length == 5
+          - >-
+            tls_files.results | map(attribute='stat.isreg')
+            | select('equalto', true) | list | length == 5
+          - >-
+            tls_files.results | map(attribute='stat.islnk')
+            | select('equalto', false) | list | length == 5
+          - tls_directory.stat.isdir
+          - not tls_directory.stat.islnk
+          - patroni_tls_files.results | map(attribute='stat.exists') | list | select('equalto', true) | list | length == 3
+          - patroni_tls_files.results | map(attribute='stat.isreg') | list | select('equalto', true) | list | length == 3
+          - patroni_tls_files.results | map(attribute='stat.islnk') | list | select('equalto', false) | list | length == 3
+
+    - name: "Assert TLS files are owned by root"
+      ansible.builtin.assert:
+        that: tls_files.results | map(attribute='stat.pw_name') | select('equalto', 'root') | list | length == 5
+
+    - name: "Assert TLS files belong to the etcd group"
+      ansible.builtin.assert:
+        that: tls_files.results | map(attribute='stat.gr_name') | select('equalto', 'etcd') | list | length == 5
+
+    - name: "Assert TLS files have mode 0640"
+      ansible.builtin.assert:
+        that: tls_files.results | map(attribute='stat.mode') | list == ['0640', '0640', '0640', '0640', '0640']
+
+    - name: "Assert TLS directory owner is root"
+      ansible.builtin.assert:
+        that: tls_directory.stat.pw_name == 'root'
+
+    - name: "Assert TLS directory group is etcd"
+      ansible.builtin.assert:
+        that: tls_directory.stat.gr_name == 'etcd'
+
+    - name: "Assert TLS directory mode is 0750"
+      ansible.builtin.assert:
+        that: tls_directory.stat.mode == '0750'
+
+    - name: "Assert Patroni TLS files are owned by root"
+      ansible.builtin.assert:
+        that: patroni_tls_files.results | map(attribute='stat.pw_name') | unique == ['root']
+
+    - name: "Assert Patroni TLS files belong to the postgres group"
+      ansible.builtin.assert:
+        that: patroni_tls_files.results | map(attribute='stat.gr_name') | unique == ['postgres']
+
+    - name: "Assert Patroni TLS files have mode 0640"
+      ansible.builtin.assert:
+        that: patroni_tls_files.results | map(attribute='stat.mode') | list == ['0640', '0640', '0640']
+
+    - name: "Check Patroni PKI directory ownership and mode"
+      ansible.builtin.stat:
+        path: /etc/patroni/pki
+        follow: false
+      register: patroni_tls_directory
+
+    - name: "Assert Patroni PKI directory is root-controlled"
+      ansible.builtin.assert:
+        that:
+          - patroni_tls_directory.stat.isdir
+          - not patroni_tls_directory.stat.islnk
+
+    - name: "Assert Patroni PKI directory owner is root"
+      ansible.builtin.assert:
+        that: patroni_tls_directory.stat.pw_name == 'root'
+
+    - name: "Assert Patroni PKI directory group is postgres"
+      ansible.builtin.assert:
+        that: patroni_tls_directory.stat.gr_name == 'postgres'
+
+    - name: "Assert Patroni PKI directory mode is 0750"
+      ansible.builtin.assert:
+        that: patroni_tls_directory.stat.mode == '0750'
+
+    - name: "Check effective Patroni readability of TLS material"
+      become: true
+      become_user: postgres
+      ansible.builtin.command:
+        argv:
+          - test
+          - -r
+          - "{{ item }}"
+      loop:
+        - /etc/patroni/pki/ca.crt
+        - /etc/patroni/pki/server.crt
+        - /etc/patroni/pki/server.key
+      register: patroni_tls_readability
+      changed_when: false
+
+    - name: "Assert Patroni TLS material is readable by postgres"
+      ansible.builtin.assert:
+        that: item.rc == 0
+      loop: "{{ patroni_tls_readability.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: "Check the local certificate identity"
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - x509
+          - -in
+          - /etc/etcd/pki/etcd-client.crt
+          - -noout
+          - -ext
+          - subjectAltName
+      register: local_certificate_identity
+      changed_when: false
+
+    - name: "Assert the certificate is issued for the local member"
+      ansible.builtin.assert:
+        that: "'DNS:' ~ inventory_hostname in local_certificate_identity.stdout"
+
+    - name: "Assert every etcd member has a distinct private key"
+      ansible.builtin.assert:
+        that:
+          - >-
+            ansible_play_hosts
+            | map('extract', hostvars, 'tls_files')
+            | map(attribute='results.2.stat.checksum')
+            | unique
+            | length == ansible_play_hosts | length
+      run_once: true
 
     - name: "Check the local TLS etcd endpoint"
       ansible.builtin.command:
@@ -24,8 +212,8 @@
           - etcdctl
           - --endpoints=https://{{ inventory_hostname }}:2379
           - --cacert=/etc/etcd/pki/ca.crt
-          - --cert=/etc/etcd/pki/etcd.crt
-          - --key=/etc/etcd/pki/etcd.key
+          - --cert=/etc/etcd/pki/etcd-client.crt
+          - --key=/etc/etcd/pki/etcd-client.key
           - endpoint
           - health
       environment: {ETCDCTL_API: "3"}
@@ -37,8 +225,8 @@
           - etcdctl
           - --endpoints=https://etcd01:2379,https://etcd02:2379,https://etcd03:2379
           - --cacert=/etc/etcd/pki/ca.crt
-          - --cert=/etc/etcd/pki/etcd.crt
-          - --key=/etc/etcd/pki/etcd.key
+          - --cert=/etc/etcd/pki/etcd-client.crt
+          - --key=/etc/etcd/pki/etcd-client.key
           - member
           - list
       environment: {ETCDCTL_API: "3"}
@@ -49,22 +237,89 @@
       ansible.builtin.assert:
         that: tls_members.stdout_lines | length == 3
 
-    - name: "Check the local Patroni API"
+    - name: "Check the local Patroni HTTPS API with mTLS"
       ansible.builtin.uri:
-        url: http://127.0.0.1:8008/patroni
+        url: https://127.0.0.1:8008/patroni
+        ca_path: /etc/patroni/pki/ca.crt
+        client_cert: /etc/patroni/pki/server.crt
+        client_key: /etc/patroni/pki/server.key
+        validate_certs: true
         status_code: 200
       register: patroni_health
       retries: 60
       delay: 2
       until: patroni_health.status == 200
 
+    - name: "Verify Patroni accepts requests without a client certificate"
+      ansible.builtin.uri:
+        url: https://127.0.0.1:8008/patroni
+        ca_path: /etc/patroni/pki/ca.crt
+        validate_certs: true
+        status_code: 200
+      register: patroni_without_client
+
+    - name: "Assert Patroni optional client verification accepts no-client requests"
+      ansible.builtin.assert:
+        that: patroni_without_client.status == 200
+        fail_msg: "Patroni optional client verification rejected a certificate-less request"
+
 - name: "Verify TLS etcd quorum recovery"
   hosts: etcd01
   become: false
+  vars:
+    ansible_become_method: "su"
+  pre_tasks:
+    - name: "Require an explicit controller-side Podman runtime classification"
+      ansible.builtin.assert:
+        that:
+          - pg_tls_host_runtime_rootless_podman | string | lower in ['true', 'false']
+        fail_msg: >-
+          Set MOLECULE_HOST_RUNTIME_ROOTLESS_PODMAN to true or false on the
+          Molecule controller; unknown runtime classification is not accepted.
+
+    - name: "Checking SELinux support before TLS quorum verification"
+      ansible.builtin.command: "{{ item }}"
+      loop:
+        - "getenforce"
+        - "restorecon -V"
+      register: pg_tls_selinux_checks
+      changed_when: false
+      failed_when: false
+
+    - name: "Determine whether SELinux capability is available"
+      ansible.builtin.set_fact:
+        pg_tls_selinux_supported: >-
+          {{ pg_tls_selinux_checks.results | map(attribute='rc') | list == [0, 0]
+             and pg_tls_selinux_checks.results[0].stdout | trim in ['Enforcing', 'Permissive'] }}
+
+    - name: "Determine whether this is explicitly unsupported rootless Podman"
+      ansible.builtin.set_fact:
+        pg_tls_rootless_podman: >-
+          {{ (pg_tls_host_runtime_rootless_podman | string | lower) == 'true' }}
+
+    - name: "End quorum verification only for unsupported rootless Podman"
+      ansible.builtin.meta: end_play
+      when: pg_tls_rootless_podman and not pg_tls_selinux_supported
+
+    - name: "Require SELinux capability on non-rootless hosts"
+      ansible.builtin.assert:
+        that:
+          - pg_tls_host_runtime_rootless_podman | string | lower != 'unknown'
+          - pg_tls_selinux_supported
+        fail_msg: "TLS quorum verification requires SELinux policy with getenforce and restorecon on non-rootless hosts"
+
   tasks:
     - name: "Write a TLS quorum key"
       ansible.builtin.command:
-        argv: [etcdctl, "--endpoints=https://etcd01:2379,https://etcd02:2379,https://etcd03:2379", --cacert=/etc/etcd/pki/ca.crt, --cert=/etc/etcd/pki/etcd.crt, --key=/etc/etcd/pki/etcd.key, put, /molecule/tls-quorum, tls-quorum-survived]
+        argv:
+          - etcdctl
+          - "--endpoints=https://etcd01:2379,https://etcd02:2379,https://etcd03:2379"
+          - --cacert=/etc/etcd/pki/ca.crt
+          - --cert=/etc/etcd/pki/etcd-client.crt
+          - --key=/etc/etcd/pki/etcd-client.key
+          - put
+          - /molecule/tls-quorum
+          - tls-quorum-survived
       environment: {ETCDCTL_API: "3"}
       changed_when: true
 
@@ -76,7 +331,14 @@
 
     - name: "Verify TLS quorum remains healthy"
       ansible.builtin.command:
-        argv: [etcdctl, "--endpoints=https://etcd01:2379,https://etcd02:2379", --cacert=/etc/etcd/pki/ca.crt, --cert=/etc/etcd/pki/etcd.crt, --key=/etc/etcd/pki/etcd.key, endpoint, health]
+        argv:
+          - etcdctl
+          - "--endpoints=https://etcd01:2379,https://etcd02:2379"
+          - --cacert=/etc/etcd/pki/ca.crt
+          - --cert=/etc/etcd/pki/etcd-client.crt
+          - --key=/etc/etcd/pki/etcd-client.key
+          - endpoint
+          - health
       environment: {ETCDCTL_API: "3"}
       changed_when: false
 
@@ -88,7 +350,14 @@
 
     - name: "Read the TLS quorum key after recovery"
       ansible.builtin.command:
-        argv: [etcdctl, "--endpoints=https://etcd01:2379,https://etcd02:2379,https://etcd03:2379", --cacert=/etc/etcd/pki/ca.crt, --cert=/etc/etcd/pki/etcd.crt, --key=/etc/etcd/pki/etcd.key, get, /molecule/tls-quorum]
+        argv:
+          - etcdctl
+          - "--endpoints=https://etcd01:2379,https://etcd02:2379,https://etcd03:2379"
+          - --cacert=/etc/etcd/pki/ca.crt
+          - --cert=/etc/etcd/pki/etcd-client.crt
+          - --key=/etc/etcd/pki/etcd-client.key
+          - get
+          - /molecule/tls-quorum
       environment: {ETCDCTL_API: "3"}
       register: tls_key
       changed_when: false

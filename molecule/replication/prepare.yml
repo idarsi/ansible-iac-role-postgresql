@@ -1,0 +1,730 @@
+---
+- name: Validate replication container networking
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    # The replication wrapper supplies trusted absolute paths. Direct Molecule
+    # runs may omit them; only then resolve these fixed candidates. Never
+    # Never replace an explicitly supplied wrapper value or search PATH.
+    pg_replication_podman_configured: "{{ lookup('env', 'MOLECULE_PODMAN_EXECUTABLE') }}"
+    pg_replication_podman_candidates:
+      - "/usr/bin/podman"
+      - "/usr/local/bin/podman"
+    # Controller and target interpreters are separate: the controller runs
+    # helpers from REPLICATION_PYTHON_COMMAND, while hosts use the target
+    # executable selected before Molecule prepare by molecule.yml.
+    pg_replication_controller_python_executable: >-
+      {{ lookup('env', 'REPLICATION_PYTHON_COMMAND') }}
+    pg_replication_molecule_configured: "{{ lookup('env', 'REPLICATION_MOLECULE_COMMAND') }}"
+    pg_replication_molecule_candidates:
+      - "/usr/local/bin/molecule"
+      - "/usr/bin/molecule"
+    pg_replication_netavark_configured: "{{ lookup('env', 'REPLICATION_NETAVARK_COMMAND') }}"
+    pg_replication_netavark_candidates:
+      - "/usr/libexec/netavark"
+      - "/usr/libexec/podman/netavark"
+      - "/usr/lib/podman/netavark"
+    pg_replication_aardvark_configured: "{{ lookup('env', 'REPLICATION_AARDVARK_COMMAND') }}"
+    pg_replication_aardvark_candidates:
+      - "/usr/libexec/aardvark-dns"
+      - "/usr/libexec/podman/aardvark-dns"
+      - "/usr/libexec/aardvark"
+      - "/usr/lib/podman/aardvark-dns"
+      - "/usr/lib/podman/aardvark"
+    pg_replication_image_identity: "rocky-9-ubi"
+    pg_replication_image_name: "docker.io/rockylinux/rockylinux:9-ubi-init"
+    pg_replication_image_digest: "sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5"
+    pg_replication_os_version: "9.8"
+    pg_replication_build_contract: "rocky-9.8-iproute-0:6.17.0-2.el9.x86_64-v2"
+    pg_replication_base_image_id: >-
+      {{ lookup('env', 'MOLECULE_REPLICATION_BASE_IMAGE_ID') }}
+    pg_replication_base_repo_digest: >-
+      {{ lookup('env', 'MOLECULE_REPLICATION_BASE_REPO_DIGEST') }}
+    pg_replication_provenance_helper: >-
+      {{ playbook_dir }}/../../scripts/replication_image_provenance.py
+    pg_replication_containers:
+      - "instance-idarsi-rl9-primary"
+      - "instance-idarsi-rl9-standby"
+  tasks:
+    - name: "Inspect controlled Podman candidates"
+      ansible.builtin.stat:
+        path: "{{ pg_replication_runtime_candidate }}"
+        follow: false
+      loop: "{{ pg_replication_podman_candidates }}"
+      loop_control:
+        loop_var: pg_replication_runtime_candidate
+      register: pg_replication_podman_candidate_stats
+      delegate_to: localhost
+
+    - name: "Inspect controlled Molecule candidates"
+      ansible.builtin.stat:
+        path: "{{ pg_replication_runtime_candidate }}"
+        follow: false
+      loop: "{{ pg_replication_molecule_candidates }}"
+      loop_control:
+        loop_var: pg_replication_runtime_candidate
+      register: pg_replication_molecule_candidate_stats
+      delegate_to: localhost
+
+    - name: "Inspect controlled netavark candidates"
+      ansible.builtin.stat:
+        path: "{{ pg_replication_runtime_candidate }}"
+        follow: false
+      loop: "{{ pg_replication_netavark_candidates }}"
+      loop_control:
+        loop_var: pg_replication_runtime_candidate
+      register: pg_replication_netavark_candidate_stats
+      delegate_to: localhost
+
+    - name: "Inspect controlled aardvark-dns candidates"
+      ansible.builtin.stat:
+        path: "{{ pg_replication_runtime_candidate }}"
+        follow: false
+      loop: "{{ pg_replication_aardvark_candidates }}"
+      loop_control:
+        loop_var: pg_replication_runtime_candidate
+      register: pg_replication_aardvark_candidate_stats
+      delegate_to: localhost
+
+    - name: "Resolve direct-invocation runtime fallbacks"
+      ansible.builtin.set_fact:
+        pg_replication_podman_executable: >-
+          {{ pg_replication_podman_configured if pg_replication_podman_configured | length > 0 else
+             (pg_replication_podman_candidate_stats.results |
+              selectattr('stat.isreg', 'defined') | selectattr('stat.isreg') |
+              selectattr('stat.executable') | rejectattr('stat.islnk') |
+              map(attribute='item') | first | default('')) }}
+        pg_replication_molecule_executable: >-
+          {{ pg_replication_molecule_configured if pg_replication_molecule_configured | length > 0 else
+             (pg_replication_molecule_candidate_stats.results |
+              selectattr('stat.isreg', 'defined') | selectattr('stat.isreg') |
+              selectattr('stat.executable') | rejectattr('stat.islnk') |
+              map(attribute='item') | first | default('')) }}
+        pg_replication_netavark_executable: >-
+          {{ pg_replication_netavark_configured if pg_replication_netavark_configured | length > 0 else
+             (pg_replication_netavark_candidate_stats.results |
+              selectattr('stat.isreg', 'defined') | selectattr('stat.isreg') |
+              selectattr('stat.executable') | rejectattr('stat.islnk') |
+              map(attribute='item') | first | default('')) }}
+        pg_replication_aardvark_executable: >-
+          {{ pg_replication_aardvark_configured if pg_replication_aardvark_configured | length > 0 else
+             (pg_replication_aardvark_candidate_stats.results |
+              selectattr('stat.isreg', 'defined') | selectattr('stat.isreg') |
+              selectattr('stat.executable') | rejectattr('stat.islnk') |
+              map(attribute='item') | first | default('')) }}
+    - name: "Require absolute paths for replication runtime executables"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_runtime_executable.value is string
+          - pg_replication_runtime_executable.value is match('^/')
+        fail_msg: >-
+          {{ pg_replication_runtime_executable.key }} must be configured as an
+          absolute executable path
+      loop:
+        - { key: "podman", value: "{{ pg_replication_podman_executable }}" }
+        - { key: "netavark", value: "{{ pg_replication_netavark_executable }}" }
+        - { key: "aardvark-dns", value: "{{ pg_replication_aardvark_executable }}" }
+        - { key: "python", value: "{{ pg_replication_controller_python_executable }}" }
+        - { key: "molecule", value: "{{ pg_replication_molecule_executable }}" }
+      loop_control:
+        loop_var: pg_replication_runtime_executable
+
+    - name: "Inspect the configured replication runtime executables"
+      ansible.builtin.stat:
+        path: "{{ pg_replication_runtime_executable.value }}"
+        follow: false
+      loop:
+        - { key: "podman", value: "{{ pg_replication_podman_executable }}" }
+        - { key: "netavark", value: "{{ pg_replication_netavark_executable }}" }
+        - { key: "aardvark-dns", value: "{{ pg_replication_aardvark_executable }}" }
+        - { key: "python", value: "{{ pg_replication_controller_python_executable }}" }
+        - { key: "molecule", value: "{{ pg_replication_molecule_executable }}" }
+      loop_control:
+        loop_var: pg_replication_runtime_executable
+      register: pg_replication_runtime_executable_stats
+      delegate_to: localhost
+
+    - name: "Require regular replication tools or a trusted Python entrypoint"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_runtime_executable_result.stat.exists
+          - pg_replication_runtime_executable_result.stat.isreg or
+            (pg_replication_runtime_executable_result.stat.islnk and
+             pg_replication_runtime_executable_result.pg_replication_runtime_executable.key == 'python')
+           - pg_replication_runtime_executable_result.stat.executable or
+             pg_replication_runtime_executable_result.stat.islnk
+        fail_msg: >-
+          {{ pg_replication_runtime_executable_result.pg_replication_runtime_executable.key }} must be an
+          existing executable; trusted Python entrypoints may be symlinks
+      loop: "{{ pg_replication_runtime_executable_stats.results }}"
+      loop_control:
+        loop_var: pg_replication_runtime_executable_result
+
+    - name: "Inspect the selected controller Python target"
+      ansible.builtin.stat:
+        path: "{{ pg_replication_controller_python_executable }}"
+        follow: true
+      register: pg_replication_controller_python_target_stat
+      delegate_to: localhost
+
+    - name: "Require the selected controller Python target to be executable"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_controller_python_target_stat.stat.exists
+          - pg_replication_controller_python_target_stat.stat.isreg
+          - pg_replication_controller_python_target_stat.stat.executable
+        fail_msg: "The selected controller Python entrypoint must resolve to an executable regular file"
+
+    - name: "Inspect the resolved Podman runtime security"
+      ansible.builtin.command:
+        argv:
+          - "{{ pg_replication_podman_executable }}"
+          - info
+          - --format
+          - "{{ '{{json .Host.Security.Rootless}}' }}"
+      register: pg_replication_podman_rootless
+      changed_when: false
+      delegate_to: localhost
+
+    - name: "Require a rootless Podman runtime"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_podman_rootless.rc == 0
+          - (pg_replication_podman_rootless.stdout | trim | from_json) is sameas true
+        fail_msg: >-
+          Replication requires a rootless Podman runtime;
+          rootful Podman is not supported
+
+    - name: "Inspect the fixed replication provenance helper"
+      ansible.builtin.stat:
+        path: "{{ pg_replication_provenance_helper }}"
+        follow: false
+      register: pg_replication_provenance_helper_stat
+      delegate_to: localhost
+
+    - name: "Reject an unsafe replication provenance helper"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_provenance_helper_stat.stat.exists
+          - pg_replication_provenance_helper_stat.stat.isreg
+          - not pg_replication_provenance_helper_stat.stat.islnk
+        fail_msg: "The repository replication_image_provenance.py must be a regular non-symlink file"
+
+    - name: "Require canonical replication base-image provenance inputs"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_base_image_id is defined
+          - pg_replication_base_image_id is string
+          - pg_replication_base_image_id | length > 0
+          - pg_replication_base_image_id is match("^sha256:[0-9a-f]{64}$")
+          - pg_replication_base_repo_digest is defined
+          - pg_replication_base_repo_digest is string
+          - pg_replication_base_repo_digest | length > 0
+          - >-
+             pg_replication_base_repo_digest is match(
+             "^docker\\.io/rockylinux/rockylinux:9-ubi-init@sha256:[0-9a-f]{64}$")
+          - >-
+            pg_replication_base_repo_digest ==
+            pg_replication_image_name ~ "@" ~ pg_replication_image_digest
+        fail_msg: >-
+          Replication base-image provenance must provide a canonical sha256 image
+          ID and the exact pinned Rocky base reference with digest
+
+    - name: "Inspect the controller architecture"
+      ansible.builtin.command:
+        argv:
+          - uname
+          - -m
+      register: pg_replication_controller_architecture
+      changed_when: false
+      delegate_to: localhost
+
+    - name: "Inspect the Podman runtime architecture"
+      ansible.builtin.command:
+        argv:
+          - "{{ pg_replication_podman_executable }}"
+          - info
+          - --format
+          - "{{ '{{.Host.Arch}}' }}"
+      register: pg_replication_podman_architecture
+      changed_when: false
+      delegate_to: localhost
+
+    - name: "Require an amd64 controller and Podman runtime"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_controller_architecture.stdout == "x86_64"
+          - pg_replication_podman_architecture.stdout == "amd64"
+        fail_msg: "Replication requires a native x86_64 host and amd64 Podman runtime"
+
+    - name: "Inspect the exact pulled Rocky base image provenance"
+      ansible.builtin.command:
+        argv:
+          - "{{ pg_replication_podman_executable }}"
+          - image
+          - inspect
+          - "{{ pg_replication_base_image_id }}"
+          - --format
+          - "{{ '{{json .}}' }}"
+      register: pg_replication_base_preflight
+      changed_when: false
+      delegate_to: localhost
+
+    - name: "Inspect replication image provenance and architecture"
+      ansible.builtin.command:
+        argv:
+          - "{{ pg_replication_podman_executable }}"
+          - container
+          - inspect
+          - "{{ pg_replication_container }}"
+          - --format
+          - "{{ '{{json .}}' }}"
+      loop: "{{ pg_replication_containers }}"
+      loop_control:
+        loop_var: pg_replication_container
+      changed_when: false
+      register: pg_replication_image_preflight
+      delegate_to: localhost
+
+    - name: "Require an image reference in every inspected replication container"
+      # A registered loop result stores the loop value under the exact
+      # loop_var name.  Podman container inspect returns the image reference
+      # as the capitalized JSON field Image (not Name).
+      ansible.builtin.assert:
+        that:
+          - pg_replication_image_result['pg_replication_container'] is string
+          - pg_replication_image_result['pg_replication_container'] | length > 0
+          - pg_replication_image_result['pg_replication_container'] in pg_replication_containers
+          - pg_replication_image_result['ansible_loop_var'] == "pg_replication_container"
+          - pg_replication_image_result['rc'] is integer
+          - pg_replication_image_result['rc'] == 0
+          - pg_replication_image_result['stdout'] is string
+          - pg_replication_image_result['stderr'] is string
+          - (pg_replication_image_result['stdout'] | from_json) is mapping
+          - "'Image' in (pg_replication_image_result['stdout'] | from_json)"
+          - (pg_replication_image_result['stdout'] | from_json)['Image'] is string
+          - (pg_replication_image_result['stdout'] | from_json)['Image'] | length > 0
+        fail_msg: >-
+          Refusing a replication container inspection without a valid image
+          reference
+      loop: "{{ pg_replication_image_preflight.results }}"
+      loop_control:
+        loop_var: pg_replication_image_result
+        label: "{{ pg_replication_image_result['pg_replication_container'] }}"
+
+    - name: "Inspect the image referenced by each replication container"
+      ansible.builtin.command:
+        argv:
+          - "{{ pg_replication_podman_executable }}"
+          - image
+          - inspect
+          - "{{ (pg_replication_image_result['stdout'] | from_json)['Image'] }}"
+          - --format
+          - "{{ '{{json .}}' }}"
+      loop: "{{ pg_replication_image_preflight.results }}"
+      loop_control:
+        loop_var: pg_replication_image_result
+        label: "{{ pg_replication_image_result['pg_replication_container'] }}"
+      changed_when: false
+      register: pg_replication_built_image_preflight
+      delegate_to: localhost
+
+    - name: "Require amd64 Rocky replication images and exact package"
+      # The second registered loop is nested: its loop value is the complete
+      # first result under pg_replication_image_result.  Image inspect fields
+      # are returned with Podman's capitalized JSON names.
+      ansible.builtin.assert:
+        that:
+          - pg_replication_built_image_result['pg_replication_image_result'] is mapping
+          - pg_replication_built_image_result['ansible_loop_var'] == "pg_replication_image_result"
+          - pg_replication_built_image_result['rc'] is integer
+          - pg_replication_built_image_result['stdout'] is string
+          - pg_replication_built_image_result['stderr'] is string
+          - pg_replication_built_image_result['pg_replication_image_result']['pg_replication_container'] is string
+          - pg_replication_built_image_result['pg_replication_image_result']['pg_replication_container'] | length > 0
+          - pg_replication_built_image_result['pg_replication_image_result']['pg_replication_container'] in pg_replication_containers
+          - pg_replication_built_image_result['pg_replication_image_result']['ansible_loop_var'] == "pg_replication_container"
+          - pg_replication_built_image_result['pg_replication_image_result']['rc'] is integer
+          - pg_replication_built_image_result['pg_replication_image_result']['stdout'] is string
+          - pg_replication_built_image_result['pg_replication_image_result']['stderr'] is string
+          - (pg_replication_built_image_result['pg_replication_image_result']['stdout'] | from_json) is mapping
+          - "'Image' in (pg_replication_built_image_result['pg_replication_image_result']['stdout'] | from_json)"
+          - (pg_replication_built_image_result['pg_replication_image_result']['stdout'] | from_json)['Image'] is string
+          - (pg_replication_built_image_result['pg_replication_image_result']['stdout'] | from_json)['Image'] | length > 0
+          - pg_replication_built_image_result['rc'] == 0
+          - (pg_replication_built_image_result['stdout'] | from_json) is mapping
+          - (pg_replication_built_image_result['stdout'] | from_json)['Architecture'] == "amd64"
+          - (pg_replication_built_image_result['stdout'] | from_json)['Os'] == "linux"
+          - (pg_replication_built_image_result['stdout'] | from_json)['Id'] is string
+          - (pg_replication_built_image_result['stdout'] | from_json)['Config'] is mapping
+          - >-
+             (pg_replication_built_image_result['stdout'] | from_json)['Config']['Labels'] is mapping
+          - >-
+             'io.idarsi.replication.base-identity' in
+             (pg_replication_built_image_result['stdout'] | from_json)['Config']['Labels']
+          - >-
+             'io.idarsi.replication.base-image' in
+             (pg_replication_built_image_result['stdout'] | from_json)['Config']['Labels']
+          - >-
+             'io.idarsi.replication.base-digest' in
+             (pg_replication_built_image_result['stdout'] | from_json)['Config']['Labels']
+          - >-
+             'io.idarsi.replication.build-contract' in
+             (pg_replication_built_image_result['stdout'] | from_json)['Config']['Labels']
+          - >-
+             ((pg_replication_built_image_result['stdout'] | from_json)['Id']
+             | regex_replace('^([0-9a-f]{64})$', 'sha256:\\1')) is match(
+             '^sha256:[0-9a-f]{64}$')
+          - >-
+             (pg_replication_built_image_result['stdout'] | from_json)['Config']['Labels']
+             ['io.idarsi.replication.base-identity'] == pg_replication_image_identity
+          - >-
+             (pg_replication_built_image_result['stdout'] | from_json)['Config']['Labels']
+             ['io.idarsi.replication.base-image'] == pg_replication_image_name
+          - >-
+             (pg_replication_built_image_result['stdout'] | from_json)['Config']['Labels']
+              ['io.idarsi.replication.base-digest'] == pg_replication_image_digest
+          - >-
+              (pg_replication_built_image_result['stdout'] | from_json)['Config']['Labels']
+              ['io.idarsi.replication.build-contract'] == pg_replication_build_contract
+          - >-
+            ((pg_replication_built_image_result['pg_replication_image_result']['stdout']
+            | from_json)['Image'] | regex_replace('^([0-9a-f]{64})$', 'sha256:\\1'))
+            == ((pg_replication_built_image_result['stdout'] | from_json)['Id']
+            | regex_replace('^([0-9a-f]{64})$', 'sha256:\\1'))
+        fail_msg: >-
+          Refusing an unrelated, malformed, or non-amd64 built replication
+          image; the container image ID must resolve to the inspected image
+      loop: "{{ pg_replication_built_image_preflight.results }}"
+      loop_control:
+        loop_var: pg_replication_built_image_result
+        label: >-
+          {{ pg_replication_built_image_result['pg_replication_image_result']['pg_replication_container'] }}
+
+    - name: "Validate the inspected base RepoDigests aliases"
+      ansible.builtin.command:
+        argv:
+          - "{{ pg_replication_controller_python_executable }}"
+          - "{{ pg_replication_provenance_helper }}"
+          - --normalize-json
+          - "{{ pg_replication_base_preflight.stdout }}"
+      register: pg_replication_base_preflight_normalized
+      changed_when: false
+      delegate_to: localhost
+
+    # Normalize aliases before invoking the strict shared comparator; keep
+    # these checks out of Ansible expressions so malformed extras fail
+    # identically in CI and in this prepare play.
+    - name: "Verify RepoDigests and derived image retains the inspected base layer chain"
+      ansible.builtin.command:
+        argv:
+          - "{{ pg_replication_controller_python_executable }}"
+          - "{{ pg_replication_provenance_helper }}"
+          - --base-json
+          - "{{ pg_replication_base_preflight_normalized.stdout }}"
+          - --derived-json
+          - "{{ pg_replication_built_image_result['stdout'] }}"
+          - --base-id
+          - "{{ pg_replication_base_image_id }}"
+          - --repo-digest
+          - "{{ pg_replication_base_repo_digest }}"
+      loop: "{{ pg_replication_built_image_preflight.results }}"
+      loop_control:
+        loop_var: pg_replication_built_image_result
+        label: >-
+          {{ pg_replication_built_image_result['pg_replication_image_result']['pg_replication_container'] }}
+      changed_when: false
+      delegate_to: localhost
+
+    - name: "Inspect replication container architecture"
+      ansible.builtin.command:
+        argv:
+          - "{{ pg_replication_podman_executable }}"
+          - exec
+          - "{{ pg_replication_container }}"
+          - uname
+          - -m
+      loop: "{{ pg_replication_containers }}"
+      loop_control:
+        loop_var: pg_replication_container
+      register: pg_replication_container_architectures
+      changed_when: false
+      delegate_to: localhost
+
+    - name: "Inspect replication container RHEL version"
+      ansible.builtin.command:
+        argv:
+          - "{{ pg_replication_podman_executable }}"
+          - exec
+          - "{{ pg_replication_container }}"
+          - rpm
+          - -E
+          - "%{?rhel}"
+      loop: "{{ pg_replication_containers }}"
+      loop_control:
+        loop_var: pg_replication_container
+      register: pg_replication_container_rhel_versions
+      changed_when: false
+      delegate_to: localhost
+
+    - name: "Inspect replication container release package"
+      ansible.builtin.command:
+        argv:
+          - "{{ pg_replication_podman_executable }}"
+          - exec
+          - "{{ pg_replication_container }}"
+          - rpm
+          - -q
+          - --qf
+          - "%{NAME}\\n"
+          - rocky-release
+      loop: "{{ pg_replication_containers }}"
+      loop_control:
+        loop_var: pg_replication_container
+      register: pg_replication_container_release_packages
+      changed_when: false
+      delegate_to: localhost
+
+    - name: "Inspect replication container OS metadata"
+      ansible.builtin.command:
+        argv:
+          - "{{ pg_replication_podman_executable }}"
+          - exec
+          - "{{ pg_replication_container }}"
+          - sh
+          - -c
+          - ". /etc/os-release; printf '%s:%s:%s' \"$ID\" \"$VERSION_ID\" \"$PLATFORM_ID\""
+      loop: "{{ pg_replication_containers }}"
+      loop_control:
+        loop_var: pg_replication_container
+      register: pg_replication_container_os_metadata
+      changed_when: false
+      delegate_to: localhost
+
+    - name: "Inspect replication container iproute package"
+      ansible.builtin.command:
+        argv:
+          - "{{ pg_replication_podman_executable }}"
+          - exec
+          - "{{ pg_replication_container }}"
+          - rpm
+          - -q
+          - --qf
+          - "%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}"
+          - iproute
+      loop: "{{ pg_replication_containers }}"
+      loop_control:
+        loop_var: pg_replication_container
+      register: pg_replication_container_iproute_packages
+      changed_when: false
+      delegate_to: localhost
+
+    - name: "Require independently verified Rocky OS metadata and package"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_container_result.stdout == "x86_64"
+        fail_msg: "Replication containers must use x86_64 architecture"
+      loop: "{{ pg_replication_container_architectures.results }}"
+      loop_control:
+        loop_var: pg_replication_container_result
+
+    - name: "Require Rocky RHEL version"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_container_result.stdout == "9"
+        fail_msg: "Replication containers must report RHEL major version 9"
+      loop: "{{ pg_replication_container_rhel_versions.results }}"
+      loop_control:
+        loop_var: pg_replication_container_result
+
+    - name: "Require Rocky release package"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_container_result.stdout == "rocky-release"
+        fail_msg: "Replication containers must provide the rocky-release package"
+      loop: "{{ pg_replication_container_release_packages.results }}"
+      loop_control:
+        loop_var: pg_replication_container_result
+
+    - name: "Require Rocky OS metadata"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_container_result.stdout == "rocky:{{ pg_replication_os_version }}:platform:el9"
+        fail_msg: "Replication containers must report the pinned Rocky OS metadata"
+      loop: "{{ pg_replication_container_os_metadata.results }}"
+      loop_control:
+        loop_var: pg_replication_container_result
+
+    - name: "Require the pinned iproute package"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_container_result.stdout in
+            ["iproute-0:6.17.0-2.el9.x86_64", "iproute-6.17.0-2.el9.x86_64", "iproute-(none):6.17.0-2.el9.x86_64"]
+        fail_msg: "Replication containers must provide the pinned x86_64 iproute package"
+      loop: "{{ pg_replication_container_iproute_packages.results }}"
+      loop_control:
+        loop_var: pg_replication_container_result
+
+    - name: "Inspect replication container network attachments"
+      ansible.builtin.command:
+        argv:
+          - "{{ pg_replication_podman_executable }}"
+          - container
+          - inspect
+          - "{{ pg_replication_container }}"
+          - --format
+          - "{{ '{{json .NetworkSettings.Networks}}' }}"
+      loop: "{{ pg_replication_containers }}"
+      loop_control:
+        loop_var: pg_replication_container
+      register: pg_replication_container_networks
+      changed_when: false
+
+    - name: "Require the exact default Podman network mapping and IPv4 value"
+      ansible.builtin.assert:
+        that:
+          - "(pg_replication_network_result.stdout | from_json) is mapping"
+          - >-
+             (pg_replication_network_result.stdout | from_json).keys() | list | sort
+             == ["podman"]
+          - >-
+             (pg_replication_network_result.stdout | from_json).keys() | list
+             | difference(["podman"]) | length == 0
+          - >-
+            "host" not in (pg_replication_network_result.stdout | from_json).keys()
+          - >-
+            "pasta" not in (pg_replication_network_result.stdout | from_json).keys()
+          - >-
+            ((pg_replication_network_result.stdout | from_json).get('podman')
+             if (pg_replication_network_result.stdout | from_json) is mapping else {}) is mapping
+          - >-
+            "IPAddress" in (((pg_replication_network_result.stdout | from_json).get('podman')
+             if (pg_replication_network_result.stdout | from_json) is mapping else {})
+             if (((pg_replication_network_result.stdout | from_json).get('podman')
+             if (pg_replication_network_result.stdout | from_json) is mapping else {}) is mapping else {})
+          - >-
+            (((pg_replication_network_result.stdout | from_json).get('podman')
+             if (pg_replication_network_result.stdout | from_json) is mapping else {}).get('IPAddress')
+             if (((pg_replication_network_result.stdout | from_json).get('podman')
+             if (pg_replication_network_result.stdout | from_json) is mapping else {}) is mapping else {}) is defined
+          - >-
+            (((pg_replication_network_result.stdout | from_json).get('podman')
+             if (pg_replication_network_result.stdout | from_json) is mapping else {}).get('IPAddress')
+             if (((pg_replication_network_result.stdout | from_json).get('podman')
+             if (pg_replication_network_result.stdout | from_json) is mapping else {}) is mapping else {}) is not none
+          - >-
+            (((pg_replication_network_result.stdout | from_json).get('podman')
+             if (pg_replication_network_result.stdout | from_json) is mapping else {}).get('IPAddress')
+             if (((pg_replication_network_result.stdout | from_json).get('podman')
+             if (pg_replication_network_result.stdout | from_json) is mapping else {}) is mapping else {}) is string
+          - >-
+            ((((pg_replication_network_result.stdout | from_json).get('podman')
+             if (pg_replication_network_result.stdout | from_json) is mapping else {}).get('IPAddress')
+             if (((pg_replication_network_result.stdout | from_json).get('podman')
+             if (pg_replication_network_result.stdout | from_json) is mapping else {}) is mapping else {}) | default('') | trim | length > 0
+        fail_msg: >-
+          Container {{ pg_replication_network_result.pg_replication_container }}
+           must use only Podman's default network with a unicast IPv4 address;
+           the address must be defined and non-empty; host and pasta networking
+           are not supported
+      loop: "{{ pg_replication_container_networks.results }}"
+      loop_control:
+        loop_var: pg_replication_network_result
+        label: "{{ pg_replication_network_result.pg_replication_container }}"
+      delegate_to: localhost
+
+    - name: "Stage the inspected Podman IPv4 unicast result"
+      ansible.builtin.set_fact:
+        pg_replication_network_ipv4_unicast_by_container: >-
+          {{ pg_replication_network_ipv4_unicast_by_container | default({}) |
+             combine({pg_replication_network_result.pg_replication_container:
+             (pg_replication_network_ipv4_candidate | ansible.utils.ipaddr('unicast'))}) }}
+        pg_replication_network_ipv4_candidate_by_container: >-
+          {{ pg_replication_network_ipv4_candidate_by_container | default({}) |
+             combine({pg_replication_network_result.pg_replication_container:
+             pg_replication_network_ipv4_candidate}) }}
+      loop: "{{ pg_replication_container_networks.results }}"
+      loop_control:
+        loop_var: pg_replication_network_result
+        label: "{{ pg_replication_network_result.pg_replication_container }}"
+      vars:
+        pg_replication_network_payload: "{{ pg_replication_network_result.stdout | from_json }}"
+        pg_replication_network_podman: >-
+          {{ pg_replication_network_payload.get('podman')
+             if pg_replication_network_payload is mapping and
+             pg_replication_network_payload.get('podman') is mapping else {} }}
+        pg_replication_network_ipv4_candidate: >-
+          {{ pg_replication_network_podman.get('IPAddress') }}
+      when:
+        - pg_replication_network_payload is mapping
+        - pg_replication_network_podman is mapping
+        - pg_replication_network_ipv4_candidate is string
+        - pg_replication_network_ipv4_candidate | trim | length > 0
+        - pg_replication_network_ipv4_candidate is ansible.utils.ipv4
+      delegate_to: localhost
+
+    - name: "Require a unicast IPv4 address on the default Podman network"
+      ansible.builtin.assert:
+        that:
+          - >-
+            pg_replication_network_ipv4_unicast_by_container.get(
+            pg_replication_network_result.pg_replication_container) is not none
+          - >-
+            pg_replication_network_ipv4_unicast_by_container.get(
+            pg_replication_network_result.pg_replication_container) ==
+            pg_replication_network_ipv4_candidate_by_container.get(
+            pg_replication_network_result.pg_replication_container)
+        fail_msg: >-
+          Container {{ pg_replication_network_result.pg_replication_container }}
+          must use only Podman's default network with a unicast IPv4 address;
+          host and pasta networking are not supported
+      loop: "{{ pg_replication_container_networks.results }}"
+      loop_control:
+        loop_var: pg_replication_network_result
+        label: "{{ pg_replication_network_result.pg_replication_container }}"
+      delegate_to: localhost
+
+- name: Validate container root and su contract
+  hosts: instance-idarsi-rl9-primary:instance-idarsi-rl9-standby
+  gather_facts: false
+  become: false
+  vars:
+    pg_replication_target_python_configured: >-
+      {{ lookup('env', 'REPLICATION_TARGET_PYTHON_COMMAND') | default('/usr/bin/python3', true) }}
+  tasks:
+    - name: "Resolve the target Python interpreter before any target use"
+      ansible.builtin.set_fact:
+        pg_replication_target_python_executable: "{{ pg_replication_target_python_configured }}"
+
+    - name: "Inspect the selected target Python interpreter"
+      ansible.builtin.stat:
+        path: "{{ pg_replication_target_python_executable }}"
+        follow: true
+      register: pg_replication_target_python_stat
+
+    - name: "Require an installed executable target Python interpreter"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_target_python_executable is string
+          - pg_replication_target_python_executable is match('^/')
+          - pg_replication_target_python_stat.stat.exists
+          - pg_replication_target_python_stat.stat.isreg
+          - pg_replication_target_python_stat.stat.executable
+        fail_msg: "The replication target Python interpreter must be installed and executable in the container"
+
+    - name: "Inspect the container su executable before convergence"
+      ansible.builtin.stat:
+        path: "/usr/bin/su"
+        follow: false
+      register: pg_replication_su_stat
+
+    - name: "Require an executable /usr/bin/su in every replication container"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_su_stat.stat.exists
+          - pg_replication_su_stat.stat.isreg
+          - pg_replication_su_stat.stat.executable
+        fail_msg: >-
+          Replication requires container-root connections and an existing,
+          executable /usr/bin/su; sudo fallback is not supported

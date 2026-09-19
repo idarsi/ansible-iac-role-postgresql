@@ -19,9 +19,9 @@
           - -newkey
           - rsa:2048
           - -keyout
-          - /etc/etcd/pki/etcd.key
+          - /etc/etcd/pki/etcd-client.key
           - -out
-          - /etc/etcd/pki/etcd.crt
+          - /etc/etcd/pki/etcd-client.crt
           - -days
           - "1"
           - -subj
@@ -29,16 +29,26 @@
           - -addext
           - "subjectAltName=DNS:{{ inventory_hostname }}"
       args:
-        creates: /etc/etcd/pki/etcd.crt
+        creates: /etc/etcd/pki/etcd-client.crt
 
     - name: "Use the local certificate as the test CA"
       ansible.builtin.copy:
         remote_src: true
-        src: /etc/etcd/pki/etcd.crt
+        src: /etc/etcd/pki/etcd-client.crt
         dest: /etc/etcd/pki/ca.crt
+        mode: "0644"
+
+    - name: "Install the local etcd peer private key"
+      ansible.builtin.copy:
+        remote_src: true
+        src: /etc/etcd/pki/etcd-client.key
+        dest: /etc/etcd/pki/etcd-peer.key
         mode: "0644"
 
     - name: "Make the test private key readable by etcd"
       ansible.builtin.file:
-        path: /etc/etcd/pki/etcd.key
+        path: "{{ item }}"
         mode: "0644"
+      loop:
+        - /etc/etcd/pki/etcd-client.key
+        - /etc/etcd/pki/etcd-peer.key

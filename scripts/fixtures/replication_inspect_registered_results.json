@@ -1,0 +1,28 @@
+{
+  "container_result": {
+    "pg_replication_container": "instance-idarsi-rl9-primary",
+    "changed": false,
+    "failed": false,
+    "ansible_loop_var": "pg_replication_container",
+    "rc": 0,
+    "stdout": "{\"Image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\"}",
+    "stderr": ""
+  },
+  "built_image_result": {
+    "pg_replication_image_result": {
+      "pg_replication_container": "instance-idarsi-rl9-primary",
+      "changed": false,
+      "failed": false,
+      "ansible_loop_var": "pg_replication_container",
+      "rc": 0,
+      "stdout": "{\"Image\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\"}",
+      "stderr": ""
+    },
+    "changed": false,
+    "failed": false,
+    "ansible_loop_var": "pg_replication_image_result",
+    "rc": 0,
+    "stdout": "{\"Architecture\":\"amd64\",\"Os\":\"linux\",\"Id\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"Config\":{\"Labels\":{\"io.idarsi.replication.base-identity\":\"rocky-9-ubi\",\"io.idarsi.replication.base-image\":\"docker.io/rockylinux/rockylinux:9-ubi-init\",\"io.idarsi.replication.base-digest\":\"sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5\",\"io.idarsi.replication.build-contract\":\"rocky-9.8-iproute-0:6.17.0-2.el9.x86_64-v2\"}}}",
+    "stderr": ""
+  }
+}

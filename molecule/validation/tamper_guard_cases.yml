@@ -1,0 +1,207 @@
+---
+- name: "Define exact identity for isolated cleanup tamper"
+  ansible.builtin.set_fact:
+    iac_validation_tamper_expected_case: "{{ iac_validation_tamper_case.id }}"
+    iac_validation_tamper_expected_task: >-
+      {{ "Reject unexpected validation artifact content"
+         if iac_validation_tamper_case.id in ["hidden", "manifest"]
+         else "Reject unsafe validation artifact components" }}
+    iac_validation_tamper_expected_message: >-
+      {{ "Validation artifact root contains unexpected content; preserving it"
+         if iac_validation_tamper_case.id in ["hidden", "manifest"]
+         else "Validation artifact component is missing or unsafe; preserving the root" }}
+
+- name: "Create isolated cleanup guard fixture root"
+  ansible.builtin.file:
+    path: "{{ iac_validation_tamper_root }}"
+    state: "directory"
+    mode: "0700"
+
+- name: "Create isolated cleanup guard marker and artifact"
+  ansible.builtin.copy:
+    content: "{{ iac_validation_tamper_artifact.content }}"
+    dest: "{{ iac_validation_tamper_root }}/{{ iac_validation_tamper_artifact.name }}"
+    mode: "0600"
+  loop:
+    - {name: ".role-marker", content: "{{ iac_validation_tamper_marker }}"}
+    - {name: "artifact", content: "known validation artifact\n"}
+    - {name: "target", content: "known validation target\n"}
+  loop_control:
+    loop_var: iac_validation_tamper_artifact
+  no_log: true
+
+- name: "Create isolated cleanup guard manifest"
+  ansible.builtin.copy:
+    content: "{{ {'files': iac_validation_tamper_manifest} | to_nice_json }}\n"
+    dest: "{{ iac_validation_tamper_root }}/manifest"
+    mode: "0600"
+  no_log: true
+
+- name: "Apply isolated cleanup file tamper"
+  ansible.builtin.file:
+    path: "{{ iac_validation_tamper_root }}/{{ iac_validation_tamper_name }}"
+    state: "{{ iac_validation_tamper_state }}"
+  when:
+    - iac_validation_tamper_name != "manifest"
+    - iac_validation_tamper_state != "link"
+
+- name: "Apply isolated cleanup symlink tamper"
+  ansible.builtin.file:
+    path: "{{ iac_validation_tamper_root }}/{{ iac_validation_tamper_name }}"
+    state: "link"
+    src: "{{ iac_validation_tamper_root }}/{{ iac_validation_tamper_src }}"
+    force: true
+  when: iac_validation_tamper_state == "link"
+
+- name: "Modify isolated cleanup manifest"
+  ansible.builtin.copy:
+    content: "{\"files\":[\".role-marker\",\"unexpected\"]}\n"
+    dest: "{{ iac_validation_tamper_root }}/manifest"
+    mode: "0600"
+  when: iac_validation_tamper_name == "manifest"
+  no_log: true
+
+- name: "Inspect isolated cleanup tamper root"
+  ansible.builtin.stat:
+    path: "{{ iac_validation_tamper_root }}"
+    follow: false
+  register: iac_validation_tamper_root_stat
+
+- name: "Invoke the destroy cleanup for the isolated tamper"
+  block:
+    - name: "Read isolated tamper marker"
+      ansible.builtin.slurp:
+        src: "{{ iac_validation_tamper_root }}/.role-marker"
+      register: iac_validation_tamper_marker_stat
+      no_log: true
+    - name: "Run shared destroy cleanup against isolated tamper"
+      ansible.builtin.include_tasks: ../../tasks/validation_cleanup_artifact.yml
+      vars:
+        iac_validation_cleanup_root: "{{ iac_validation_tamper_root }}"
+        iac_validation_cleanup_root_stat: "{{ iac_validation_tamper_root_stat }}"
+        iac_validation_cleanup_owner: "{{ lookup('ansible.builtin.env', 'USER') }}"
+        iac_validation_cleanup_root_mode: "0700"
+        iac_validation_cleanup_marker: "{{ iac_validation_tamper_marker_stat }}"
+        iac_validation_cleanup_marker_content: "{{ iac_validation_tamper_marker }}"
+        iac_validation_cleanup_manifest_name: "manifest"
+        iac_validation_cleanup_allowlist: "{{ iac_validation_tamper_manifest }}"
+        iac_validation_cleanup_directories: []
+        iac_validation_cleanup_symlinks: []
+    - name: "Fail if mismatched cleanup was accepted"
+      ansible.builtin.fail:
+        msg: "Mismatched cleanup tamper was accepted"
+  rescue:
+    - name: "Record expected isolated tamper refusal"
+      ansible.builtin.set_fact:
+        iac_validation_tamper_failure: "{{ ansible_failed_result | default({}) }}"
+        iac_validation_tamper_failed_task_name: "{{ ansible_failed_task.name | default('') }}"
+      failed_when: false
+    - name: "Assert shared destroy cleanup refused the tamper"
+      ansible.builtin.assert:
+        that:
+          - iac_validation_tamper_failure is mapping
+          - iac_validation_tamper_case.id == iac_validation_tamper_expected_case
+          - iac_validation_tamper_failed_task_name == iac_validation_tamper_expected_task
+          - iac_validation_tamper_failure.msg == iac_validation_tamper_expected_message
+        fail_msg: "Shared destroy cleanup accepted an isolated tamper"
+
+- name: "Alter isolated cleanup state for a mismatched outcome"
+  ansible.builtin.set_fact:
+    iac_validation_tamper_mismatched_task: >-
+      {{ "Reject unsafe validation artifact components"
+         if iac_validation_tamper_expected_task == "Reject unexpected validation artifact content"
+         else "Reject unexpected validation artifact content" }}
+    iac_validation_tamper_mismatched_message: >-
+      {{ "Validation artifact component is missing or unsafe; preserving the root"
+         if iac_validation_tamper_expected_task == "Reject unexpected validation artifact content"
+         else "Validation artifact root contains unexpected content; preserving it" }}
+
+- name: "Remove the unexpected file before component tamper"
+  ansible.builtin.file:
+    path: "{{ iac_validation_tamper_root }}/{{ iac_validation_tamper_name }}"
+    state: "absent"
+  when:
+    - iac_validation_tamper_expected_task == "Reject unexpected validation artifact content"
+    - iac_validation_tamper_name != "manifest"
+
+- name: "Restore the expected manifest before component tamper"
+  ansible.builtin.copy:
+    content: "{{ {'files': iac_validation_tamper_manifest} | to_nice_json }}\n"
+    dest: "{{ iac_validation_tamper_root }}/manifest"
+    mode: "0600"
+  when: iac_validation_tamper_expected_task == "Reject unexpected validation artifact content"
+  no_log: true
+
+- name: "Create a real component tamper"
+  ansible.builtin.file:
+    path: "{{ iac_validation_tamper_root }}/artifact"
+    state: "link"
+    src: "{{ iac_validation_tamper_root }}/target"
+    force: true
+  when: iac_validation_tamper_expected_task == "Reject unexpected validation artifact content"
+
+- name: "Create a real manifest mismatch"
+  ansible.builtin.copy:
+    content: "{{ {'files': iac_validation_tamper_manifest + ['unexpected']} | to_nice_json }}\n"
+    dest: "{{ iac_validation_tamper_root }}/manifest"
+    mode: "0600"
+  when: iac_validation_tamper_expected_task == "Reject unsafe validation artifact components"
+  no_log: true
+
+- name: "Reject a mismatched cleanup outcome"
+  block:
+    - name: "Invoke shared cleanup after real tamper mutation"
+      ansible.builtin.include_tasks: ../../tasks/validation_cleanup_artifact.yml
+      vars:
+        iac_validation_cleanup_root: "{{ iac_validation_tamper_root }}"
+        iac_validation_cleanup_root_stat: "{{ iac_validation_tamper_root_stat }}"
+        iac_validation_cleanup_owner: "{{ lookup('ansible.builtin.env', 'USER') }}"
+        iac_validation_cleanup_root_mode: "0700"
+        iac_validation_cleanup_marker: "{{ iac_validation_tamper_marker_stat }}"
+        iac_validation_cleanup_marker_content: "{{ iac_validation_tamper_marker }}"
+        iac_validation_cleanup_manifest_name: "manifest"
+        iac_validation_cleanup_allowlist: "{{ iac_validation_tamper_manifest }}"
+        iac_validation_cleanup_directories: []
+        iac_validation_cleanup_symlinks: []
+    - name: "Fail if mismatched cleanup unexpectedly succeeds"
+      ansible.builtin.fail:
+        msg: "Mismatched cleanup tamper was unexpectedly accepted"
+  rescue:
+    - name: "Record actual shared cleanup refusal"
+      ansible.builtin.set_fact:
+        iac_validation_tamper_actual_failure: "{{ ansible_failed_result | default({}) }}"
+        iac_validation_tamper_actual_task: "{{ ansible_failed_task.name | default('') }}"
+      failed_when: false
+    - name: "Assert real mismatched tamper outcome"
+      ansible.builtin.assert:
+        that:
+          - iac_validation_tamper_actual_failure is mapping
+          - iac_validation_tamper_actual_task == iac_validation_tamper_mismatched_task
+          - iac_validation_tamper_actual_failure.msg == iac_validation_tamper_mismatched_message
+          - iac_validation_tamper_actual_task != iac_validation_tamper_expected_task
+          - iac_validation_tamper_actual_failure.msg != iac_validation_tamper_expected_message
+        fail_msg: "Shared cleanup accepted a mismatched tamper outcome or reported the expected case"
+
+- name: "Check shared cleanup preserved the tampered root"
+  ansible.builtin.stat:
+    path: "{{ iac_validation_tamper_root }}"
+    follow: false
+  register: iac_validation_tamper_preserved
+
+- name: "Assert refused cleanup preserved the isolated root"
+  ansible.builtin.assert:
+    that:
+      - iac_validation_tamper_preserved.stat.isdir | default(false)
+      - not (iac_validation_tamper_preserved.stat.islnk | default(false))
+    fail_msg: "A refused cleanup tamper did not preserve its root"
+
+- name: "Validate isolated tamper teardown path"
+  ansible.builtin.assert:
+    that:
+      - iac_validation_tamper_root is match('^' ~ iac_validation_scenario_directory ~ '/\\.artifacts/validation-tamper/[A-Za-z0-9][A-Za-z0-9_.-]*$')
+      - iac_validation_tamper_root_stat.stat.isdir
+      - not (iac_validation_tamper_root_stat.stat.islnk | default(false))
+    fail_msg: "Tamper teardown path was not independently validated"
+
+# Refused roots are intentionally left isolated for Molecule teardown.  Never
+# bypass the shared validation and ownership checks to remove preserved evidence.

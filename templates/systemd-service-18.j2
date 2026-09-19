@@ -26,7 +26,7 @@ Group={{ pg_os_group }}
 # break postgresql-setup.
 
 # Location of database directory
-Environment=PGDATA=/var/lib/pgsql/{{ pg_version }}/{{ pg_instance }}/
+Environment=PGDATA={{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/
 
 # Where to send early-startup messages from the server (before the logging
 # options of postgresql.conf take effect)
@@ -38,8 +38,8 @@ OOMScoreAdjust=-1000
 Environment=PG_OOM_ADJUST_FILE=/proc/self/oom_score_adj
 Environment=PG_OOM_ADJUST_VALUE=0
 
-ExecStartPre=/usr/pgsql-{{ pg_version }}/bin/postgresql-{{ pg_version }}-check-db-dir ${PGDATA}
-ExecStart=/usr/pgsql-{{ pg_version }}/bin/postgres -D ${PGDATA}
+ExecStartPre=/usr/pgsql-{{ pg_version }}/bin/postgresql-{{ pg_version }}-check-db-dir {{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/
+ExecStart=/usr/pgsql-{{ pg_version }}/bin/postgres -D {{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/
 ExecReload=/bin/kill -HUP $MAINPID
 KillMode=mixed
 KillSignal=SIGINT

@@ -1,0 +1,34 @@
+---
+- name: "Collect failed leaf task messages"  # noqa syntax-check[specific] -- shared task fragment
+  ansible.builtin.set_fact:  # noqa syntax-check[specific] -- shared task fragment
+    pg_shared_failure_messages: >-
+      {{ (pg_shared_failure_messages | default([])) +
+         (pg_failure_nodes
+          | selectattr('failed', 'defined')
+          | selectattr('failed', 'equalto', true)
+          | rejectattr('results', 'defined')
+          | selectattr('msg', 'defined')
+          | map(attribute='msg')
+          | reject('search', '(?i)(one or more items failed|included task.*failed|include.*failed)')
+          | list) }}
+    pg_shared_failure_results: >-
+      {{ (pg_shared_failure_results | default([])) +
+         (pg_failure_nodes
+          | selectattr('failed', 'defined')
+          | selectattr('failed', 'equalto', true)
+          | rejectattr('results', 'defined')
+          | selectattr('msg', 'defined')
+          | reject('search', '(?i)(one or more items failed|included task.*failed|include.*failed)')
+          | list) }}
+    pg_failure_child_nodes: >-
+      {{ pg_failure_nodes
+         | selectattr('results', 'defined')
+         | map(attribute='results')
+         | list
+         | flatten }}
+
+- name: "Collect nested failed leaf task messages"
+  ansible.builtin.include_tasks: "{{ playbook_dir }}/../shared/collect_failure_messages.yml"
+  vars:
+    pg_failure_nodes: "{{ pg_failure_child_nodes }}"
+  when: pg_failure_child_nodes | length > 0

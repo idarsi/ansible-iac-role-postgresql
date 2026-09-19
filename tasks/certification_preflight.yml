@@ -1,0 +1,332 @@
+---
+# Read-only certificate preflight.  Nothing below this file may create, copy,
+# install, chmod, or otherwise alter a controller or managed-host path.
+- name: "Checking PostgreSQL certificate inputs"
+  ansible.builtin.assert:
+    that:
+      - pg_certificate_private_key_bits is defined
+      - pg_certificate_private_key_fullpath is match('^' ~ pg_default_dir ~ '/[0-9]+/[^/]+/ssl/[^/]+$')
+      - pg_certificate_public_key_fullpath is match('^' ~ pg_default_dir ~ '/[0-9]+/[^/]+/ssl/[^/]+$')
+      - pg_certificate_subject_alt_names | type_debug == 'list'
+      - pg_certificate_subject_alt_names | length > 0
+    fail_msg: "PostgreSQL certificate setup has invalid certificate paths or SANs"
+
+- name: "Canonicalizing PostgreSQL certificate paths before collision checks"
+  ansible.builtin.include_tasks: validate/normalize_path.yml
+  loop:
+    - {input: "{{ pg_certificate_private_key_fullpath }}", result: "pg_certificate_private_key_fullpath"}
+    - {input: "{{ pg_certificate_public_key_fullpath }}", result: "pg_certificate_public_key_fullpath"}
+    - {input: "{{ pg_client_certificate_authority_fullpath }}", result: "pg_client_certificate_authority_fullpath"}
+  loop_control:
+    loop_var: pg_certificate_path_record
+  vars:
+    pg_path_normalize_input: "{{ pg_certificate_path_record.input }}"
+    pg_path_normalize_result_fact: "{{ pg_certificate_path_record.result }}"
+    pg_path_normalize_label: "PostgreSQL certificate path"
+
+- name: "Canonicalizing PostgreSQL controller CA source before inspection"
+  ansible.builtin.include_tasks: validate/normalize_path.yml
+  vars:
+    pg_path_normalize_input: "{{ pg_client_certificate_authority_src }}"
+    pg_path_normalize_result_fact: "pg_client_certificate_authority_src"
+    pg_path_normalize_label: "PostgreSQL controller CA source"
+  when: pg_client_certificate_authority_src | default('') | trim | length > 0
+
+- name: "Deriving PostgreSQL certificate preflight paths"
+  ansible.builtin.set_fact:
+    pg_certificate_serial_registry_directory: "/var/lib/postgresql-pki"
+    pg_certificate_pki_lock_directory: "/var/lib/postgresql-pki/locks"
+    pg_certificate_serial_registry: "/var/lib/postgresql-pki/postgresql-{{ pg_version }}-{{ pg_instance }}.serials"
+    pg_certificate_serial_lock: "/var/lib/postgresql-pki/locks/postgresql-{{ pg_version }}-{{ pg_instance }}.lock"
+    pg_certificate_ssl_directory: "{{ pg_default_dir }}/{{ pg_version }}/{{ pg_instance }}/ssl"
+  # Keep the managed root in its own fact assignment.  Referencing a sibling
+  # value from the same set_fact is not reliable during templating and made
+  # certificate-only inputs fail closed with an undefined path.
+
+- name: "Deriving PostgreSQL certificate preflight path collections"
+  ansible.builtin.set_fact:
+    pg_certificate_ssl_preflight_paths: []
+    pg_certificate_generated_destinations: []
+    pg_certificate_managed_paths: []
+
+- name: "Building PostgreSQL certificate preflight path collections"
+  ansible.builtin.set_fact:
+    pg_certificate_ssl_preflight_paths: >-
+      {% set ns = namespace(paths=['/']) %}
+      {% for path in [pg_default_dir ~ '/' ~ pg_version ~ '/' ~ pg_instance ~ '/ssl',
+                      pg_certificate_private_key_fullpath, pg_certificate_public_key_fullpath]
+                      + ([pg_client_certificate_authority_fullpath]
+                         if pg_client_certificate_authority_fullpath is defined else []) %}
+      {% for index in range(1, path.split('/') | length) %}
+      {% set value = '/' ~ (path.split('/')[1:index + 1] | join('/')) %}
+      {% if value not in ns.paths %}{% set ns.paths = ns.paths + [value] %}{% endif %}
+      {% endfor %}{% endfor %}{{ ns.paths }}
+    pg_certificate_generated_destinations:
+      - "{{ pg_certificate_private_key_fullpath }}"
+      - "{{ pg_certificate_public_key_fullpath }}"
+    pg_certificate_managed_paths:
+      - "{{ pg_certificate_ssl_directory }}"
+      - "{{ pg_certificate_serial_registry_directory }}"
+      - "{{ pg_certificate_pki_lock_directory }}"
+      - "{{ pg_certificate_serial_registry }}"
+      - "{{ pg_certificate_serial_lock }}"
+
+- name: "Adding optional PostgreSQL client CA destination"
+  ansible.builtin.set_fact:
+    pg_certificate_generated_destinations: >-
+      {{ pg_certificate_generated_destinations | default([], true) | list +
+         [pg_client_certificate_authority_fullpath] }}
+  when: pg_client_certificate_authority_fullpath is defined
+
+- name: "Converting PostgreSQL certificate path collections to native lists"
+  ansible.builtin.set_fact:
+    pg_certificate_ssl_preflight_paths: >-
+      {{ pg_certificate_ssl_preflight_paths | from_yaml
+         if pg_certificate_ssl_preflight_paths is string
+         else pg_certificate_ssl_preflight_paths | list }}
+    pg_certificate_generated_destinations: "{{ pg_certificate_generated_destinations | list }}"
+    pg_certificate_managed_paths: "{{ pg_certificate_managed_paths | list }}"
+
+- name: "Publishing PostgreSQL certificate preflight path collection"
+  ansible.builtin.set_fact:
+    pg_certificate_preflight_paths: >-
+      {{ (pg_certificate_ssl_preflight_paths | default([], true) | list +
+          pg_certificate_managed_paths | default([], true) | list) | unique | list }}
+
+- name: "Rejecting colliding PostgreSQL certificate destinations before inspection"
+  ansible.builtin.assert:
+    that:
+      - pg_certificate_generated_destinations | unique | list | length == pg_certificate_generated_destinations | length
+      - (pg_certificate_generated_destinations | intersect(pg_certificate_managed_paths) | list | length) == 0
+      - >-
+        pg_certificate_preflight_paths ==
+        ((pg_certificate_ssl_preflight_paths + pg_certificate_managed_paths) | unique | list)
+    fail_msg: >-
+      PostgreSQL certificate destinations must be pairwise distinct and must not
+      collide with the SSL directory, registry, lock, or other managed paths
+
+- name: "Checking PostgreSQL controller CA source"
+  ansible.builtin.stat:
+    path: "{{ pg_client_certificate_authority_src }}"
+    follow: false
+  delegate_to: localhost
+  become: false
+  register: pg_client_certificate_authority_src_stat
+  when: pg_client_certificate_authority_src | default('') | trim | length > 0
+
+- name: "Rejecting unsafe PostgreSQL controller CA source"
+  ansible.builtin.assert:
+    that:
+      - pg_client_certificate_authority_src_stat.stat.exists
+      - pg_client_certificate_authority_src_stat.stat.isreg | default(false)
+      - not (pg_client_certificate_authority_src_stat.stat.islnk | default(false))
+      - pg_client_certificate_authority_src_stat.stat.uid | default(-1) == 0
+      - (pg_client_certificate_authority_src_stat.stat.mode | default('')) is match(pg_secure_source_mode_regex)
+    fail_msg: "The controller CA source must be a root-owned regular non-symlink file"
+  when: pg_client_certificate_authority_src | default('') | trim | length > 0
+
+- name: "Inspecting every controller CA source component"
+  ansible.builtin.command:
+    argv: ["/usr/bin/namei", "-mo", "{{ pg_client_certificate_authority_src }}"]
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  failed_when: false
+  register: pg_client_certificate_authority_src_namei
+  when: pg_client_certificate_authority_src | default('') | trim | length > 0
+
+- name: "Rejecting unsafe controller CA source ancestors"
+  ansible.builtin.assert:
+    that:
+      - pg_client_certificate_authority_src_namei.rc == 0
+      - pg_client_certificate_authority_src_namei.stdout is not search(' -> ')
+      - pg_client_certificate_authority_src_namei.stderr is not search('Permission denied')
+    fail_msg: "Every controller CA source ancestor must be inspectable and non-symlinked"
+  when: pg_client_certificate_authority_src | default('') | trim | length > 0
+
+- name: "Defining PostgreSQL certificate preflight tool paths"
+  ansible.builtin.set_fact:
+    pg_certificate_preflight_tool_paths:
+      stat: "/usr/bin/stat"
+      namei: "/usr/bin/namei"
+      getfacl: "/usr/bin/getfacl"
+      openssl: "/usr/bin/openssl"
+      flock: "/usr/bin/flock"
+      install: "/usr/bin/install"
+
+- name: "Checking PostgreSQL certificate preflight tools"
+  ansible.builtin.stat:
+    path: "{{ pg_certificate_preflight_tool_record.value }}"
+    follow: false
+  loop: "{{ pg_certificate_preflight_tool_paths | dict2items }}"
+  loop_control:
+    loop_var: pg_certificate_preflight_tool_record
+  register: pg_certificate_preflight_tool_stats
+
+- name: "Requiring PostgreSQL certificate preflight tools"
+  ansible.builtin.assert:
+    that:
+      - pg_certificate_preflight_tool_result.pg_certificate_preflight_tool_record is mapping
+      - pg_certificate_preflight_tool_result.pg_certificate_preflight_tool_record.key is string
+      - pg_certificate_preflight_tool_result.pg_certificate_preflight_tool_record.value is string
+      - pg_certificate_preflight_tool_result.pg_certificate_preflight_tool_record.value | length > 0
+      - pg_certificate_preflight_tool_result.failed | default(false) | bool is false
+      - pg_certificate_preflight_tool_result.stat | default({}) is mapping
+      - pg_certificate_preflight_tool_result.stat.exists | default(false)
+      - pg_certificate_preflight_tool_result.stat.isreg | default(false)
+      - pg_certificate_preflight_tool_result.stat.executable | default(false)
+    fail_msg: >-
+      Required PostgreSQL certificate preflight tool
+       {{ pg_certificate_preflight_tool_result.pg_certificate_preflight_tool_record.key | default('unknown') }}
+       ({{ pg_certificate_preflight_tool_result.pg_certificate_preflight_tool_record.value | default('missing') }}) is missing or not executable;
+      install the package providing it and retry.
+  loop: "{{ pg_certificate_preflight_tool_stats.results }}"
+  loop_control:
+    loop_var: pg_certificate_preflight_tool_result
+
+- name: "Inspecting PostgreSQL SSL, serial, registry, and destination paths"
+  ansible.builtin.stat:
+    path: "{{ pg_certificate_preflight_path }}"
+    follow: false
+  loop: "{{ pg_certificate_preflight_paths }}"
+  loop_control:
+    loop_var: pg_certificate_preflight_path
+  register: pg_certificate_preflight_stats
+  become: true
+  become_user: "root"
+
+- name: "Checking every PostgreSQL certificate path component"
+  ansible.builtin.command:
+    argv: ["{{ pg_certificate_preflight_tool_paths.namei }}", "-mo", "{{ pg_certificate_preflight_path }}"]
+  loop: "{{ pg_certificate_preflight_paths }}"
+  loop_control:
+    loop_var: pg_certificate_preflight_path
+  register: pg_certificate_preflight_namei
+  changed_when: false
+  failed_when: false
+  become: true
+  become_user: "root"
+
+- name: "Rejecting unsafe or uninspectable PostgreSQL certificate paths"
+  ansible.builtin.assert:
+    that:
+      - pg_certificate_preflight_namei_result.pg_certificate_preflight_path is string
+      - pg_certificate_preflight_namei_result.pg_certificate_preflight_path | length > 0
+      - pg_certificate_preflight_namei_result.failed | default(false) | bool is false
+      - >-
+        pg_certificate_preflight_namei_result.rc | default(-1) == 0 or
+        (pg_certificate_preflight_namei_result.rc | default(-1) == 1 and
+        (pg_certificate_preflight_stats.results |
+            selectattr('pg_certificate_preflight_path', 'equalto', pg_certificate_preflight_namei_result.pg_certificate_preflight_path) |
+          list | length == 1) and
+        (((pg_certificate_preflight_stats.results |
+           selectattr('pg_certificate_preflight_path', 'equalto', pg_certificate_preflight_namei_result.pg_certificate_preflight_path) |
+           first).failed | default(false) | bool) is false) and
+        (((pg_certificate_preflight_stats.results |
+           selectattr('pg_certificate_preflight_path', 'equalto', pg_certificate_preflight_namei_result.pg_certificate_preflight_path) |
+           first).stat | default({})) is mapping) and
+        (((pg_certificate_preflight_stats.results |
+           selectattr('pg_certificate_preflight_path', 'equalto', pg_certificate_preflight_namei_result.pg_certificate_preflight_path) |
+           first).stat.exists is defined) and
+        (((pg_certificate_preflight_stats.results |
+           selectattr('pg_certificate_preflight_path', 'equalto', pg_certificate_preflight_namei_result.pg_certificate_preflight_path) |
+           first).stat.exists | bool) is false)))
+      - (pg_certificate_preflight_namei_result.stdout | default('')) is not search(' -> ')
+      - (pg_certificate_preflight_namei_result.stderr | default('') | trim | length) == 0
+    fail_msg: "Every SSL, destination, serial, and ancestor path must be inspectable and non-symlinked"
+  loop: "{{ pg_certificate_preflight_namei.results }}"
+  loop_control:
+    loop_var: pg_certificate_preflight_namei_result
+
+- name: "Rejecting unsafe PostgreSQL certificate destinations"
+  ansible.builtin.assert:
+    that:
+      - pg_certificate_preflight_stat_result.pg_certificate_preflight_path is string
+      - pg_certificate_preflight_stat_result.pg_certificate_preflight_path | length > 0
+      - pg_certificate_preflight_stat_result.failed | default(false) | bool is false
+      - >-
+        not (pg_certificate_preflight_stat_result.stat | default({})).exists or
+        ((pg_certificate_preflight_stat_result.stat.isreg | default(false)) and
+        not (pg_certificate_preflight_stat_result.stat.islnk | default(false)))
+    fail_msg: "PostgreSQL SSL destinations must be regular non-symlink files"
+  loop: "{{ pg_certificate_preflight_stats.results }}"
+  loop_control:
+    loop_var: pg_certificate_preflight_stat_result
+  when: >-
+    pg_certificate_preflight_stat_result.pg_certificate_preflight_path | default('') in
+    pg_certificate_generated_destinations
+
+- name: "Rejecting unsafe standalone PKI registry and lock paths"
+  ansible.builtin.assert:
+    that:
+      - pg_certificate_preflight_stat_result.pg_certificate_preflight_path is string
+      - pg_certificate_preflight_stat_result.pg_certificate_preflight_path | length > 0
+      - pg_certificate_preflight_stat_result.failed | default(false) | bool is false
+      - >-
+        (not (pg_certificate_preflight_stat_result.stat | default({})).exists or
+        ((pg_certificate_preflight_stat_result.stat.isdir | default(false)) and
+        not (pg_certificate_preflight_stat_result.stat.islnk | default(false)) and
+        pg_certificate_preflight_stat_result.stat.uid | default(-1) == 0 and
+        pg_certificate_preflight_stat_result.stat.gid | default(-1) == 0 and
+        pg_certificate_preflight_stat_result.stat.mode | default('') in ["0700", "0710", "0711", "0750", "0751", "0755"]))
+          if pg_certificate_preflight_stat_result.pg_certificate_preflight_path | default('') in
+        [pg_certificate_serial_registry_directory, pg_certificate_pki_lock_directory]
+        else
+        (not (pg_certificate_preflight_stat_result.stat | default({})).exists or
+        ((pg_certificate_preflight_stat_result.stat.isreg | default(false)) and
+        not (pg_certificate_preflight_stat_result.stat.islnk | default(false)) and
+        pg_certificate_preflight_stat_result.stat.uid | default(-1) == 0 and
+        pg_certificate_preflight_stat_result.stat.gid | default(-1) == 0 and
+        pg_certificate_preflight_stat_result.stat.mode | default('') == "0600"))
+    fail_msg: "Standalone PKI registry and lock paths must be root-owned, restrictive, and non-symlinked"
+  loop: "{{ pg_certificate_preflight_stats.results }}"
+  loop_control:
+    loop_var: pg_certificate_preflight_stat_result
+  when: >-
+    pg_certificate_preflight_stat_result.pg_certificate_preflight_path | default('') in
+    [pg_certificate_serial_registry_directory, pg_certificate_pki_lock_directory,
+     pg_certificate_serial_registry, pg_certificate_serial_lock]
+
+- name: "Inspecting PostgreSQL certificate path ACLs"
+  ansible.builtin.command:
+    argv:
+      - "{{ pg_certificate_preflight_tool_paths.getfacl }}"
+      - "--absolute-names"
+      - "--"
+      - "{{ pg_certificate_preflight_acl_target.pg_certificate_preflight_path | default('') }}"
+  loop: "{{ pg_certificate_preflight_stats.results }}"
+  loop_control:
+    loop_var: pg_certificate_preflight_acl_target
+  when:
+    - pg_certificate_preflight_acl_target.pg_certificate_preflight_path is string
+    - pg_certificate_preflight_acl_target.failed | default(false) | bool is false
+    - pg_certificate_preflight_acl_target.stat.exists | default(false)
+  register: pg_certificate_preflight_acls
+  changed_when: false
+  failed_when: false
+  become: true
+  become_user: "root"
+
+- name: "Rejecting unsafe PostgreSQL certificate path metadata and ACLs"
+  ansible.builtin.assert:
+    that:
+      - pg_certificate_preflight_acl_result.pg_certificate_preflight_acl_target is mapping
+      - pg_certificate_preflight_acl_result.pg_certificate_preflight_acl_target.pg_certificate_preflight_path is string
+      - pg_certificate_preflight_acl_result.pg_certificate_preflight_acl_target.pg_certificate_preflight_path | length > 0
+      - pg_certificate_preflight_acl_result.failed | default(false) | bool is false
+      - pg_certificate_preflight_acl_result.rc | default(-1) == 0
+      - (pg_certificate_preflight_acl_result.stdout | default('')) is not search('^default:', multiline=true)
+      - (pg_certificate_preflight_acl_result.stdout | default('')) is not search('^user:[^:]+:', multiline=true)
+      - (pg_certificate_preflight_acl_result.stdout | default('')) is not search('^group:[^:]+:', multiline=true)
+  loop: >-
+    {{ pg_certificate_preflight_acls.results | default([])
+       | rejectattr('skipped', 'defined')
+       | selectattr('pg_certificate_preflight_acl_target.stat.exists', 'defined')
+       | selectattr('pg_certificate_preflight_acl_target.stat.exists', 'equalto', true)
+       | list }}
+  loop_control:
+    loop_var: pg_certificate_preflight_acl_result
+
+- name: "PREFLIGHT COMPLETE - all PostgreSQL certificate paths are safe"
+  ansible.builtin.assert:
+    that: true

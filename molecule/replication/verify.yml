@@ -3,8 +3,101 @@
   hosts: instance-idarsi-rl9-primary
   become: false
   vars:
-    ansible_become_method: su
+    pg_replication_network_metadata_path: "/run/postgresql-replication/standby-network.json"
+    pg_replication_metadata_reader: "/usr/local/bin/read_secure_metadata.py"
   tasks:
+    - name: "Install the descriptor-based metadata reader"
+      become: true
+      ansible.builtin.copy:
+        content: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../../files/read_secure_metadata.py') }}"
+        dest: "{{ pg_replication_metadata_reader }}"
+        owner: root
+        group: root
+        mode: "0700"
+    - name: "Read metadata with descriptor identity checks immediately before parsing"
+      become: true
+      ansible.builtin.command:
+        argv:
+          - "{{ pg_replication_target_python_executable }}"
+          - "{{ pg_replication_metadata_reader }}"
+          - "{{ pg_replication_network_metadata_path }}"
+      register: pg_replication_metadata_file
+      changed_when: false
+      no_log: true
+    - name: "Inspect run-scoped network metadata without following links"
+      become: true
+      ansible.builtin.stat:
+        path: "{{ pg_replication_network_metadata_path }}"
+        follow: false
+      register: pg_replication_metadata_stat
+
+    - name: "Require secure, regular run-scoped network metadata"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_metadata_stat.stat.exists
+          - pg_replication_metadata_stat.stat.isreg | default(false)
+          - not (pg_replication_metadata_stat.stat.islnk | default(false))
+          - pg_replication_metadata_stat.stat.pw_name | default("") == "root"
+          - pg_replication_metadata_stat.stat.gr_name | default("") == "root"
+          - pg_replication_metadata_stat.stat.mode | default("") == "0600"
+        fail_msg: >-
+          Replication network metadata must be a root-owned regular file with
+          mode 0600 and must not be a symlink
+
+    - name: "Parse and validate exact non-secret standby network metadata"
+      no_log: true
+      vars:
+        pg_replication_metadata: "{{ pg_replication_metadata_file.stdout | from_json }}"
+      block:
+        - name: "Require the exact metadata shape and safe content"
+          ansible.builtin.assert:
+            that:
+              - pg_replication_metadata is mapping
+              - pg_replication_metadata.keys() | list | sort == ['address', 'cidr', 'network', 'network_cidr', 'standby_host']
+              - pg_replication_metadata['standby_host'] == 'instance-idarsi-rl9-standby'
+              - pg_replication_metadata['network'] == 'podman'
+              - pg_replication_metadata['address'] is string
+              - pg_replication_metadata['address'] is ansible.utils.ipv4
+              - pg_replication_metadata['address'] | ansible.utils.ipaddr('unicast') == pg_replication_metadata['address']
+              - pg_replication_metadata['cidr'] == pg_replication_metadata['address'] ~ '/32'
+              - pg_replication_metadata['cidr'] is ansible.utils.ipv4
+              - pg_replication_metadata['network_cidr'] is string
+              - pg_replication_metadata['network_cidr'] is match('^(?:[0-9]{1,3}\.){3}[0-9]{1,3}/(?:[0-9]|[1-2][0-9]|3[0-2])$')
+              - pg_replication_metadata['network_cidr'] | ansible.utils.ipaddr('network/prefix') == pg_replication_metadata['network_cidr']
+              - pg_replication_metadata['address'] | ansible.utils.ipaddr(pg_replication_metadata['network_cidr'])
+            fail_msg: "Run-scoped standby network metadata is malformed or does not describe the exact standby"
+        - name: "Publish validated metadata for subsequent checks"
+          ansible.builtin.set_fact:
+            pg_replication_verified_standby_address: "{{ pg_replication_metadata['address'] }}"
+            pg_replication_verified_standby_cidr: "{{ pg_replication_metadata['cidr'] }}"
+            pg_replication_verified_standby_network: "{{ pg_replication_metadata['network_cidr'] }}"
+
+    - name: "Checking /usr/sbin/ip executable in derived image"
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/test
+          - -x
+          - /usr/sbin/ip
+      register: pg_primary_ip_command_check
+      changed_when: false
+      failed_when: false
+
+    - name: "Checking iproute RPM is installed in the derived replication image"
+      ansible.builtin.command: "rpm -q iproute"
+      register: pg_primary_iproute_package_check
+      changed_when: false
+      failed_when: false
+
+    - name: "Requiring replication network tooling on the primary"
+      ansible.builtin.assert:
+        that:
+          - pg_primary_ip_command_check.rc == 0
+          - pg_primary_iproute_package_check.rc == 0
+        fail_msg: >-
+          The derived Rocky Linux 9 UBI replication image must provide both
+          an executable '/usr/sbin/ip' binary and the 'iproute' RPM
+          (rpm -q iproute)
+
     - name: "Checking primary PostgreSQL service is active"
       ansible.builtin.command: "systemctl is-active postgresql-17-main.service"
       register: pg_primary_service_check
@@ -12,7 +105,8 @@
 
     - name: "Checking primary replication configuration file"
       ansible.builtin.command: >-
-        grep -F "wal_level = 'replica'" /var/lib/pgsql/17/main/conf.d/44-replication.conf
+        grep -F "wal_level = 'replica'"
+        /var/lib/pgsql/17/main/conf.d/44-replication.conf
       register: pg_primary_replication_config_check
       changed_when: false
 
@@ -30,12 +124,28 @@
       become_user: postgres
       ansible.builtin.command: >-
         /usr/pgsql-17/bin/psql postgres -p 5432
-        -tXAc "SELECT 1 FROM pg_stat_replication WHERE application_name='molecule-standby'"
+        -tXAc "SELECT 1 FROM pg_stat_replication WHERE
+        application_name='molecule-standby'"
       register: pg_primary_replication_check
       changed_when: false
       retries: 10
       delay: 3
       until: pg_primary_replication_check.stdout == '1'
+
+    - name: "Checking effective pg_hba rule and replication client address"
+      become: true
+      become_user: postgres
+      ansible.builtin.command: >-
+        /usr/pgsql-17/bin/psql postgres -p 5432 -tXAc
+        "SELECT count(*) FROM pg_hba_file_rules WHERE type='hostssl'
+        AND database @> ARRAY['replication']
+        AND address='{{ pg_replication_verified_standby_address }}'
+        AND netmask='255.255.255.255'
+        AND error IS NULL;
+        SELECT client_addr::text FROM pg_stat_replication
+        WHERE application_name='molecule-standby'"
+      register: pg_primary_effective_replication_check
+      changed_when: false
 
     - name: "Checking primary PL/Python package is installed"
       ansible.builtin.command: "rpm -q postgresql17-plpython3"
@@ -56,7 +166,8 @@
       become_user: postgres
       ansible.builtin.command: >-
         /usr/pgsql-17/bin/psql appdb -p 5432
-        -c "CREATE TABLE IF NOT EXISTS molecule_replication_check (id integer primary key, note text)"
+        -c "CREATE TABLE IF NOT EXISTS molecule_replication_check
+        (id integer primary key, note text)"
       register: pg_primary_create_table
       changed_when: "'CREATE TABLE' in pg_primary_create_table.stdout"
 
@@ -65,7 +176,8 @@
       become_user: postgres
       ansible.builtin.command: >-
         /usr/pgsql-17/bin/psql appdb -p 5432
-        -c "INSERT INTO molecule_replication_check (id, note) VALUES (1, 'replicated') ON CONFLICT (id) DO UPDATE SET note = EXCLUDED.note"
+        -c "INSERT INTO molecule_replication_check (id, note) VALUES (1,
+        'replicated') ON CONFLICT (id) DO UPDATE SET note = EXCLUDED.note"
       register: pg_primary_insert_row
       changed_when: "'INSERT 0 1' in pg_primary_insert_row.stdout"
 
@@ -76,6 +188,10 @@
           - pg_primary_replication_config_check.rc == 0
           - pg_primary_slot_check.stdout == '1'
           - pg_primary_replication_check.stdout == '1'
+          - "pg_primary_effective_replication_check.stdout_lines[0] | trim == '1'"
+          - "pg_primary_effective_replication_check.stdout_lines[1] | trim == pg_replication_verified_standby_address"
+          - "pg_replication_verified_standby_address | ansible.utils.ipaddr(pg_replication_verified_standby_cidr)"
+          - "pg_replication_verified_standby_address | ansible.utils.ipaddr(pg_replication_verified_standby_network)"
           - pg_primary_plpython_package_check.rc == 0
           - pg_primary_extension_check.stdout == '1'
         fail_msg: "PostgreSQL primary replication verification failed"
@@ -83,9 +199,50 @@
 - name: Verify standby state and replicated data
   hosts: instance-idarsi-rl9-standby
   become: false
-  vars:
-    ansible_become_method: su
   tasks:
+    - name: "Checking /usr/sbin/ip executable in derived image"
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/test
+          - -x
+          - /usr/sbin/ip
+      register: pg_standby_ip_command_check
+      changed_when: false
+      failed_when: false
+
+    - name: "Checking iproute RPM is installed in the derived replication image"
+      ansible.builtin.command: "rpm -q iproute"
+      register: pg_standby_iproute_package_check
+      changed_when: false
+      failed_when: false
+
+    - name: "Requiring replication network tooling on the standby"
+      ansible.builtin.assert:
+        that:
+          - pg_standby_ip_command_check.rc == 0
+          - pg_standby_iproute_package_check.rc == 0
+        fail_msg: >-
+          The derived Rocky Linux 9 UBI replication image must provide both
+          an executable '/usr/sbin/ip' binary and the 'iproute' RPM
+          (rpm -q iproute)
+
+    - name: "Checking verify-full SSL connection to primary"
+      become: true
+      become_user: postgres
+      ansible.builtin.command:
+        argv:
+          - /usr/pgsql-17/bin/psql
+          - >-
+             host=instance-idarsi-rl9-primary port=5432 dbname=postgres
+             user=replicator sslmode=verify-full
+             sslrootcert=/etc/postgresql-replication/primary-ca.crt
+          - -tXAc
+          - "SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()"
+      environment:
+        PGPASSWORD: "replicate_me"
+      register: pg_standby_verify_full_check
+      changed_when: false
+
     - name: "Checking standby PostgreSQL service is active"
       ansible.builtin.command: "systemctl is-active postgresql-17-main.service"
       register: pg_standby_service_check
@@ -147,6 +304,7 @@
       ansible.builtin.assert:
         that:
           - pg_standby_service_check.stdout == 'active'
+          - pg_standby_verify_full_check.stdout | trim == 't'
           - pg_standby_recovery_check.stdout == '1'
           - pg_standby_signal_check.stat.exists
           - pg_standby_primary_conninfo_check.rc == 0
@@ -154,3 +312,9 @@
           - pg_standby_extension_check.stdout == '1'
           - pg_standby_replicated_row_check.stdout == 'replicated'
         fail_msg: "PostgreSQL standby replication verification failed"
+
+    - name: "Remove the descriptor-based metadata reader"
+      become: true
+      ansible.builtin.file:
+        path: /usr/local/bin/read_secure_metadata.py
+        state: absent

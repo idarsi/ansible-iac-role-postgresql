@@ -1,41 +1,121 @@
 ---
-- name: "Verify validation markers"
-  hosts: all
-  become: false
+- name: "Verify validation did not mutate host state"
+  hosts: "instance-idarsi-validation:instance-idarsi-etcd"
+  become: true
+  vars:
+    ansible_become_method: "su"
+    iac_validation_scenario_id: "{{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_NAME') | default('validation', true) }}"
+    iac_validation_run_id: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') | basename }}"
+    iac_validation_remote_parent: "/run/ansible-validation"
+    iac_validation_remote_artifact_root: "/run/ansible-validation/{{ iac_validation_scenario_id }}-{{ inventory_hostname }}-{{ iac_validation_run_id }}"
+    iac_validation_marker_content: "ansible-iac-role-postgresql validation artifacts {{ iac_validation_run_id }}\n"
   tasks:
-    - name: "Checking validation markers"
-      ansible.builtin.stat:
-        path: "{{ item }}"
-      loop:
-        - /tmp/postgresql-validation-valid.ok
-        - /tmp/postgresql-validation-invalid-source.ok
-        - /tmp/postgresql-validation-source-conflict.ok
-        - /tmp/postgresql-validation-duplicate-instance.ok
-        - /tmp/postgresql-validation-standby-timescaledb.ok
-        - /tmp/postgresql-validation-missing-blueprint.ok
-        - /tmp/postgresql-validation-patroni-timeout.ok
-        - /tmp/postgresql-validation-patroni-member.ok
-        - /tmp/postgresql-validation-missing-dcs-endpoints.ok
-        - /tmp/postgresql-validation-duplicate-patroni-member.ok
-        - /tmp/postgresql-validation-incomplete-etcd-tls.ok
-        - /tmp/postgresql-validation-missing-restapi-authentication.ok
-        - /tmp/postgresql-validation-post-install.ok
-        - /tmp/postgresql-validation-cron.ok
-        - /tmp/postgresql-validation-filesystem.ok
-        - /tmp/postgresql-validation-cleanup-path.ok
-        - /tmp/postgresql-validation-instance-name.ok
-        - "/tmp/postgresql-validation-absent-cleanup-path.ok"
-        - "/tmp/postgresql-validation-version-bind.ok"
-        - "/tmp/postgresql-validation-invalid-root.ok"
-        - "/tmp/postgresql-validation-bracketed-wildcard-listen.ok"
-      register: pg_validation_markers
-
-    - name: "Checking all validation cases completed"
+    - name: "Reject unsafe validation artifact path components"
       ansible.builtin.assert:
         that:
-          - item.stat.exists
-        fail_msg: "Validation marker is missing: {{ item.item }}"
-      loop: "{{ pg_validation_markers.results }}"
+          - iac_validation_run_id is match('^[A-Za-z0-9][A-Za-z0-9_.-]+$')
+          - iac_validation_run_id not in ['', '.', '..']
+          - iac_validation_scenario_id is match('^[A-Za-z0-9][A-Za-z0-9_.-]+$')
+          - inventory_hostname is match('^[A-Za-z0-9][A-Za-z0-9_.-]+$')
+          - >-
+            iac_validation_remote_artifact_root == '/run/ansible-validation/' ~
+            iac_validation_scenario_id ~ '-' ~ inventory_hostname ~ '-' ~ iac_validation_run_id
+        fail_msg: "Validation artifact path components must be non-empty and safe"
+
+    - name: "Checking validation system and private artifact ancestors"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+      loop:
+        - "/"
+        - "/run"
+        - "{{ iac_validation_remote_parent }}"
+      register: pg_validation_ancestor_metadata
+
+    - name: "Checking validation ancestor safety"
+      ansible.builtin.assert:
+        that:
+          - item.stat.isdir
+          - not (item.stat.islnk | default(false))
+          - item.stat.pw_name == "root"
+          - item.stat.gr_name == "root"
+          - >-
+            (item.item in ["/", "/run"] and
+              item.stat.mode is match('^0[0-7][0145][0145]$')) or
+            (item.item == iac_validation_remote_parent and item.stat.mode == "0700")
+        fail_msg: "Validation ancestors must be root-owned, non-symlink directories; system ancestors may not be group/other writable"
+      loop: "{{ pg_validation_ancestor_metadata.results }}"
+
+    - name: "Gathering package state after validation"
+      ansible.builtin.package_facts:
+        manager: "rpm"
+
+    - name: "Gathering service state after validation"
+      ansible.builtin.service_facts:
+
+    - name: "Validating artifact root and marker before reading snapshots"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+      loop:
+        - "{{ iac_validation_remote_artifact_root }}"
+        - "{{ iac_validation_remote_artifact_root }}/.role-marker"
+      register: pg_validation_artifact_metadata
+
+    - name: "Checking artifact ownership, type, mode, and exact marker"
+      ansible.builtin.assert:
+        that:
+          - pg_validation_artifact_metadata.results[0].stat.isdir
+          - not (pg_validation_artifact_metadata.results[0].stat.islnk | default(false))
+          - pg_validation_artifact_metadata.results[0].stat.pw_name == "root"
+          - pg_validation_artifact_metadata.results[0].stat.mode == "0700"
+          - pg_validation_artifact_metadata.results[1].stat.isreg
+          - not (pg_validation_artifact_metadata.results[1].stat.islnk | default(false))
+          - pg_validation_artifact_metadata.results[1].stat.pw_name == "root"
+          - pg_validation_artifact_metadata.results[1].stat.mode == "0600"
+        fail_msg: "Validation artifact root and marker failed safety validation"
+
+    - name: "Reading validation artifact marker"
+      ansible.builtin.slurp:
+        src: "{{ iac_validation_remote_artifact_root }}/.role-marker"
+      register: pg_validation_marker_content
+      no_log: true
+
+    - name: "Checking exact validation artifact marker content"
+      ansible.builtin.assert:
+        that: (pg_validation_marker_content.content | b64decode) == iac_validation_marker_content
+        fail_msg: "Validation artifact marker content is not exact"
+
+    - name: "Reading validation baseline snapshots"
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop:
+        - "{{ iac_validation_remote_artifact_root }}/packages.json"
+        - "{{ iac_validation_remote_artifact_root }}/services.json"
+        - "{{ iac_validation_remote_artifact_root }}/files.json"
+      register: pg_validation_snapshots
+      no_log: true
+
+    - name: "Recording current sentinel metadata"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+      loop:
+        - "{{ iac_validation_remote_artifact_root }}/validation-sentinel"
+        - "{{ iac_validation_remote_artifact_root }}/validation-sentinel/config.conf"
+      register: pg_validation_sentinel_metadata
+
+    - name: "Checking package, service, and sentinel snapshots are unchanged"
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.packages == (pg_validation_snapshots.results[0].content | b64decode | from_json)
+          - ansible_facts.services == (pg_validation_snapshots.results[1].content | b64decode | from_json)
+          - >-
+            {
+              'directory': pg_validation_sentinel_metadata.results[0].stat,
+              'config': pg_validation_sentinel_metadata.results[1].stat
+            } == (pg_validation_snapshots.results[2].content | b64decode | from_json)
+        fail_msg: "Validation changed package, service, or sentinel file state"
 
 - name: "Verify platform validation precedes blueprint validation"
   hosts: all
@@ -52,3 +132,254 @@
           - pg_main_tasks.find(pg_blueprint_check_marker) >= 0
           - pg_main_tasks.find(pg_platform_check_marker) < pg_main_tasks.find(pg_blueprint_check_marker)
         fail_msg: "The platform check must precede blueprint validation in tasks/main.yml"
+
+- name: "Verify validation callback captured no sensitive source content"
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: "Read validation callback and verifier configuration"
+      ansible.builtin.set_fact:
+        pg_validation_molecule_source: "{{ lookup('ansible.builtin.file', 'molecule.yml') }}"
+        pg_validation_callback_source: "{{ lookup('ansible.builtin.file', 'callback_plugins/validation_capture.py') }}"
+    - name: "Assert verifier receives the same run-scoped callback paths"
+      ansible.builtin.assert:
+        that:
+          - "'verifier:' in pg_validation_molecule_source"
+          - "'IDARSI_VALIDATION_CALLBACK_ROOT: \"${MOLECULE_EPHEMERAL_DIRECTORY}\"' in pg_validation_molecule_source"
+          - "'IDARSI_VALIDATION_CALLBACK_PATH: \"${MOLECULE_EPHEMERAL_DIRECTORY}/validation-callback.log\"' in pg_validation_molecule_source"
+          - >-
+            lookup('ansible.builtin.env', 'IDARSI_VALIDATION_CALLBACK_ROOT') ==
+            lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY')
+          - >-
+            lookup('ansible.builtin.env', 'IDARSI_VALIDATION_CALLBACK_PATH') ==
+            lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') ~
+            '/validation-callback.log'
+        fail_msg: "Verifier callback environment does not match the provisioner run-scoped paths"
+    - name: "Assert callback task fields are stable opaque identifiers"
+      ansible.builtin.assert:
+        that:
+          - "'hashlib.sha256' in pg_validation_callback_source"
+          - "'play, host, task, and handler context' in pg_validation_callback_source"
+          - "'CAPTURED_TASK_NAMES' in pg_validation_callback_source"
+          - "'v2_runner_on_unreachable' in pg_validation_callback_source"
+          - "'unreachable' in pg_validation_callback_source"
+          - "'password' not in pg_validation_callback_source"
+        fail_msg: "Validation callback must never emit raw or sensitive task names"
+    - name: "Require the configured validation callback artifact path"
+      ansible.builtin.assert:
+        that:
+          - lookup('ansible.builtin.env', 'IDARSI_VALIDATION_CALLBACK_ROOT') is match('^/')
+          - >-
+            lookup('ansible.builtin.env', 'IDARSI_VALIDATION_CALLBACK_PATH') ==
+            lookup('ansible.builtin.env', 'IDARSI_VALIDATION_CALLBACK_ROOT') ~
+            '/validation-callback.log'
+          - lookup('ansible.builtin.env', 'IDARSI_VALIDATION_CALLBACK_PATH') != '/tmp/validation-callback.log'
+        fail_msg: "Validation callback verification must use the explicit run-scoped artifact path"
+    - name: "Inspect validation callback artifact"
+      ansible.builtin.stat:
+        path: "{{ lookup('ansible.builtin.env', 'IDARSI_VALIDATION_CALLBACK_PATH') }}"
+        follow: false
+      register: pg_validation_callback_metadata
+    - name: "Read validation callback capture"
+      ansible.builtin.slurp:
+        src: "{{ lookup('ansible.builtin.env', 'IDARSI_VALIDATION_CALLBACK_PATH') }}"
+      register: pg_validation_callback_capture
+    - name: "Assert validation callback artifact is a private regular file"
+      ansible.builtin.assert:
+        that:
+          - pg_validation_callback_metadata.stat.isreg
+          - not (pg_validation_callback_metadata.stat.islnk | default(false))
+          - pg_validation_callback_metadata.stat.uid == lookup('ansible.builtin.pipe', 'id -u') | int
+          - pg_validation_callback_metadata.stat.mode == "0600"
+        fail_msg: "Validation callback artifact is not a private regular file"
+    - name: "Parse validation callback records"
+      ansible.builtin.set_fact:
+        pg_validation_callback_records: >-
+          {{ pg_validation_callback_capture.content | b64decode | split('\n')
+             | reject('equalto', '') | map('from_json') | list }}
+    - name: "Assert every callback record is censored allowlisted metadata"
+      ansible.builtin.assert:
+        that:
+          - pg_validation_callback_record.keys() | list | sort
+            == ['censored', 'status', 'task']
+          - pg_validation_callback_record.censored is sameas true
+          - pg_validation_callback_record.status in ['ok', 'failed', 'unreachable']
+        loop: "{{ pg_validation_callback_records }}"
+        loop_control:
+          loop_var: pg_validation_callback_record
+      when: pg_validation_callback_records | length > 0
+    - name: "Derive expected validation action identifiers from play, host, task, and handler"
+      ansible.builtin.set_fact:
+        pg_validation_expected_actions:
+          - play: "Validate a valid PostgreSQL blueprint"
+            host: "instance-idarsi-validation"
+            name: "Running validation for a valid blueprint"
+            status: "ok"
+          - play: "Reject a malformed DCS proxy"
+            host: "instance-idarsi-validation"
+            name: "Checking endpoint syntax"
+            status: "failed"
+        pg_validation_expected_action_records: []
+    - name: "Hash current validation action identities"
+      ansible.builtin.set_fact:
+        pg_validation_expected_action_records: >-
+          {{ pg_validation_expected_action_records + [
+                item | combine({'task': 'action-' ~
+                  (((item.play | length | string) ~ ':' ~ item.play ~
+                    (item.host | length | string) ~ ':' ~ item.host ~
+                    (item.name | length | string) ~ ':' ~ item.name ~
+                    '0:') | hash('sha256'))})
+             ] }}
+      loop: "{{ pg_validation_expected_actions }}"
+      loop_control:
+        loop_var: item
+
+    - name: "Assert expected validation callback records were captured"
+      ansible.builtin.assert:
+        that:
+          - pg_validation_callback_records | length > 0
+          - >-
+            pg_validation_callback_records | map(attribute='task')
+            | select('match', '^action-[0-9a-f]{64}$') | list | length
+            == pg_validation_callback_records | length
+          - pg_validation_callback_records | map(attribute='task') | list | unique | length
+            == pg_validation_callback_records | length
+          - >-
+            (pg_validation_callback_records | map(attribute='task') | list | sort)
+            == (pg_validation_expected_action_records | map(attribute='task') | list | sort)
+          - (pg_validation_callback_capture.content | b64decode) is not search('validation artifact cleanup target')
+        fail_msg: "Validation callback emitted an unexpected or uncensored record"
+
+    - name: "Assert expected status for every current validation action"
+      ansible.builtin.assert:
+        that:
+          - pg_validation_expected_action.task in (pg_validation_callback_records | map(attribute='task') | list)
+          - >-
+            (pg_validation_callback_records | selectattr('task', 'equalto', pg_validation_expected_action.task)
+             | map(attribute='status') | list) == [pg_validation_expected_action.status]
+        fail_msg: >-
+          Validation action {{ pg_validation_expected_action.name }} must have
+          status {{ pg_validation_expected_action.status }}
+      loop: "{{ pg_validation_expected_action_records }}"
+      loop_control:
+        loop_var: pg_validation_expected_action
+
+    - name: "Report unreachable validation actions as deterministic failures"
+      ansible.builtin.assert:
+        that: pg_validation_unreachable_actions | length == 0
+        fail_msg: >-
+          Validation encountered unreachable actions: {{ pg_validation_unreachable_actions | to_json }}
+      vars:
+        pg_validation_unreachable_actions: >-
+          {{ pg_validation_callback_records
+             | selectattr('status', 'equalto', 'unreachable')
+             | map(attribute='task') | list | sort }}
+
+- name: "Verify cluster model guardrails are represented"
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - name: "Reading cluster model implementation"
+      ansible.builtin.set_fact:
+        pg_dcs_validation_source: "{{ lookup('ansible.builtin.file', '../../tasks/validate/validate_dcs_endpoints.yml') }}"
+        pg_patroni_source: "{{ lookup('ansible.builtin.file', '../../tasks/patroni_present.yml') }}"
+        pg_template_source: "{{ lookup('ansible.builtin.file', '../../templates/patroni.yml.j2') }}"
+        pg_cluster_source: "{{ lookup('ansible.builtin.file', '../../tasks/validate/validate_cluster.yml') }}"
+        pg_certificate_source: "{{ lookup('ansible.builtin.file', '../../tasks/certification_present.yml') }}"
+        pg_etcd_validation_source: "{{ lookup('ansible.builtin.file', '../../tasks/validate/validate_etcd.yml') }}"
+        pg_etcd_present_source: "{{ lookup('ansible.builtin.file', '../../tasks/etcd_present.yml') }}"
+        pg_etcd_template_source: "{{ lookup('ansible.builtin.file', '../../templates/etcd.conf.j2') }}"
+    - name: "Checking proxy, isolation, identity, and orphan guardrails"
+      ansible.builtin.assert:
+        that:
+          - "'pg_dcs_models_by_cluster' in pg_dcs_validation_source"
+          - "'is_proxy: false' in pg_dcs_validation_source"
+          - "'pg_patroni_dcs_proxy_model' in pg_patroni_source"
+          - "'pg_patroni_dcs_endpoint_model' in pg_template_source"
+          - "'hostvars[pg_validation_member.host] is defined' in pg_cluster_source"
+          - >-
+            '[[ -d "$orphan" ]]' in pg_certificate_source
+          - "'pg_validation_etcd_members_normalized: []' in pg_cluster_source"
+          - "'initial_cluster_state' in pg_etcd_validation_source"
+          - "'data_dir' in pg_etcd_validation_source"
+          - "'ansible.utils.ip_address' in pg_etcd_validation_source"
+          - "'pg_etcd_bind_address_normalized' in pg_etcd_template_source"
+          - "'pg_validation_etcd_member.name is match' in pg_etcd_validation_source"
+          - >-
+            'pg_etcd_metadata_directory' in pg_etcd_validation_source or
+            'pg_etcd_metadata_directory' in pg_etcd_present_source
+          - "'mode: \"0600\"' in pg_etcd_present_source"
+          - "'^0[0-7][0145][0145]$' in pg_etcd_present_source"
+          - "'force: false' in pg_etcd_present_source"
+        fail_msg: "Cluster endpoint and certificate transaction guardrails are incomplete"
+
+- name: "Verify fresh cluster certificate guardrails are wired"
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - name: "Reading certificate prerequisite and external path helpers"
+      ansible.builtin.set_fact:
+        pg_prerequisite_source: "{{ lookup('ansible.builtin.file', '../../tasks/patroni_prerequisites_present.yml') }}"
+        pg_external_path_source: "{{ lookup('ansible.builtin.file', '../../tasks/validate/validate_external_path_ancestors.yml') }}"
+        pg_certificate_source: "{{ lookup('ansible.builtin.file', '../../tasks/cluster_certificates_present.yml') }}"
+    - name: "Checking fresh generation and external ancestor protections"
+      ansible.builtin.assert:
+        fail_msg: "Fresh certificate prerequisites or external ancestor guardrails are incomplete"
+        that:
+          - "'acl' in pg_prerequisite_source"
+          - "'util-linux' in pg_prerequisite_source"
+          - "'getfacl' in pg_prerequisite_source"
+          - "'setfacl' in pg_prerequisite_source"
+          - "'namei' in pg_prerequisite_source"
+          - "'pg_external_path_ancestor_stats' in pg_external_path_source"
+          - "'not (pg_external_path_ancestor_result.stat.islnk | default(false))' in pg_external_path_source"
+          - "'pg_external_path_ancestor_result.stat.pw_name | default('') == 'root'' in pg_external_path_source"
+          - "'default:' in pg_external_path_source"
+          - "'validate/validate_external_path_ancestors.yml' in pg_certificate_source"
+
+- name: "Verify CA source and serial guardrails are consistently represented"
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - name: "Reading CA source and serial implementations"
+      ansible.builtin.set_fact:
+        pg_controller_source: "{{ lookup('ansible.builtin.file', '../../tasks/validate/validate_controller_sources.yml') }}"
+        pg_replication_source: "{{ lookup('ansible.builtin.file', '../../tasks/replication_present.yml') }}"
+        pg_certificate_source: "{{ lookup('ansible.builtin.file', '../../tasks/certification_present.yml') }}"
+        pg_cluster_certificate_source: "{{ lookup('ansible.builtin.file', '../../tasks/cluster_certificates_present.yml') }}"
+    - name: "Checking source policy and serial safeguards"
+      ansible.builtin.assert:
+        that:
+          - "'pg_secure_source_mode_regex' in pg_controller_source"
+          - "'pg_secure_source_mode_regex' in pg_replication_source"
+          - "'pg_secure_source_mode_regex' in pg_certificate_source"
+          - "'not (pg_replication_ca_source_stat.stat.islnk | default(false))' in pg_replication_source"
+          - "'pg_client_certificate_authority_src_stat.stat.uid | default(-1) == 0' in pg_certificate_source"
+          - "'! \"$serial\" =~ ^0+$' in pg_certificate_source"
+          - "'! \"$serial\" =~ ^0+$' in pg_cluster_certificate_source"
+          - "'Duplicate serial registry entry' in pg_cluster_certificate_source"
+          - "'Duplicate existing certificate serial' in pg_certificate_source"
+          - "'Duplicate existing certificate serial' in pg_cluster_certificate_source"
+        fail_msg: "CA source and certificate serial guardrails are incomplete"
+
+- name: "Verify etcd data directory root invalid-input guardrails"
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: "Checking unsafe etcd roots are not valid policy paths"
+      ansible.builtin.assert:
+        that:
+          - item is not match('^/[A-Za-z0-9_-][A-Za-z0-9_.-]*(?:/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$')
+            or item in ['/var', '/etc']
+            or item is match('^/(?:var|etc)(?:/|$)')
+            or item is search('(^|/)\.\.?(/|$)')
+        fail_msg: "Unsafe etcd root {{ item }} was accepted by the test policy"
+      loop:
+        - "/"
+        - "/var"
+        - "/etc"
+        - "/var/lib/../etcd"
+        - "/var/lib/ansible/.ansible/validation/validation/etcd/"

@@ -22,7 +22,7 @@
   vars:
     ansible_become_method: su
     state: install
-    pg_patroni_restapi_listen_address: "0.0.0.0"
+    pg_patroni_restapi_listen_address: "127.0.0.1"
     pg_lang: "en"
     pg_locale: "US"
     pg_disable_postgresql_module: false
@@ -55,6 +55,7 @@
                   - host replication replicator 0.0.0.0/0 scram-sha-256
                 restapi:
                   port: 8008
+                  connect_address: "127.0.0.1:8008"
                   authentication:
                     username: patroni
                     password: patroni_password
@@ -68,6 +69,42 @@
                 - host: pg03
                   instance: main
                   name: molecule-patroni-membership-pg03
+            - name: molecule-patroni-membership-secondary
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints:
+                  - http://etcd01:2379
+                  - http://etcd02:2379
+                  - http://etcd03:2379
+                proxy: http://etcd01:2379
+              patroni:
+                ttl: 30
+                loop_wait: 5
+                retry_timeout: 5
+                postgresql:
+                  superuser_password: secondary_postgres_password
+                  replication_username: secondary_replicator
+                replication_password: secondary_replication_password
+                pg_hba:
+                  - local all all trust
+                  - host all all 0.0.0.0/0 scram-sha-256
+                restapi:
+                  port: 8009
+                  connect_address: "127.0.0.1:8009"
+                  authentication:
+                    username: patroni-secondary
+                    password: patroni_secondary_password
+              members:
+                - host: pg01
+                  instance: secondary
+                  name: molecule-patroni-membership-secondary-pg01
+                - host: pg02
+                  instance: secondary
+                  name: molecule-patroni-membership-secondary-pg02
+                - host: pg03
+                  instance: secondary
+                  name: molecule-patroni-membership-secondary-pg03
           instances:
             - name: main
               cluster: molecule-patroni-membership
@@ -89,6 +126,12 @@
               databases:
                 - name: patroni_finalization_db
                   owner: patroni_finalization_user
+            - name: secondary
+              cluster: molecule-patroni-membership-secondary
+              configuration:
+                listen_addresses: "*"
+                port: 5433
+                max_connections: 50
   roles:
     - role: ansible-iac-role-postgresql
 
@@ -96,14 +139,23 @@
   hosts: pg01:pg02:pg03
   become: false
   tasks:
-    - name: "Wait for local Patroni API"
-      ansible.builtin.uri:
-        url: http://127.0.0.1:8008/patroni
-        status_code: 200
-      register: patroni_health
-      retries: 90
-      delay: 2
-      until: patroni_health.status == 200
+     - name: "Wait for local Patroni API"
+       ansible.builtin.uri:
+         url: http://127.0.0.1:8008/patroni
+         status_code: 200
+       register: patroni_health
+       retries: 90
+       delay: 2
+       until: patroni_health.status == 200
+
+     - name: "Wait for the second same-host same-version Patroni API"
+       ansible.builtin.uri:
+         url: http://127.0.0.1:8009/patroni
+         status_code: 200
+       register: patroni_secondary_health
+       retries: 90
+       delay: 2
+       until: patroni_secondary_health.status == 200
 
 - name: "Remove one member and verify a two-member cluster"
   hosts: pg01

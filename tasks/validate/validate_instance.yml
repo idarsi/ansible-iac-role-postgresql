@@ -18,6 +18,8 @@
     that:
       - pg_validation_instance_record.databases is not defined or pg_validation_instance_record.databases | type_debug == 'list'
       - pg_validation_instance_record.roles is not defined or pg_validation_instance_record.roles | type_debug == 'list'
+      - pg_validation_instance_record.global_access is not defined or pg_validation_instance_record.global_access | type_debug == 'list'
+      - pg_validation_instance_record.maprole is not defined or pg_validation_instance_record.maprole | type_debug == 'list'
       - pg_validation_instance_record.configuration is not defined or pg_validation_instance_record.configuration | type_debug == 'dict'
       - pg_validation_instance_record.replication is not defined or pg_validation_instance_record.replication | type_debug == 'dict'
       - >-
@@ -33,7 +35,10 @@
         pg_validation_instance_record.certificate_subject_alt_names is not defined
         or (
           pg_validation_instance_record.certificate_subject_alt_names
-          | select('match', '^[A-Za-z0-9][A-Za-z0-9._-]*$') | list | length
+          | reject('ansible.utils.ip_address')
+          | reject('match', '^[0-9.:]+$')
+          | select('match', '^(?=.*[A-Za-z])[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$')
+          | list | length
         ) == pg_validation_instance_record.certificate_subject_alt_names | length
       - pg_validation_instance_record.cluster is not defined or pg_validation_instance_record.cluster is string
       - >-
@@ -41,6 +46,36 @@
         or pg_validation_instance_record.configuration.shared_preload_libraries is not defined
         or pg_validation_instance_record.configuration.shared_preload_libraries | type_debug in ['str', 'list']
     fail_msg: "PostgreSQL instance databases, roles, configuration, and replication must use the expected types"
+
+- name: "Checking PostgreSQL client CA input contract"
+  ansible.builtin.assert:
+    that:
+      - >-
+        pg_validation_instance_record.client_certificate_authority_content is not defined
+        or pg_validation_instance_record.client_certificate_authority_content is string
+      - >-
+        pg_validation_instance_record.client_certificate_authority_src is not defined
+        or pg_validation_instance_record.client_certificate_authority_src is string
+      - >-
+        not (
+          pg_validation_instance_record.client_certificate_authority_content is defined
+          and pg_validation_instance_record.client_certificate_authority_src is defined
+        )
+      - >-
+        pg_validation_instance_record.client_certificate_authority_content is not defined
+        or pg_validation_instance_record.client_certificate_authority_content | trim | length > 0
+      - >-
+        pg_validation_instance_record.client_certificate_authority_src is not defined
+        or (
+          pg_validation_instance_record.client_certificate_authority_src | trim | length > 0
+          and pg_validation_instance_record.client_certificate_authority_src is match('^/[^/].*$')
+          and pg_validation_instance_record.client_certificate_authority_src is not search('[\x00-\x1f\x7f\s]')
+          and pg_validation_instance_record.client_certificate_authority_src is not search('(^|/)\.\.?(/|$)')
+        )
+    fail_msg: >-
+      PostgreSQL client CA requires exactly one non-empty native string:
+      client_certificate_authority_content or a safe absolute
+      client_certificate_authority_src
 
 - name: "Checking PostgreSQL instance cluster reference"
   ansible.builtin.assert:
@@ -103,8 +138,8 @@
 - name: "Checking PostgreSQL instance port"
   ansible.builtin.assert:
     that:
-      - pg_validation_instance_record.configuration.port | string is match('^[0-9]+$')
-      - (pg_validation_instance_record.configuration.port | int) in range(1, 65536)
+      - pg_validation_instance_record.configuration.port is integer
+      - pg_validation_instance_record.configuration.port in range(1, 65536)
     fail_msg: "PostgreSQL instance port must be an integer between 1 and 65535"
   when:
     - pg_validation_instance_record.configuration is defined
@@ -136,3 +171,98 @@
   loop: "{{ pg_validation_instance_record.databases | default([]) }}"
   loop_control:
     loop_var: pg_validation_database_record
+
+- name: "Normalizing PostgreSQL HBA validation context"
+  ansible.builtin.set_fact:
+    pg_validation_hba_security_profile: >-
+      {{
+        (
+          pg_validation_cluster_models | default([])
+          | selectattr('key', 'equalto', (pg_validation_version | string) ~ ':' ~ (pg_validation_instance_record.cluster | default('')))
+          | map(attribute='security_profile') | list | first
+        ) | default(pg_validation_instance_record.security_profile | default('off'))
+      }}
+    pg_validation_hba_security_ssl: >-
+      {{
+        (
+          pg_validation_cluster_models | default([])
+          | selectattr('key', 'equalto', (pg_validation_version | string) ~ ':' ~ (pg_validation_instance_record.cluster | default('')))
+          | map(attribute='security_ssl') | list | first
+        ) | default(pg_validation_instance_record.security_ssl | default(pg_validation_instance_record.security_profile | default('off')))
+      }}
+    pg_validation_hba_client_ca_enabled: >-
+      {{
+        pg_validation_instance_record.client_certificate_authority_content is defined
+        or pg_validation_instance_record.client_certificate_authority_src is defined
+      }}
+
+- name: "Detecting certificate-aware raw Patroni pg_hba records"
+  ansible.builtin.set_fact:
+    pg_validation_hba_raw_uses_client_certificate: >-
+      {% set ns = namespace(found=false) %}
+      {% set cluster_model = pg_validation_cluster_models | default([])
+         | selectattr('key', 'equalto', (pg_validation_version | string) ~ ':' ~ (pg_validation_instance_record.cluster | default('')))
+         | map(attribute='record') | list | first | default({}) %}
+      {% for line in cluster_model.patroni.pg_hba | default([]) %}
+      {% set tokens = line.split() if line is string else [] %}
+      {% set method_index = 3 if (tokens[0] | default('')) == 'local' else 4 %}
+      {% if (tokens[method_index] | default('')) == 'cert'
+         or (tokens[method_index + 1:] | select('search', '^(clientcert|clientname|map)=') | list | length > 0) %}
+      {% set ns.found = true %}
+      {% endif %}
+      {% endfor %}
+      {{ ns.found }}
+
+- name: "Checking raw Patroni pg_hba certificate CA requirements"
+  ansible.builtin.assert:
+    that:
+      - >-
+        not pg_validation_hba_raw_uses_client_certificate | bool
+        or pg_validation_hba_client_ca_enabled | bool
+    fail_msg: "PostgreSQL certificate-aware authentication is enabled without a configured client CA"
+
+- name: "Validating global PostgreSQL structured pg_hba records during preflight"
+  ansible.builtin.include_tasks: validate_hba_access_record.yml
+  loop: "{{ pg_validation_instance_record.global_access | default([]) }}"
+  loop_control:
+    loop_var: pg_validation_hba_global_record
+  vars:
+    pg_hba_access_record: "{{ pg_validation_hba_global_record }}"
+    pg_hba_access_type: "{{ pg_hba_access_record.type | default('hostssl' if pg_validation_hba_security_profile == 'safe' else 'host') }}"
+    pg_security: "{{ pg_validation_hba_security_profile }}"
+    pg_security_ssl: "{{ pg_validation_hba_security_ssl }}"
+    pg_client_certificate_authority_enabled: "{{ pg_validation_hba_client_ca_enabled | bool }}"
+    pg_hba_access_uses_client_certificate: >-
+      {{
+         (pg_hba_access_record.method | default('scram-sha-256')) == 'cert'
+         or pg_hba_access_record.clientcert is defined
+         or pg_hba_access_record.clientname is defined
+         or pg_hba_access_record.map is defined
+         or (pg_hba_access_record.options | default({})).clientcert is defined
+         or (pg_hba_access_record.options | default({})).clientname is defined
+         or (pg_hba_access_record.options | default({})).map is defined
+      }}
+    pg_maprole: "{{ pg_validation_instance_record.maprole | default([]) }}"
+
+- name: "Validating database PostgreSQL structured pg_hba records during preflight"
+  ansible.builtin.include_tasks: validate_hba_access_record.yml
+  loop: "{{ pg_validation_instance_record.databases | default([]) | subelements('access', skip_missing=True) }}"
+  loop_control:
+    loop_var: pg_validation_hba_database_record
+  vars:
+    pg_hba_access_record: "{{ pg_validation_hba_database_record.1 }}"
+    pg_hba_access_type: "{{ pg_hba_access_record.type | default('hostssl' if pg_validation_hba_security_profile == 'safe' else 'host') }}"
+    pg_security: "{{ pg_validation_hba_security_profile }}"
+    pg_security_ssl: "{{ pg_validation_hba_security_ssl }}"
+    pg_client_certificate_authority_enabled: "{{ pg_validation_hba_client_ca_enabled | bool }}"
+    pg_hba_access_uses_client_certificate: >-
+      {{
+         (pg_hba_access_record.method | default('scram-sha-256')) == 'cert'
+         or pg_hba_access_record.clientcert is defined
+         or pg_hba_access_record.clientname is defined
+         or pg_hba_access_record.map is defined
+         or (pg_hba_access_record.options | default({})).clientcert is defined
+         or (pg_hba_access_record.options | default({})).clientname is defined
+         or (pg_hba_access_record.options | default({})).map is defined
+      }}
+    pg_maprole: "{{ pg_validation_instance_record.maprole | default([]) }}"

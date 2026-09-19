@@ -1,0 +1,14 @@
+---
+- name: "Checking every prior Patroni endpoint pair"
+  ansible.builtin.include_tasks: check_patroni_endpoint_pair.yml
+  loop: >-
+    {{ pg_validation_patroni_endpoint_index_candidates
+       [0:pg_validation_patroni_index_position] }}
+  vars:
+    pg_validation_patroni_current_record: >-
+      {{ pg_validation_patroni_endpoint_index_candidates
+         [pg_validation_patroni_index_position] }}
+    pg_validation_patroni_prior_record: >-
+      {{ pg_validation_patroni_prior_endpoint_record }}
+  loop_control:
+    loop_var: pg_validation_patroni_prior_endpoint_record

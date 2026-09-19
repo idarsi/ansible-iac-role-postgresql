@@ -1,0 +1,40 @@
+---
+###############################################################################
+#
+# patroni_prerequisites_present.yml
+#
+# Install the PostgreSQL/Patroni packages and establish the ownership roots
+# needed by Patroni PKI generation.  This is deliberately separate from the
+# certificate task: certificate generation must never be the operation that
+# creates its own service-user or filesystem prerequisites.
+#
+###############################################################################
+
+- name: "Ensuring PostgreSQL repository is present for Patroni"
+  ansible.builtin.include_tasks: repo_present.yml
+
+- name: "Ensuring PostgreSQL server packages are installed for Patroni"
+  ansible.builtin.include_tasks: package_present.yml
+  vars:
+    pg_package: "postgresql{{ pg_version }}-server,postgresql{{ pg_version }}-contrib"
+
+- name: "Ensuring PostgreSQL base directories are present for Patroni"
+  ansible.builtin.file:
+    path: "{{ pg_patroni_base_directory }}"
+    state: "directory"
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0700"
+  loop:
+    - "{{ pg_default_dir }}"
+    - "{{ pg_bind_dir }}"
+    - "{{ pg_real_dir }}"
+    - "{{ pg_log_directory }}"
+  loop_control:
+    loop_var: pg_patroni_base_directory
+    label: "{{ pg_patroni_base_directory }}"
+
+- name: "Ensuring Patroni packages are installed before certificate generation"
+  ansible.builtin.include_tasks: package_present.yml
+  vars:
+    pg_package: "{{ pg_patroni_packages }}"
