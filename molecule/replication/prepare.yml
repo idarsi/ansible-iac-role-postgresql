@@ -622,8 +622,9 @@
              if (pg_replication_network_result.stdout | from_json) is mapping else {}) is mapping else {}) | default('') | trim | length > 0
         fail_msg: >-
           Container {{ pg_replication_network_result.pg_replication_container }}
-          must use only Podman's default network with a defined, non-empty IPv4
-          address; host and pasta networking are not supported
+           must use only Podman's default network with a unicast IPv4 address;
+           the address must be defined and non-empty; host and pasta networking
+           are not supported
       loop: "{{ pg_replication_container_networks.results }}"
       loop_control:
         loop_var: pg_replication_network_result

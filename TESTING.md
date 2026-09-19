@@ -72,6 +72,10 @@ The focused managed-etcd metadata guardrail test is executable at
 `scripts/etcd_metadata_guardrails_test.py`; it checks path validation ordering,
 fresh-marker lifecycle handling, ancestor symlink/write protections, and
 named/default marker ACL rejection.
+The executable `scripts/all_absent_guardrails_test.py` verifies that destructive
+package cleanup uses only the role's managed-package marker and never enables
+DNF `allowerasing`; installation retains the explicitly justified conflict
+handling.
 The executable `scripts/etcd_data_directory_lifecycle_test.py` additionally
 parses the role's actual data-root, `config.data_dir`, metadata, and marker
 derivation expressions, then creates only controller-local temporary

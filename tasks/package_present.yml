@@ -82,6 +82,7 @@
 - name: "Ensuring packages are installed"
   ansible.builtin.dnf:
     name: "{{ pg_package_list }}"
+    allowerasing: true
     sslverify: "{{ dnf_sslverify }}"
     validate_certs: "{{ dnf_validate_certs }}"
     disable_gpg_check: "{{ dnf_disable_gpg_check }}"

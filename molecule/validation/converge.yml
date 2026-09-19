@@ -793,11 +793,11 @@
             that:
               - ansible_failed_result is defined
               - >-
-                pg_validation_expected_collision_message in
-                (ansible_failed_result | to_nice_json)
+                 pg_validation_expected_collision_message in
+                 (ansible_failed_result.msg | default(''))
               - >-
-                "2001:db8::1" in
-                (ansible_failed_result | to_nice_json)
+                 "2001:db8::1" in
+                 (ansible_failed_result.msg | default(''))
 
 - name: "Reject wildcard Patroni listen overlap before mutation"
   hosts: instance-idarsi-validation

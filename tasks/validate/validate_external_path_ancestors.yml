@@ -122,6 +122,10 @@
       Every existing component of external TLS paths must be traversable and
       must not be a symlink; the role will not mutate external paths.
   loop: "{{ pg_external_path_component_checks.results }}"
+  loop_control:
+    loop_var: pg_external_path_component_result
+  vars:
+    item: "{{ pg_external_path_component_result }}"
 
 - name: "Inspecting external TLS ancestor ACLs"
   ansible.builtin.command:
@@ -168,6 +172,10 @@
       {{ pg_external_path_service_group }}, with group traversal when applicable;
       the role will not create or change external paths.
   loop: "{{ pg_external_path_ancestor_stats.results }}"
+  loop_control:
+    loop_var: pg_external_path_ancestor_result
+  vars:
+    item: "{{ pg_external_path_ancestor_result }}"
 
 - name: "Rejecting unsafe ACLs on external TLS ancestors"
   ansible.builtin.assert:
@@ -182,6 +190,10 @@
       External TLS ancestors must have no default or named ACL entries and
       must not grant group or other write access.
   loop: "{{ pg_external_path_ancestor_acls.results }}"
+  loop_control:
+    loop_var: pg_external_path_ancestor_acl_result
+  vars:
+    item: "{{ pg_external_path_ancestor_acl_result }}"
 
 - name: "Rejecting unsafe ACLs on external TLS files"
   ansible.builtin.assert:
@@ -195,3 +207,7 @@
       default ACL entries; access must be provided only by their owner/group
       mode contract. The role will not modify external files.
   loop: "{{ pg_external_path_file_acls.results }}"
+  loop_control:
+    loop_var: pg_external_path_file_acl_result
+  vars:
+    item: "{{ pg_external_path_file_acl_result }}"
