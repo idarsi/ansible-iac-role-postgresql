@@ -16,13 +16,15 @@ normalize_replication_sha256() {
 
 normalize_replication_base_repo_digest() {
   replication_repo_digest=$1
+  replication_repo_digest=${replication_repo_digest/index.docker.io/docker.io}
   case "$replication_repo_digest" in
-    "docker.io/rockylinux/rockylinux@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5")
-      printf '%s\n' "$replication_repo_digest"
-      ;;
-    "docker.io/rockylinux/rockylinux@sha256:d706f937383b94727cfece22e2e29d67e26ed85c8156993e4718ca68c5e7dcd4")
-      printf '%s\n' "$replication_repo_digest"
-      ;;
+    docker.io/rockylinux/rockylinux@sha256:*) ;;
+    *) return 1 ;;
+  esac
+  replication_digest=${replication_repo_digest##*@}
+  case "$replication_digest" in
+    sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5|sha256:d706f937383b94727cfece22e2e29d67e26ed85c8156993e4718ca68c5e7dcd4)
+      printf '%s\n' "docker.io/rockylinux/rockylinux@${replication_digest}" ;;
     *) return 1 ;;
   esac
 }
@@ -41,7 +43,7 @@ validate_replication_base_repo_digests() {
     replication_normalized_repo_digest=$(normalize_replication_base_repo_digest "$replication_repo_digest") || return 1
     [ -n "$replication_normalized_repo_digest" ] || return 1
     replication_seen=$((replication_seen + 1))
-    case "$replication_repo_digest" in
+    case "$replication_normalized_repo_digest" in
       docker.io/rockylinux/rockylinux@${replication_expected_digest}) replication_untagged_b33d=$((replication_untagged_b33d + 1)) ;;
       docker.io/rockylinux/rockylinux@sha256:d706f937383b94727cfece22e2e29d67e26ed85c8156993e4718ca68c5e7dcd4) replication_untagged_d706=$((replication_untagged_d706 + 1)) ;;
       *) return 1 ;;

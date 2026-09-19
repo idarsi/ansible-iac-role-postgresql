@@ -23,6 +23,10 @@ OBSERVED_REPO_DIGESTS = {
     OBSERVED_UNTAGGED_B33D_REPO_DIGEST,
     OBSERVED_EQUIVALENT_REPO_DIGEST,
 }
+REPO_DIGEST_PATTERN = re.compile(
+    r"^(?P<registry>(?:docker\.io|index\.docker\.io))/"
+    r"(?P<repository>rockylinux/rockylinux)@(?P<digest>sha256:[0-9a-f]{64})$"
+)
 
 
 def normalize_digest(value: object) -> str | None:
@@ -37,9 +41,10 @@ def normalize_digest(value: object) -> str | None:
 def normalize_repo_digest(value: object) -> str | None:
     if not isinstance(value, str):
         return None
-    if value in OBSERVED_REPO_DIGESTS:
-        return value
-    return None
+    match = REPO_DIGEST_PATTERN.fullmatch(value)
+    if match is None:
+        return None
+    return f"docker.io/{match.group('repository')}@{match.group('digest')}"
 
 
 def repo_digest_alias_kind(value: object) -> str | None:
@@ -89,12 +94,12 @@ def normalize_repo_digests(values: object, name: str) -> list[str]:
     if len(values) != 2:
         raise ValueError(f"{name} RepoDigests must contain the exact two untagged aliases")
     normalized = [normalize_repo_digest(value) for value in values]
-    kinds = [repo_digest_alias_kind(value) for value in values]
+    kinds = [repo_digest_alias_kind(value) for value in normalized]
     if any(value is None for value in normalized):
         raise ValueError(f"{name} image has no valid RepoDigests")
-    if sorted(kinds) != ["untagged-b33d", "untagged-d706"]:
+    if any(kind is None for kind in kinds) or sorted(kinds) != ["untagged-b33d", "untagged-d706"]:
         raise ValueError(f"{name} RepoDigests contains duplicate or unsupported aliases")
-    return list(values)
+    return normalized
 
 
 def normalize_image_json(value: str, name: str = "base") -> str:

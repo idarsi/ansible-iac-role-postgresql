@@ -78,6 +78,7 @@ jobs:
             test -x scripts/replication_prerequisite_precedence_guardrails_test.py
             test -x scripts/validation_callback_guardrails_test.py
             test -x scripts/all_absent_guardrails_test.py
+            test -x scripts/baseline_service_diagnostics_guardrails_test.py
             "${CI_PYTHON_COMMAND}" scripts/vagrant_pki_transaction_guardrails_test.py
            bash scripts/pki_guardrails_test.sh
            bash scripts/replication_molecule_guardrails_test.sh
@@ -99,7 +100,9 @@ jobs:
             "${REPLICATION_PYTHON_COMMAND}" scripts/replication_metadata_guardrails_test.py
               "${CI_PYTHON_COMMAND}" scripts/replication_prerequisite_precedence_guardrails_test.py
               "${CI_PYTHON_COMMAND}" scripts/validation_callback_guardrails_test.py
+              "${CI_PYTHON_COMMAND}" scripts/validation_endpoint_collision_guardrails_test.py
               "${CI_PYTHON_COMMAND}" scripts/all_absent_guardrails_test.py
+              "${CI_PYTHON_COMMAND}" scripts/baseline_service_diagnostics_guardrails_test.py
              "${CI_PYTHON_COMMAND}" scripts/cluster_collision_paths_test.py
 
       - name: Install Ansible collections

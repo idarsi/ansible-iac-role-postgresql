@@ -24,6 +24,20 @@
       ansible.builtin.command: systemctl is-active postgresql-17-main.service
       register: pg_service
       changed_when: false
+      failed_when: false
+
+    - name: "Emit PostgreSQL journal diagnostics for inactive service"
+      ansible.builtin.command: "journalctl -u postgresql-17-main.service --no-pager -n 80"
+      when: pg_service.rc != 0
+      changed_when: false
+      failed_when: false
+
+    - name: "Require PostgreSQL 17 service to be active"
+      ansible.builtin.assert:
+        that:
+          - pg_service.rc == 0
+          - pg_service.stdout | trim == "active"
+        fail_msg: "PostgreSQL 17 service is not active"
 
     - name: "Checking database"
       become: true
@@ -50,6 +64,20 @@
       ansible.builtin.command: systemctl is-active postgresql-18-main18.service
       register: pg18_service
       changed_when: false
+      failed_when: false
+
+    - name: "Emit PostgreSQL 18 journal diagnostics for inactive service"
+      ansible.builtin.command: "journalctl -u postgresql-18-main18.service --no-pager -n 80"
+      when: pg18_service.rc != 0
+      changed_when: false
+      failed_when: false
+
+    - name: "Require PostgreSQL 18 service to be active"
+      ansible.builtin.assert:
+        that:
+          - pg18_service.rc == 0
+          - pg18_service.stdout | trim == "active"
+        fail_msg: "PostgreSQL 18 service is not active"
 
     - name: "Checking PostgreSQL 18 database"
       become: true

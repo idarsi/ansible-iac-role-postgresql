@@ -222,8 +222,8 @@
           - pg_replication_base_repo_digest is string
           - pg_replication_base_repo_digest | length > 0
           - >-
-            pg_replication_base_repo_digest is match(
-            "^docker\\.io/rockylinux/rockylinux:9-ubi-init@sha256:[0-9a-f]{64}$")
+             pg_replication_base_repo_digest is match(
+             "^docker\\.io/rockylinux/rockylinux:9-ubi-init@sha256:[0-9a-f]{64}$")
           - >-
             pg_replication_base_repo_digest ==
             pg_replication_image_name ~ "@" ~ pg_replication_image_digest
@@ -586,8 +586,11 @@
         that:
           - "(pg_replication_network_result.stdout | from_json) is mapping"
           - >-
-            (pg_replication_network_result.stdout | from_json).keys() | list | sort
-            == ["podman"]
+             (pg_replication_network_result.stdout | from_json).keys() | list | sort
+             == ["podman"]
+          - >-
+             (pg_replication_network_result.stdout | from_json).keys() | list
+             | difference(["podman"]) | length == 0
           - >-
             "host" not in (pg_replication_network_result.stdout | from_json).keys()
           - >-

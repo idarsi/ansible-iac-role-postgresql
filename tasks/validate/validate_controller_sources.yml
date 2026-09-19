@@ -64,11 +64,12 @@
   ansible.builtin.assert:
     that:
       - pg_validation_controller_ca_source is match('^/[^/]')
-       - not (pg_validation_controller_ca_source is search('/$'))
-       - not (pg_validation_controller_ca_source is search('//'))
-       - not (pg_validation_controller_ca_source is search('(^|/)\\.{1,2}(/|$)'))
-       - not (pg_validation_controller_ca_source is search('\\\\'))
-       - not (pg_validation_controller_ca_source is search('[\\r\\n]'))
+      - pg_validation_controller_ca_source | length > 1
+      - pg_validation_controller_ca_source is not search('/$')
+      - pg_validation_controller_ca_source is not search('//')
+      - pg_validation_controller_ca_source is not search('(^|/)\\.{1,2}(/|$)')
+      - pg_validation_controller_ca_source is not search('\\\\')
+      - pg_validation_controller_ca_source is not search('[\\r\\n]')
     fail_msg: >-
       Controller-side PostgreSQL CA sources must be normalized absolute paths
       without relative, traversal, or CWD-dependent components.
@@ -236,6 +237,8 @@
 - name: "Rejecting unsafe controller-side PostgreSQL CA source ancestors"
   ansible.builtin.assert:
     that:
+      - pg_validation_controller_ca_source_ancestor_result.item is string
+      - pg_validation_controller_ca_source_ancestor_result.item | length > 1
       - pg_validation_controller_ca_source_ancestor_result.stat | default({}) is mapping
       - pg_validation_controller_ca_source_ancestor_result.stat.exists | default(false)
       - pg_validation_controller_ca_source_ancestor_result.stat.isdir | default(false)

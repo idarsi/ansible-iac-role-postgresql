@@ -150,6 +150,9 @@ def main():
     assert any("is defined" in expression for expression in network_assertions)
     assert any("is string" in expression for expression in network_assertions)
     assert not any("ipaddr" in expression for expression in network_assertions)
+    assert any('keys() | list | sort == ["podman"]' in expression for expression in network_assertions)
+    assert any('"host" not in' in expression for expression in network_assertions)
+    assert any('"pasta" not in' in expression for expression in network_assertions)
 
     stage = task_by_name(tasks, "Stage the inspected Podman IPv4 unicast result")
     stage_text = str(stage)
