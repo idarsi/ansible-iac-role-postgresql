@@ -51,8 +51,8 @@ replication_runtime_resolve() {
   case "$replication_runtime_tool" in
     podman) replication_runtime_candidates='/usr/bin/podman /usr/local/bin/podman' ;;
     molecule) replication_runtime_candidates='/usr/local/bin/molecule /usr/bin/molecule' ;;
-    netavark) replication_runtime_candidates='/usr/libexec/netavark /usr/libexec/podman/netavark' ;;
-    aardvark-dns) replication_runtime_candidates='/usr/libexec/aardvark-dns /usr/libexec/podman/aardvark-dns /usr/libexec/aardvark' ;;
+    netavark) replication_runtime_candidates='/usr/libexec/netavark /usr/libexec/podman/netavark /usr/lib/podman/netavark' ;;
+    aardvark-dns) replication_runtime_candidates='/usr/libexec/aardvark-dns /usr/libexec/podman/aardvark-dns /usr/libexec/aardvark /usr/lib/podman/aardvark-dns /usr/lib/podman/aardvark' ;;
     python) replication_runtime_candidates='/usr/bin/python3 /usr/local/bin/python3' ;;
     *) return 1 ;;
   esac

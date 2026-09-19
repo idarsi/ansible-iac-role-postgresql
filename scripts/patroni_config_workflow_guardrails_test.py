@@ -37,9 +37,10 @@ def main():
         assert "podman image inspect" in image_run
         assert "{{.Architecture}}" in image_run
         assert "b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5" in image_run
+        assert "rockylinux/rockylinux@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5" in image_run
 
         molecule_run = steps[run_index]["run"]
-        patroni_position = molecule_run.find('python -m molecule test -s "${{ matrix.scenario }}"')
+        patroni_position = molecule_run.find('"${CI_PYTHON_COMMAND}" -m molecule test -s "${{ matrix.scenario }}"')
         assert patroni_position >= 0, f"{job_name}: normal Molecule path disappeared"
 
 

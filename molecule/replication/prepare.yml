@@ -24,11 +24,14 @@
     pg_replication_netavark_candidates:
       - "/usr/libexec/netavark"
       - "/usr/libexec/podman/netavark"
+      - "/usr/lib/podman/netavark"
     pg_replication_aardvark_configured: "{{ lookup('env', 'REPLICATION_AARDVARK_COMMAND') }}"
     pg_replication_aardvark_candidates:
       - "/usr/libexec/aardvark-dns"
       - "/usr/libexec/podman/aardvark-dns"
       - "/usr/libexec/aardvark"
+      - "/usr/lib/podman/aardvark-dns"
+      - "/usr/lib/podman/aardvark"
     pg_replication_image_identity: "rocky-9-ubi"
     pg_replication_image_name: "docker.io/rockylinux/rockylinux:9-ubi-init"
     pg_replication_image_digest: "sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5"

@@ -72,9 +72,9 @@ assert "pg_replication_molecule_candidates" in prepare_text, (
 )
 for candidate in ("/usr/local/bin/molecule", "/usr/bin/molecule"):
     assert candidate in prepare_text, f"direct Molecule candidate is missing: {candidate}"
-for candidate in ("/usr/libexec/netavark", "/usr/libexec/podman/netavark"):
+for candidate in ("/usr/libexec/netavark", "/usr/libexec/podman/netavark", "/usr/lib/podman/netavark"):
     assert candidate in prepare_text, f"direct netavark candidate is missing: {candidate}"
-for candidate in ("/usr/libexec/aardvark-dns", "/usr/libexec/podman/aardvark-dns", "/usr/libexec/aardvark"):
+for candidate in ("/usr/libexec/aardvark-dns", "/usr/libexec/podman/aardvark-dns", "/usr/libexec/aardvark", "/usr/lib/podman/aardvark-dns", "/usr/lib/podman/aardvark"):
     assert candidate in prepare_text, f"direct aardvark candidate is missing: {candidate}"
 assert "command -v" not in prepare_text, "prepare must not discover runtime tools through PATH"
 assert "follow: false" in prepare_text, "direct runtime resolution must not follow symlinks"
@@ -214,7 +214,7 @@ for job_name in ("molecule-fast", "molecule-daily"):
     assert "replication_runtime_preflight" not in unrelated_run, (
         f"{job_name}: unrelated scenarios must not inherit replication preflight"
     )
-    assert "python -m molecule test" in unrelated_run, (
+    assert '"${CI_PYTHON_COMMAND}" -m molecule test' in unrelated_run, (
         f"{job_name}: unrelated scenarios must retain the normal Molecule path"
     )
 

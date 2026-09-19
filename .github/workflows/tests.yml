@@ -30,7 +30,7 @@ jobs:
         run: |
           git submodule sync --recursive
           git submodule update --init --recursive tasks/shared
-          test -f tasks/shared/tasks/fs_present.yml
+          test -f tasks/shared/fs_present.yml
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -39,11 +39,14 @@ jobs:
 
       - name: Select controller Python for guardrails
         run: |
+          export CI_PYTHON_COMMAND="${pythonLocation}/bin/python"
           export REPLICATION_PYTHON_COMMAND="${pythonLocation}/bin/python"
+          printf 'CI_PYTHON_COMMAND=%s\n' "${CI_PYTHON_COMMAND}" >> "${GITHUB_ENV}"
           printf 'REPLICATION_PYTHON_COMMAND=%s\n' "${REPLICATION_PYTHON_COMMAND}" >> "${GITHUB_ENV}"
 
       - name: Install Ansible Lint
-        run: python -m pip install -r requirements-ci.txt
+        run: >-
+          "${CI_PYTHON_COMMAND}" -m pip install -r requirements-ci.txt
 
       - name: Check guardrail files and run static guardrails
         run: |
@@ -74,32 +77,33 @@ jobs:
             test -x scripts/replication_metadata_guardrails_test.py
             test -x scripts/replication_prerequisite_precedence_guardrails_test.py
             test -x scripts/validation_callback_guardrails_test.py
-           python3 scripts/vagrant_pki_transaction_guardrails_test.py
+            "${CI_PYTHON_COMMAND}" scripts/vagrant_pki_transaction_guardrails_test.py
            bash scripts/pki_guardrails_test.sh
            bash scripts/replication_molecule_guardrails_test.sh
            bash scripts/replication_image_guardrails_test.sh
-           python3 scripts/patroni_config_image_guardrails_test.py
-           python3 scripts/patroni_config_workflow_guardrails_test.py
+            "${CI_PYTHON_COMMAND}" scripts/patroni_config_image_guardrails_test.py
+            "${CI_PYTHON_COMMAND}" scripts/patroni_config_workflow_guardrails_test.py
              "${REPLICATION_PYTHON_COMMAND}" scripts/replication_external_network_guardrails_test.py
              "${REPLICATION_PYTHON_COMMAND}" scripts/replication_inspect_shape_guardrails_test.py
-            python3 scripts/endpoint_normalization_guardrails_test.py
-            python3 scripts/etcd_data_directory_lifecycle_test.py
-           python3 scripts/etcd_metadata_guardrails_test.py
-            scripts/controller_preflight_guardrails_test.py
-           python3 scripts/certificate_loop_guardrails_test.py
-           python3 scripts/endpoint_projection_guardrails_test.py
-           python3 scripts/etcd_endpoint_index_contract_test.py
-           python3 scripts/patroni_check_mode_contract_test.py
+             "${CI_PYTHON_COMMAND}" scripts/endpoint_normalization_guardrails_test.py
+             "${CI_PYTHON_COMMAND}" scripts/etcd_data_directory_lifecycle_test.py
+            "${CI_PYTHON_COMMAND}" scripts/etcd_metadata_guardrails_test.py
+             "${CI_PYTHON_COMMAND}" scripts/controller_preflight_guardrails_test.py
+            "${CI_PYTHON_COMMAND}" scripts/certificate_loop_guardrails_test.py
+            "${CI_PYTHON_COMMAND}" scripts/endpoint_projection_guardrails_test.py
+            "${CI_PYTHON_COMMAND}" scripts/etcd_endpoint_index_contract_test.py
+            "${CI_PYTHON_COMMAND}" scripts/patroni_check_mode_contract_test.py
             "${REPLICATION_PYTHON_COMMAND}" scripts/replication_metadata_guardrails_test.py
-             python3 scripts/replication_prerequisite_precedence_guardrails_test.py
-             python3 scripts/validation_callback_guardrails_test.py
-            python3 scripts/cluster_collision_paths_test.py
+              "${CI_PYTHON_COMMAND}" scripts/replication_prerequisite_precedence_guardrails_test.py
+              "${CI_PYTHON_COMMAND}" scripts/validation_callback_guardrails_test.py
+             "${CI_PYTHON_COMMAND}" scripts/cluster_collision_paths_test.py
 
       - name: Install Ansible collections
         run: ansible-galaxy collection install -r collections.yml
 
       - name: Run endpoint normalization contract test
-        run: python3 scripts/endpoint_contract_test.py
+        run: >-
+          "${CI_PYTHON_COMMAND}" scripts/endpoint_contract_test.py
 
       - name: Verify replication Podman plugin schema and argv contract
         run: >-
@@ -120,9 +124,8 @@ jobs:
 
       - name: Validate YAML documents
         run: >-
-          python -c "import pathlib, yaml; files=sorted(pathlib.Path('.').rglob('*.yml'));
-          [yaml.safe_load(path.read_text()) for path in files];
-          print(f'Parsed {len(files)} YAML documents')"
+          "${CI_PYTHON_COMMAND}" -c "import pathlib, yaml; files=sorted(pathlib.Path('.').rglob('*.yml'));
+          [yaml.safe_load(path.read_text()) for path in files]; print(f'Parsed {len(files)} YAML documents')"
 
       - name: Run Ansible syntax check
         env:
@@ -193,12 +196,15 @@ jobs:
           podman pull --quiet --platform linux/amd64 "${base_ref}"
           test "$(podman image inspect "${base_ref}" --format '{{.Architecture}}')" = "amd64"
           podman image inspect "${base_ref}" --format '{{range .RepoDigests}}{{println .}}{{end}}' |
-            grep -Fx -- "${base_ref}"
+            grep -Fx -- 'docker.io/rockylinux/rockylinux@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5'
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
+
+      - name: Select controller Python
+        run: printf 'CI_PYTHON_COMMAND=%s/bin/python\n' "${pythonLocation}" >> "${GITHUB_ENV}"
 
       - name: Resolve trusted controller Python
         if: matrix.scenario == 'replication'
@@ -214,7 +220,7 @@ jobs:
            if [ "${{ matrix.scenario }}" = replication ]; then
              "${REPLICATION_PYTHON_COMMAND}" -m pip install -r requirements-ci.txt
            else
-             python -m pip install -r requirements-ci.txt
+              "${CI_PYTHON_COMMAND}" -m pip install -r requirements-ci.txt
            fi
 
       - name: Resolve replication runtime commands
@@ -275,7 +281,7 @@ jobs:
            if [ "${{ matrix.scenario }}" = replication ]; then
              "${REPLICATION_PYTHON_COMMAND}" scripts/replication_podman_plugin_guardrails_test.py
            else
-             python scripts/replication_podman_plugin_guardrails_test.py
+              "${CI_PYTHON_COMMAND}" scripts/replication_podman_plugin_guardrails_test.py
            fi
 
       - name: Run Molecule scenario
@@ -287,7 +293,7 @@ jobs:
             if [ "${{ matrix.scenario }}" = replication ]; then
               scripts/replication_molecule.sh
            else
-             python -m molecule test -s "${{ matrix.scenario }}"
+              "${CI_PYTHON_COMMAND}" -m molecule test -s "${{ matrix.scenario }}"
            fi
 
       - name: Destroy replication containers without touching the default network
@@ -369,12 +375,15 @@ jobs:
           podman pull --quiet --platform linux/amd64 "${base_ref}"
           test "$(podman image inspect "${base_ref}" --format '{{.Architecture}}')" = "amd64"
           podman image inspect "${base_ref}" --format '{{range .RepoDigests}}{{println .}}{{end}}' |
-            grep -Fx -- "${base_ref}"
+            grep -Fx -- 'docker.io/rockylinux/rockylinux@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5'
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
+
+      - name: Select controller Python
+        run: printf 'CI_PYTHON_COMMAND=%s/bin/python\n' "${pythonLocation}" >> "${GITHUB_ENV}"
 
       - name: Resolve trusted controller Python
         if: matrix.scenario == 'replication'
@@ -390,7 +399,7 @@ jobs:
            if [ "${{ matrix.scenario }}" = replication ]; then
              "${REPLICATION_PYTHON_COMMAND}" -m pip install -r requirements-ci.txt
            else
-             python -m pip install -r requirements-ci.txt
+              "${CI_PYTHON_COMMAND}" -m pip install -r requirements-ci.txt
            fi
 
       - name: Resolve replication runtime commands
@@ -454,7 +463,7 @@ jobs:
             if [ "${{ matrix.scenario }}" = replication ]; then
               scripts/replication_molecule.sh
            else
-             python -m molecule test -s "${{ matrix.scenario }}"
+              "${CI_PYTHON_COMMAND}" -m molecule test -s "${{ matrix.scenario }}"
            fi
 
       - name: Destroy replication containers without touching the default network
