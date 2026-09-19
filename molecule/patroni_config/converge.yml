@@ -1,8 +1,11 @@
 ---
-- name: "Render Patroni configuration from a shared cluster blueprint"
+- name: >-
+    Converge Patroni configuration and prerequisites from a shared cluster
+    blueprint
   hosts: all
   become: false
   vars:
+    ansible_become_method: "su"
     state: clusters_present
     pg_patroni_package: bash
     pg_patroni_etcd_package: bash
@@ -10,7 +13,12 @@
     pg_patroni_group: root
     pg_patroni_config_directory: /tmp/patroni
     pg_systemd_service_dir: /tmp/systemd
-    pg_patroni_restapi_listen_address: "0.0.0.0"
+    pg_patroni_restapi_listen_address: "127.0.0.1"
+    pg_patroni_restapi_endpoint_fallback_address: "127.0.0.2"
+    pg_patroni_expected_restapi_connect_address: "https://127.0.0.2:18008"
+    pg_patroni_raw_hba_line: "hostssl all all ::/0 scram-sha-256"
+    pg_patroni_raw_hba_records:
+      - "hostssl all all ::/0 scram-sha-256"
     iac_blueprint:
       postgresql:
         - version: 17
@@ -20,14 +28,18 @@
               dcs:
                 provider: etcd3
                 endpoints:
-                  - https://etcd01.example.org:2379
-                  - https://etcd02.example.org:2379
+                  - "http://etcd01.example.org:2379"
+                  - "http://etcd02.example.org:2379"
+                proxy: "http://dcs-proxy.example.org:2379"
               patroni:
                 ttl: 30
                 loop_wait: 10
                 retry_timeout: 10
                 restapi:
                   port: 18008
+                  # Keep the listener and advertised fallback distinct so the
+                  # rendered configuration proves both endpoint paths.
+                  listen: "127.0.0.1:18008"
                   authentication:
                     username: patroni
                     password: patroni_password
@@ -35,6 +47,9 @@
                   certfile: /etc/patroni/pki/server.crt
                   keyfile: /etc/patroni/pki/server.key
                   verify_client: optional
+                pg_hba:
+                  - "{{ pg_patroni_raw_hba_records[0] }}"
+                allow_broad_hba: true
               members:
                 - host: instance-idarsi-patroni
                   instance: main
@@ -45,6 +60,125 @@
               configuration:
                 port: 15432
   tasks:
+    - name: "Create target-side Patroni fixture directories"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "/etc/patroni"
+        - "/etc/patroni/pki"
+        - "/etc/systemd/system"
+        - "/etc/systemd/system.conf.d"
+        - "/etc/etcd"
+        - "/etc/etcd/pki"
+        - "/var/lib/postgresql-pki"
+        - "/var/lib/pgsql"
+      become: true
+
+    - name: "Create PostgreSQL HBA fixture directory"
+      ansible.builtin.file:
+        path: "/var/lib/pgsql/17/main"
+        state: directory
+        mode: "0755"
+      become: true
+
+    - name: "Create PostgreSQL HBA fixture"
+      ansible.builtin.copy:
+        content: "local all postgres peer\n{{ pg_patroni_raw_hba_records | join('\n') }}\n"
+        dest: "/var/lib/pgsql/17/main/pg_hba.conf"
+        mode: "0600"
+      become: true
+
+    - name: "Create Patroni TLS fixture files"
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - req
+          - -x509
+          - -nodes
+          - -newkey
+          - rsa:2048
+          - -keyout
+          - /etc/patroni/pki/server.key
+          - -out
+          - /etc/patroni/pki/server.crt
+          - -days
+          - "1"
+          - -subj
+          - "/CN=127.0.0.2"
+          - -addext
+          - "subjectAltName=IP:127.0.0.2,IP:127.0.0.1"
+      args:
+        creates: "/etc/patroni/pki/server.crt"
+      become: true
+
+    - name: "Set the externally managed Patroni key to the role contract"
+      ansible.builtin.file:
+        path: "/etc/patroni/pki/server.key"
+        owner: "root"
+        group: "{{ pg_patroni_group }}"
+        mode: "0640"
+      become: true
+
+    - name: "Use the Patroni server certificate as the fixture CA"
+      ansible.builtin.copy:
+        remote_src: true
+        src: "/etc/patroni/pki/server.crt"
+        dest: "/etc/patroni/pki/ca.crt"
+        mode: "0644"
+      become: true
+
     - name: "Include PostgreSQL role"
       ansible.builtin.include_role:
         name: ansible-iac-role-postgresql
+
+    - name: "Read rendered Patroni configuration for fallback fixture"
+      ansible.builtin.slurp:
+        src: "/tmp/patroni/17-main.yml"
+      register: pg_patroni_fallback_rendered_config
+      no_log: true
+
+    - name: "Parse rendered Patroni configuration for fallback fixture"
+      ansible.builtin.set_fact:
+        pg_patroni_fallback_rendered_config_data: >-
+          {{ pg_patroni_fallback_rendered_config.content | b64decode | from_yaml }}
+      no_log: true
+
+    - name: "Check custom fallback is rendered as Patroni connect_address"
+      ansible.builtin.assert:
+        that:
+          - pg_patroni_fallback_rendered_config_data.restapi.connect_address == pg_patroni_expected_restapi_connect_address
+        fail_msg: "Rendered Patroni connect_address did not use the independently expected custom fallback endpoint"
+      no_log: true
+
+    - name: "Check the canonical Patroni endpoint models"
+      ansible.builtin.assert:
+        that:
+          - pg_patroni_restapi_endpoint_model.rendered_listener == "127.0.0.1:18008"
+          - pg_patroni_restapi_endpoint_model.advertised_connect == "https://127.0.0.2:18008"
+          - pg_patroni_restapi_endpoint_model.uri == "https://127.0.0.2:18008"
+          - pg_patroni_restapi_endpoint_model == pg_patroni_restapi_canonical_endpoint_model
+          - pg_patroni_restapi_connect_model.uri == "https://127.0.0.2:18008"
+          - pg_cluster_patroni_endpoint_models | length == 1
+          - (pg_cluster_patroni_endpoint_models | map(attribute='key') | list | unique | length) == 1
+          - >-
+            (pg_cluster_patroni_endpoint_models | map(attribute='key') | list)
+            == [
+              "17:molecule-cluster:instance-idarsi-patroni:main"
+            ]
+          - >-
+            (pg_cluster_patroni_endpoint_models | map(attribute='uri') | list | unique | length)
+            == pg_cluster_patroni_endpoint_models | length
+          - >-
+            (pg_cluster_patroni_endpoint_models | map(attribute='uri') | list)
+            == [
+              "https://127.0.0.2:18008"
+            ]
+          - pg_patroni_restapi_endpoint_model.cafile == "/etc/patroni/pki/ca.crt"
+          - pg_patroni_restapi_endpoint_model.certfile == "/etc/patroni/pki/server.crt"
+          - pg_patroni_restapi_endpoint_model.keyfile == "/etc/patroni/pki/server.key"
+          - >-
+            "127.0.0.2" in (pg_cluster_patroni_endpoint_models | map(attribute='san_identities') | list | flatten)
+          - (pg_cluster_patroni_endpoint_models | first).san_identities == ["127.0.0.2", "127.0.0.1"]
+        fail_msg: "Canonical endpoint, readiness URI, and SAN models must agree"

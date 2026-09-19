@@ -25,3 +25,18 @@
           - pg_missing_ca_marker.stat.exists
           - pg_missing_map_marker.stat.exists
         fail_msg: "PostgreSQL hba guardrail scenario did not capture the expected failures"
+
+    - name: "Checking client CA input regression markers"
+      ansible.builtin.stat:
+        path: "/tmp/hba-guardrails/{{ item }}.ok"
+      loop:
+        - empty-content
+        - empty-source
+        - dual-input
+      register: pg_client_ca_regression_markers
+
+    - name: "Verifying client CA input regression markers"
+      ansible.builtin.assert:
+        that: item.stat.exists
+        fail_msg: "Client CA input regression marker is missing: {{ item.item }}"
+      loop: "{{ pg_client_ca_regression_markers.results }}"

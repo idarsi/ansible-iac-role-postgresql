@@ -120,8 +120,8 @@
             that:
               - ansible_failed_result is defined
               - >-
-                (ansible_failed_result | to_nice_json)
-                is search('certificate-aware authentication is enabled without a configured client CA')
+                 (ansible_failed_result | to_nice_json)
+                 is search('PostgreSQL certificate-aware authentication is enabled without a configured client CA')
             fail_msg: "Expected missing client CA failure was not raised"
 
         - name: "Writing missing client CA validation marker"
@@ -219,3 +219,161 @@
         that:
           - pg_missing_map_marker.stat.exists
         fail_msg: "Undefined map validation did not fail as expected"
+
+- name: Verify empty and ambiguous client CA inputs fail in preflight
+  hosts: all
+  become: false
+  vars:
+    state: instances_present
+    pg_lang: "en"
+    pg_locale: "US"
+    pg_disable_postgresql_module: false
+    ansible_become_method: su
+  tasks:
+    - name: "Checking empty client CA content"
+      block:
+        - name: "Applying PostgreSQL role with empty client CA content"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+          vars:
+            iac_blueprint:
+              postgresql:
+                - version: 17
+                  instances:
+                    - name: empty-content
+                      client_certificate_authority_content: "   "
+      rescue:
+        - name: "Checking empty client CA content failure message"
+          ansible.builtin.assert:
+            that:
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search('client CA requires exactly one non-empty native string')
+        - name: "Writing empty client CA content marker"
+          ansible.builtin.copy:
+            dest: /tmp/hba-guardrails/empty-content.ok
+            content: "ok\n"
+            mode: "0644"
+
+    - name: "Checking empty client CA source"
+      block:
+        - name: "Applying PostgreSQL role with empty client CA source"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+          vars:
+            iac_blueprint:
+              postgresql:
+                - version: 17
+                  instances:
+                    - name: empty-source
+                      client_certificate_authority_src: "   "
+      rescue:
+        - name: "Checking empty client CA source failure message"
+          ansible.builtin.assert:
+            that:
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search('client CA requires exactly one non-empty native string')
+        - name: "Writing empty client CA source marker"
+          ansible.builtin.copy:
+            dest: /tmp/hba-guardrails/empty-source.ok
+            content: "ok\n"
+            mode: "0644"
+
+    - name: "Checking dual client CA inputs"
+      block:
+        - name: "Applying PostgreSQL role with dual client CA inputs"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+          vars:
+            iac_blueprint:
+              postgresql:
+                - version: 17
+                  instances:
+                    - name: dual-input
+                      client_certificate_authority_content: "certificate"
+                      client_certificate_authority_src: "/tmp/client-ca.crt"
+      rescue:
+        - name: "Checking dual client CA input failure message"
+          ansible.builtin.assert:
+            that:
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search('client CA requires exactly one non-empty native string')
+        - name: "Writing dual client CA input marker"
+          ansible.builtin.copy:
+            dest: /tmp/hba-guardrails/dual-input.ok
+            content: "ok\n"
+            mode: "0644"
+
+    - name: "Checking client CA input regression markers"
+      ansible.builtin.stat:
+        path: "/tmp/hba-guardrails/{{ item }}.ok"
+      loop:
+        - empty-content
+        - empty-source
+        - dual-input
+      register: pg_client_ca_regression_markers
+
+    - name: "Requiring client CA input regression failures"
+      ansible.builtin.assert:
+        that: item.stat.exists
+        fail_msg: "Client CA input guardrail did not fail as expected: {{ item.item }}"
+      loop: "{{ pg_client_ca_regression_markers.results }}"
+
+- name: Verify structured HBA certificate options in validation-only state
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    pg_lang: "en"
+    pg_locale: "US"
+    pg_disable_postgresql_module: false
+    ansible_become_method: su
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: options-validation
+              security_profile: safe
+              client_certificate_authority_content: "test-ca-content"
+              databases:
+                - name: appdb17
+                  access:
+                    - name: certificate-user
+                      address: 10.0.0.1/32
+                      type: hostssl
+                      method: cert
+                      options:
+                        clientname: CN
+                        map: test_map
+              maprole:
+                - mapname: test_map
+                  system_username: certificate-user
+                  pg_username: certificate-user
+              configuration:
+                port: 5417
+  tasks:
+    - name: "Snapshot hba guardrail marker directory before validation"
+      ansible.builtin.stat:
+        path: /tmp/hba-guardrails
+      register: pg_hba_guardrail_snapshot_before
+
+    - name: "Validating structured certificate-aware HBA options"
+      ansible.builtin.include_role:
+        name: ansible-iac-role-postgresql
+
+    - name: "Snapshot hba guardrail marker directory after validation"
+      ansible.builtin.stat:
+        path: /tmp/hba-guardrails
+      register: pg_hba_guardrail_snapshot_after
+
+    - name: "Ensuring validation-only HBA checks did not mutate the target"
+      ansible.builtin.assert:
+        that:
+          - pg_hba_guardrail_snapshot_before.stat.exists
+          - pg_hba_guardrail_snapshot_after.stat.exists
+          - pg_hba_guardrail_snapshot_before.stat.mode == pg_hba_guardrail_snapshot_after.stat.mode
+          - pg_hba_guardrail_snapshot_before.stat.uid == pg_hba_guardrail_snapshot_after.stat.uid
+          - pg_hba_guardrail_snapshot_before.stat.gid == pg_hba_guardrail_snapshot_after.stat.gid
+        fail_msg: "Validation-only HBA checks changed the target marker directory"

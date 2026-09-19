@@ -17,7 +17,8 @@
             | select('equalto', 'Enforcing') | list | length == 3
     - name: "Discover the actual Patroni leader"
       ansible.builtin.uri:
-        url: "http://{{ item }}:8008/cluster"
+        url: "https://{{ item }}:8008/cluster"
+        ca_path: /etc/patroni/pki/ca.crt
         url_username: patroni
         url_password: patroni_password
         force_basic_auth: true
@@ -93,7 +94,8 @@
             seconds: 35
         - name: "Wait for a replacement leader"
           ansible.builtin.uri:
-            url: "http://{{ vagrant_observer }}:8008/cluster"
+            url: "https://{{ vagrant_observer }}:8008/cluster"
+            ca_path: /etc/patroni/pki/ca.crt
             url_username: "patroni"
             url_password: "patroni_password"
             force_basic_auth: true
@@ -130,7 +132,8 @@
 
     - name: "Wait for the failed member to rejoin as a replica"
       ansible.builtin.uri:
-        url: "http://{{ vagrant_observer }}:8008/cluster"
+        url: "https://{{ vagrant_observer }}:8008/cluster"
+        ca_path: /etc/patroni/pki/ca.crt
         url_username: "patroni"
         url_password: "patroni_password"
         force_basic_auth: true

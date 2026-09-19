@@ -1,64 +1,39 @@
 ---
-- name: "Prepare shared test certificates"
+- name: "Prepare the Vagrant Patroni failover guests"
   hosts: all
-  serial: 1
   become: true
+  serial: 1
   vars:
-    vagrant_cluster_addresses: {pg01: "192.168.250.201", pg02: "192.168.250.202", pg03: "192.168.250.203"}
+    vagrant_pki_root: "/etc/etcd/pki"
+    vagrant_pki_staging: "/etc/etcd/pki/.scenario-staging"
+    vagrant_pki_authority_staging: "/etc/etcd/pki/.authority-staging"
+    vagrant_pki_transaction: >-
+      {{ ansible_run_uuid | regex_replace('[^A-Za-z0-9]', '') ~ '-' ~
+      inventory_hostname }}
+    vagrant_cluster_addresses:
+      pg01: "192.168.250.201"
+      pg02: "192.168.250.202"
+      pg03: "192.168.250.203"
   tasks:
-    - name: "Verify the Vagrant private device is present"
+    - name: "Require the Vagrant private network"
       ansible.builtin.assert:
-        that:
-          - "'eth1' in ansible_facts.interfaces"
+        that: "'eth1' in ansible_facts.interfaces"
         fail_msg: "The Vagrant private network device eth1 is not present"
 
     - name: "Install private cluster name resolution"
       ansible.builtin.blockinfile:
-        path: /etc/hosts
+        path: "/etc/hosts"
         marker: "# {mark} ANSIBLE VAGRANT POSTGRESQL PRIVATE CLUSTER"
-        block: |
+        block: |-
           192.168.250.201 pg01
           192.168.250.202 pg02
           192.168.250.203 pg03
 
-    - name: "Install DNF repository tooling"
-      ansible.builtin.dnf:
-        name: "dnf-plugins-core"
-        state: "present"
-        sslverify: true
-        validate_certs: true
-        disable_gpg_check: false
-
-    - name: "Import the PGDG repository signing key"
-      ansible.builtin.rpm_key:
-        key: "https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-RHEL"
-        state: "present"
-
-    - name: "Install the signed PGDG repository package"
-      ansible.builtin.dnf:
-        name: "https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm"
-        state: "present"
-        sslverify: true
-        validate_certs: true
-        disable_gpg_check: false
-
-    - name: "Enable the PGDG PostgreSQL 17 repository"
-      ansible.builtin.command: "dnf config-manager --set-enabled pgdg17"
-      changed_when: false
-
-    - name: "Enable the PGDG Rocky Linux 9 extras repository"
-      ansible.builtin.command: "dnf config-manager --set-enabled pgdg-rhel9-extras"
-      changed_when: false
-
-    - name: "Check the PGDG etcd extras repository is enabled"
-      ansible.builtin.command: "dnf repolist --enabled pgdg-rhel9-extras"
-      changed_when: false
-
-    - name: "Install packages managed by the combined cluster scenario"
+    - name: "Install signed repository tooling and cluster packages"
       ansible.builtin.dnf:
         name:
+          - "acl"
           - "openssl"
-          - "openssl-libs"
           - "openssh-server"
           - "openssh-clients"
           - "etcd"
@@ -66,68 +41,40 @@
           - "postgresql17-contrib"
           - "patroni"
           - "patroni-etcd"
-        state: "present"
-        sslverify: true
-        validate_certs: true
-        disable_gpg_check: false
-
-    - name: "Upgrade crypto and SSH packages before the role runs"  # noqa package-latest
-      ansible.builtin.dnf:
-        name:
-          - "openssl"
-          - "openssl-libs"
-          - "openssh-server"
-          - "openssh-clients"
-        state: "latest"
-        sslverify: true
-        validate_certs: true
-        disable_gpg_check: false
-
-    - name: "Reboot guests after OpenSSL and etcd installation"
-      ansible.builtin.reboot:
-        msg: "Rebooting the Vagrant guest after package setup"
-        pre_reboot_delay: 1
-        post_reboot_delay: 5
-        reboot_timeout: 180
-        connect_timeout: 10
-        test_command: "whoami"
-
-    - name: "Reset the persistent SSH connection after package reboot"
-      ansible.builtin.meta: reset_connection
-
-    - name: "Wait for bounded Ansible connectivity after guest reboot"
-      ansible.builtin.wait_for_connection:
-        delay: 2
-        timeout: 180
-        connect_timeout: 10
-        sleep: 3
-
-    - name: "Install firewalld and its Ansible Python bindings"
-      ansible.builtin.dnf:
-        name:
           - "firewalld"
-          - "python3-firewall"
         state: "present"
+        sslverify: true
+        validate_certs: true
+        disable_gpg_check: false
 
-    - name: "Ensure firewalld is enabled and running"
-      ansible.builtin.service:
+    - name: "Start firewalld before exposing wildcard PostgreSQL services"
+      ansible.builtin.systemd_service:
         name: "firewalld"
         state: "started"
         enabled: true
 
-    - name: "Create the private cluster firewalld zone"
+    - name: "Create the private cluster firewall zone before interface or rule
+        configuration"
       ansible.posix.firewalld:
         zone: "idarsi-private"
-        state: "present"
+        state: "enabled"
         permanent: true
-      register: vagrant_firewalld_zone
-      notify: "Reload firewalld after creating the private cluster zone"
+        immediate: true
 
-    - name: "Apply the private cluster zone before adding runtime rules"  # noqa no-handler
-      ansible.builtin.meta: flush_handlers
-      when: vagrant_firewalld_zone.changed
+    - name: "Set an explicit fail-closed target for the private cluster zone"
+      ansible.builtin.command: >-
+        firewall-cmd --permanent --zone=idarsi-private --set-target=DROP
+      register: vagrant_private_zone_target
+      changed_when: "'already' not in vagrant_private_zone_target.stdout"
 
-    - name: "Assign the Vagrant private interface to the private cluster zone"
+    - name: "Set the runtime fail-closed target for the private cluster zone"
+      ansible.builtin.command: >-
+        firewall-cmd --zone=idarsi-private --set-target=DROP
+      register: vagrant_private_zone_runtime_target
+      changed_when: >-
+        'already' not in vagrant_private_zone_runtime_target.stdout
+
+    - name: "Assign only the private interface to the cluster firewall zone"
       ansible.posix.firewalld:
         zone: "idarsi-private"
         interface: "eth1"
@@ -135,95 +82,316 @@
         permanent: true
         immediate: true
 
-    - name: "Permit private cluster traffic from the Vagrant network"
+    - name: "Allow cluster traffic only from the private network"
       ansible.posix.firewalld:
         zone: "idarsi-private"
         rich_rule: >-
-          rule family="ipv4" source address="192.168.250.0/24"
-          port port="{{ item }}" protocol="tcp" accept
+          rule family=ipv4 source address=192.168.250.0/24 port port={{ item }}
+          protocol=tcp accept
         state: "enabled"
         permanent: true
         immediate: true
+      loop: [2379, 2380, 5432, 8008]
+
+    - name: "Assert the NAT interface is not in the private cluster zone"
+      ansible.builtin.command: >-
+        firewall-cmd --zone=idarsi-private --query-interface=eth0
+      register: vagrant_eth0_private
+      changed_when: false
+      failed_when: vagrant_eth0_private.rc == 0
+
+    - name: "Assert persistent and runtime private firewall rules"
+      ansible.builtin.command: >-
+        firewall-cmd {{ item.0 }} --zone=idarsi-private
+        --query-rich-rule="rule family=ipv4 source address=192.168.250.0/24
+        port port={{ item.1 }} protocol=tcp accept"
+      register: vagrant_firewall_queries
+      changed_when: false
+      failed_when: vagrant_firewall_queries.rc != 0
       loop:
-        - "2379"
-        - "2380"
-        - "5432"
-        - "8008"
+        - ["", 2379]
+        - ["", 2380]
+        - ["", 5432]
+        - ["", 8008]
+        - ["--permanent", 2379]
+        - ["--permanent", 2380]
+        - ["--permanent", 5432]
+        - ["--permanent", 8008]
 
-    - name: "Create shared etcd PKI"
-      ansible.builtin.file:
-        path: /etc/etcd/pki
-        state: directory
-        mode: "0755"
-
-    - name: "Create the PostgreSQL group for fixture ACL ownership"
+    - name: "Create the TLS reader group"
       ansible.builtin.group:
-        name: postgres
-        state: present
+        name: "tlsreaders"
+        state: "present"
 
-    - name: "Generate a short-lived cluster certificate"
+    - name: "Add service accounts to the TLS reader group"
+      ansible.builtin.user:
+        name: "{{ item }}"
+        groups: ["tlsreaders"]
+        append: true
+      loop: ["etcd", "postgres"]
+
+    - name: "Create the PKI parent and client directory"
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: "directory"
+        owner: "root"
+        group: "{{ item.group }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - path: "/etc/etcd"
+          group: "root"
+          mode: "0755"
+        - path: "{{ vagrant_pki_root }}"
+          group: "tlsreaders"
+          mode: "0750"
+        - path: "{{ vagrant_pki_root }}/client"
+          group: "root"
+          mode: "0700"
+        - path: "{{ vagrant_pki_staging }}"
+          group: "root"
+          mode: "0700"
+
+    - name: "Create the PKI authority staging directory only on pg01"
+      ansible.builtin.file:
+        path: "{{ vagrant_pki_authority_staging }}"
+        state: "directory"
+        owner: "root"
+        group: "root"
+        mode: "0700"
+      when: inventory_hostname == "pg01"
+
+- name: "Generate and distribute the complete PKI authority"
+  hosts: all
+  become: true
+  vars:
+    vagrant_pki_root: "/etc/etcd/pki"
+    vagrant_pki_staging: "/etc/etcd/pki/.scenario-staging"
+    vagrant_pki_authority_staging: "/etc/etcd/pki/.authority-staging"
+    vagrant_cluster_addresses:
+      pg01: "192.168.250.201"
+      pg02: "192.168.250.202"
+      pg03: "192.168.250.203"
+  tasks:
+    - name: "Generate one short-lived test CA on the pg01 authority"
       ansible.builtin.command:
         argv:
-          - openssl
-          - req
-          - -x509
-          - -nodes
-          - -newkey
-          - rsa:2048
-          - -keyout
-          - /tmp/etcd.key
-          - -out
-          - /tmp/etcd.crt
-          - -days
+          - "openssl"
+          - "req"
+          - "-x509"
+          - "-nodes"
+          - "-newkey"
+          - "rsa:2048"
+          - "-keyout"
+          - "{{ vagrant_pki_authority_staging }}/ca.key"
+          - "-out"
+          - "{{ vagrant_pki_authority_staging }}/ca.crt"
+          - "-days"
           - "1"
-          - -subj
-          - /CN=etcd-cluster
+          - "-subj"
+          - "/CN=etcd-cluster-ca"
           - "-addext"
-          - "subjectAltName=DNS:pg01,DNS:pg02,DNS:pg03,IP:192.168.250.201,IP:192.168.250.202,IP:192.168.250.203"
+          - "basicConstraints=critical,CA:TRUE,pathlen:1"
+          - "-addext"
+          - "keyUsage=critical,keyCertSign,cRLSign"
       args:
-        creates: /tmp/etcd.crt
-      delegate_to: pg01
+        creates: "{{ vagrant_pki_authority_staging }}/ca.crt"
+      delegate_to: "pg01"
       run_once: true
+      no_log: true
+      changed_when: true
 
-    - name: "Read the shared certificate"
-      ansible.builtin.slurp:
-        src: /tmp/etcd.crt
-      delegate_to: pg01
-      run_once: true
-      register: vagrant_etcd_certificate
-
-    - name: "Read the shared key"
-      ansible.builtin.slurp:
-        src: /tmp/etcd.key
-      delegate_to: pg01
-      run_once: true
-      register: vagrant_etcd_key
-
-    - name: "Install the shared certificate"
+    - name: "Write certificate extensions on the authority"
       ansible.builtin.copy:
-        content: "{{ vagrant_etcd_certificate.content | b64decode }}"
-        dest: "{{ item }}"
-        mode: "0644"
+        content: |-
+          basicConstraints=critical,CA:FALSE
+          keyUsage=critical,digitalSignature,keyEncipherment
+          extendedKeyUsage=critical,clientAuth,serverAuth
+          subjectAltName=DNS:{{ item }},IP:{{ vagrant_cluster_addresses[item] }}
+        dest: "{{ vagrant_pki_authority_staging }}/client.ext"
+        owner: "root"
+        group: "root"
+        mode: "0600"
+      delegate_to: "pg01"
+      loop: "{{ groups['all'] }}"
+      run_once: true
+
+    - name: "Generate distinct client and peer leaves on the authority"
+      ansible.builtin.shell: >-
+        set -euo pipefail;
+        authority_dir={{ vagrant_pki_authority_staging | quote }};
+        guest_dir="$authority_dir/guests/{{ item }}";
+        guest_ip={{ vagrant_cluster_addresses[item] | quote }};
+        mkdir -p "$guest_dir";
+        chmod 700 "$authority_dir/guests" "$guest_dir";
+        printf '%s\n' 'basicConstraints=critical,CA:FALSE' \
+        'keyUsage=critical,digitalSignature,keyEncipherment' \
+        'extendedKeyUsage=critical,clientAuth,serverAuth' \
+        "subjectAltName=DNS:{{ item }},IP:$guest_ip" \
+        > "$guest_dir/leaf.ext";
+        for purpose in client peer; do
+          openssl req -new -nodes -newkey rsa:2048 \
+          -keyout "$guest_dir/${purpose}.key" \
+          -out "$guest_dir/${purpose}.csr" \
+          -subj /CN={{ item }}-${purpose};
+          openssl x509 -req -in "$guest_dir/${purpose}.csr" \
+          -CA "$authority_dir/ca.crt" \
+          -CAkey "$authority_dir/ca.key" \
+          -CAcreateserial -out "$guest_dir/${purpose}.crt" \
+          -days 1 -sha256 -extfile "$guest_dir/leaf.ext";
+        done
+      args:
+        executable: "/bin/bash"
+        creates: >-
+          {{ vagrant_pki_authority_staging }}/guests/{{ item }}/peer.crt
+      delegate_to: "pg01"
+      loop: "{{ groups['all'] }}"
+      run_once: true
+      no_log: true
+      changed_when: true
+      # noqa command-instead-of-shell
+
+    - name: "Read only the authority's public CA and this guest's leaves"
+      ansible.builtin.slurp:
+        src: "{{ vagrant_pki_authority_staging }}/{{ item }}"
+      delegate_to: "pg01"
+      register: vagrant_authority_material
       loop:
-        - /etc/etcd/pki/ca.crt
-        - /etc/etcd/pki/etcd.crt
+        - "ca.crt"
+        - "guests/{{ inventory_hostname }}/client.crt"
+        - "guests/{{ inventory_hostname }}/client.key"
+        - "guests/{{ inventory_hostname }}/peer.crt"
+        - "guests/{{ inventory_hostname }}/peer.key"
+      no_log: true
 
-    - name: "Install the shared private key"
+    - name: "Distribute public CA and guest-specific leaves without the CA key"
       ansible.builtin.copy:
-        content: "{{ vagrant_etcd_key.content | b64decode }}"
-        dest: /etc/etcd/pki/etcd.key
-        owner: etcd
-        group: postgres
-        mode: "0640"
+        content: >-
+          {{ (vagrant_authority_material.results |
+          selectattr('item', 'equalto', item.0) | first).content | b64decode }}
+        dest: "{{ vagrant_pki_staging }}/{{ item.1 }}"
+        owner: "root"
+        group: "root"
+        mode: "0600"
+      loop:
+        - ["ca.crt", "ca.crt"]
+        - ["guests/{{ inventory_hostname }}/client.crt", "client.crt"]
+        - ["guests/{{ inventory_hostname }}/client.key", "client.key"]
+        - ["guests/{{ inventory_hostname }}/peer.crt", "peer.crt"]
+        - ["guests/{{ inventory_hostname }}/peer.key", "peer.key"]
+      no_log: true
+
+    - name: "Prove every guest staged the complete guest-specific PKI set"
+      ansible.builtin.stat:
+        path: "{{ vagrant_pki_staging }}/{{ item }}"
+        follow: false
+      loop:
+        - "ca.crt"
+        - "client.crt"
+        - "client.key"
+        - "peer.crt"
+        - "peer.key"
+      register: vagrant_staged_material
+
+    - name: "Fail closed unless every guest has all staged PKI material"
+      ansible.builtin.assert:
+        that:
+          - vagrant_staged_material.results | length == 5
+          - >-
+            vagrant_staged_material.results | map(attribute="stat.exists") |
+            select("equalto", true) | list | length == 5
+          - >-
+            vagrant_staged_material.results | map(attribute="stat.isreg") |
+            select("equalto", true) | list | length == 5
+          - >-
+            vagrant_staged_material.results | map(attribute="stat.islnk") |
+            select("equalto", false) | list | length == 5
+          - >-
+            vagrant_staged_material.results | map(attribute="stat.pw_name") |
+            unique | list == ["root"]
+          - >-
+            vagrant_staged_material.results | map(attribute="stat.gr_name") |
+            unique | list == ["root"]
+        fail_msg: >-
+          Every guest must stage all five PKI files before authority cleanup
+
+- name: "Remove the validated authority only after whole-cluster distribution"
+  hosts: pg01
+  become: true
+  vars:
+    vagrant_pki_authority_staging: "/etc/etcd/pki/.authority-staging"
+  tasks:
+    - name: "Remove the exact validated private authority tree"
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_facts['python']['executable'] }}"
+          - "{{ role_path }}/files/vagrant_pki_authority_cleanup.py"
+          - "{{ vagrant_pki_authority_staging }}"
+          - "pg01"
+          - "pg02"
+          - "pg03"
+      delegate_to: "pg01"
+      no_log: true
+      changed_when: true
+
+- name: "Commit distributed PKI material on every guest"
+  hosts: all
+  become: true
+  serial: 1
+  vars:
+    vagrant_pki_root: "/etc/etcd/pki"
+    vagrant_pki_staging: "/etc/etcd/pki/.scenario-staging"
+    vagrant_pki_authority_staging: "/etc/etcd/pki/.authority-staging"
+    vagrant_pki_transaction: >-
+      {{ ansible_run_uuid | regex_replace('[^A-Za-z0-9]', '') ~ '-' ~
+      inventory_hostname }}
+  tasks:
+    - name: "Install the complete PKI set transactionally"
+      ansible.builtin.script:
+        cmd: >-
+          {{ role_path }}/files/vagrant_pki_transaction.py
+          --root {{ vagrant_pki_root | quote }}
+          --staging {{ vagrant_pki_staging | quote }}
+          --transaction {{ vagrant_pki_transaction | quote }}
+      no_log: true
+      changed_when: true
+
+    - name: "Verify all transaction artifacts are absent"
+      ansible.builtin.find:
+        paths: ["{{ vagrant_pki_root }}"]
+        patterns: [".client-*", ".scenario-staging"]
+        file_type: any
+        hidden: true
+        recurse: false
+      register: vagrant_pki_artifacts
+
+    - name: "Fail closed if a transaction artifact remains"
+      ansible.builtin.assert:
+        that: "vagrant_pki_artifacts.files | length == 0"
+        fail_msg: "A PKI transaction artifact remains after commit"
+
+    - name: >-
+        Assert authority staging and private material are absent everywhere
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+      loop:
+        - "{{ vagrant_pki_authority_staging }}"
+        - "{{ vagrant_pki_authority_staging }}/ca.key"
+        - "{{ vagrant_pki_authority_staging }}/ca.crt"
+        - "{{ vagrant_pki_authority_staging }}/guests"
+      register: vagrant_authority_absence
+
+    - name: "Require no guest authority material remains"
+      ansible.builtin.assert:
+        that: "not vagrant_authority_absence_result.stat.exists"
+        fail_msg: >-
+          Private authority material remains on {{ inventory_hostname }}
+      loop: "{{ vagrant_authority_absence.results }}"
+      loop_control:
+        loop_var: "vagrant_authority_absence_result"
 
     - name: "Require private guest name resolution"
-      ansible.builtin.getent:
-        database: hosts
-        key: "{{ item }}"
-      loop: [pg01, pg02, pg03]
-
-  handlers:
-    - name: "Reload firewalld after creating the private cluster zone"
-      ansible.builtin.service:
-        name: "firewalld"
-        state: "reloaded"
+      ansible.builtin.command:
+        argv: ["getent", "hosts", "{{ item }}"]
+      loop: ["pg01", "pg02", "pg03"]
+      changed_when: false

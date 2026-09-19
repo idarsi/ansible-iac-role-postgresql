@@ -1,0 +1,2054 @@
+---
+###############################################################################
+#
+# cluster_certificates_present.yml
+#
+# Generate or install certificates used by Patroni and managed etcd.
+#
+###############################################################################
+
+- name: "Selecting the local Patroni certificate member by inventory identity"
+  ansible.builtin.set_fact:
+    pg_cluster_local_patroni_members: >-
+      {{ pg_cluster_patroni_members
+         | selectattr('host', 'equalto', inventory_hostname) | list }}
+
+- name: "Selecting the local etcd certificate member by inventory identity"
+  ansible.builtin.set_fact:
+    pg_cluster_local_etcd_members: >-
+      {{ pg_cluster_etcd_members
+         | selectattr('host', 'equalto', inventory_hostname) | list }}
+
+- name: "Rejecting ambiguous or mismatched local certificate identity"
+  ansible.builtin.assert:
+    that:
+      - >-
+        not (pg_cluster_patroni_restapi.auto_generate | default(false) | bool)
+        or pg_cluster_local_patroni_members | length == 1
+      - >-
+        not (pg_cluster_etcd_tls.auto_generate | default(false) | bool)
+        or pg_cluster_local_etcd_members | length == 1
+      - >-
+        not (pg_cluster_patroni_restapi.auto_generate | default(false) | bool)
+        or (pg_cluster_local_patroni_members | first | default({})).host | default('') == inventory_hostname
+      - >-
+        not (pg_cluster_etcd_tls.auto_generate | default(false) | bool)
+        or (pg_cluster_local_etcd_members | first | default({})).host | default('') == inventory_hostname
+    fail_msg: >-
+      The local generated certificate member must map to exactly one cluster
+      member whose canonical host equals inventory_hostname {{ inventory_hostname }};
+      aliases and ambiguous or missing mappings are rejected.
+
+- name: "Initializing SELinux probe results"
+  ansible.builtin.set_fact:
+    # Keep consumers safe when only externally managed etcd TLS is enabled.
+    pg_cluster_selinux_tool_checks:
+      results:
+        - {rc: 1, stdout: "", stderr: "SELinux probe not run"}
+        - {rc: 1, stdout: "", stderr: "SELinux probe not run"}
+
+- name: "Checking automatically generated cluster certificate settings"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_certificate_seed_host in ((pg_cluster_patroni_members + pg_cluster_etcd_members) | map(attribute='host') | list)
+      - pg_cluster_etcd_tls | type_debug == 'dict'
+      - pg_cluster_etcd_tls.client is not defined or pg_cluster_etcd_tls.client | type_debug == 'dict'
+      - pg_cluster_etcd_tls.peer is not defined or pg_cluster_etcd_tls.peer | type_debug == 'dict'
+      - pg_cluster_etcd_tls.auto_generate is not defined or pg_cluster_etcd_tls.auto_generate | type_debug == 'bool'
+      - pg_cluster_patroni_restapi.auto_generate is not defined or pg_cluster_patroni_restapi.auto_generate | type_debug == 'bool'
+    fail_msg: "Automatic cluster certificate generation requires valid certificate paths"
+
+- name: "Select explicitly managed Patroni TLS destinations"
+  ansible.builtin.set_fact:
+    pg_cluster_patroni_external_pki_destinations:
+      - "{{ pg_cluster_patroni_restapi.cafile }}"
+      - "{{ pg_cluster_patroni_restapi.certfile }}"
+      - "{{ pg_cluster_patroni_restapi.keyfile }}"
+  when:
+    - pg_cluster_patroni_restapi_tls_enabled | bool
+    - not (pg_cluster_patroni_restapi.auto_generate | default(false) | bool)
+
+- name: "Selecting preflight Patroni endpoint models for certificate application"
+  ansible.builtin.set_fact:
+    pg_cluster_certificate_patroni_endpoint_models: "{{ pg_preflight_patroni_endpoint_models }}"
+    pg_cluster_certificate_patroni_endpoint_models_by_key: "{{ pg_preflight_patroni_endpoint_models_by_key }}"
+
+- name: "Checking certificate endpoint model provenance"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_certificate_patroni_endpoint_models == pg_preflight_patroni_endpoint_models
+      - pg_cluster_certificate_patroni_endpoint_models_by_key == pg_preflight_patroni_endpoint_models_by_key
+    fail_msg: "Certificate application must consume the exact preflight-owned endpoint records"
+
+- name: "Checking Patroni endpoint and certificate SAN models agree"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_certificate_patroni_endpoint_models == pg_preflight_patroni_endpoint_models
+      - pg_cluster_certificate_patroni_endpoint_models_by_key == pg_preflight_patroni_endpoint_models_by_key
+      - pg_cluster_certificate_patroni_endpoint_models_by_key | length == pg_cluster_certificate_patroni_endpoint_models | length
+      - pg_cluster_patroni_endpoint_model.san_identities | default([]) | length > 0
+      - pg_cluster_patroni_endpoint_model.member in (pg_cluster_patroni_members | map(attribute='host') | list)
+      - pg_cluster_patroni_endpoint_model.rendered_listener is not search('^https?://')
+      - pg_cluster_patroni_endpoint_model.uri is match('^https?://')
+      - pg_cluster_patroni_endpoint_model.host in pg_cluster_patroni_endpoint_model.san_identities
+      - pg_cluster_patroni_endpoint_model.uri == pg_cluster_patroni_endpoint_model.advertised_connect
+      - not pg_cluster_patroni_endpoint_model.listen_is_wildcard | bool
+      - not pg_cluster_patroni_endpoint_model.connect_is_wildcard | bool
+    fail_msg: "Every Patroni member must have a canonical endpoint model with certificate SAN identities"
+  loop: "{{ pg_cluster_certificate_patroni_endpoint_models }}"
+  loop_control:
+    loop_var: pg_cluster_patroni_endpoint_model
+
+- name: "Selecting preflight-owned managed etcd endpoint models for certificate application"
+  ansible.builtin.set_fact:
+    pg_cluster_etcd_member_endpoint_models: >-
+      {{ pg_preflight_etcd_endpoint_models
+         | selectattr('cluster', 'equalto', pg_cluster.name)
+         | selectattr('version', 'equalto', pg_version | string)
+         | list }}
+
+- name: "Checking managed etcd endpoint and certificate SAN models agree"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_etcd_endpoint_model.san_identities | default([]) | length > 0
+      - pg_cluster_etcd_endpoint_model.member in (pg_cluster_etcd_members | map(attribute='host') | list)
+    fail_msg: "Every managed etcd member must have canonical endpoint SAN identities"
+  loop: "{{ pg_cluster_etcd_member_endpoint_models }}"
+  loop_control:
+    loop_var: pg_cluster_etcd_endpoint_model
+
+- name: "Derive all effective Patroni TLS identities"
+  ansible.builtin.set_fact:
+    pg_cluster_dcs_san_identities: >-
+       {{ (pg_cluster_dcs_model.servers | default([]) | map(attribute='san_identities') | list | flatten
+           + (pg_cluster_etcd_member_endpoint_models | map(attribute='san_identities') | list | flatten)
+           + (pg_cluster_dcs_model.proxy.san_identities | default([])
+              if pg_cluster_dcs_model.provider | default('') == 'etcd3'
+              and pg_cluster_dcs_model.proxy is mapping else []))
+          | unique | list }}
+
+- name: "Derive all effective Patroni TLS identities"
+  ansible.builtin.set_fact:
+    pg_cluster_patroni_tls_identity_names: >-
+       {{ (pg_cluster_dcs_san_identities
+           + pg_cluster_certificate_patroni_endpoint_models | map(attribute='san_identities')
+             | list | flatten) | unique | list }}
+
+- name: "Checking SELinux tooling for managed TLS certificate installation"
+  ansible.builtin.command: "{{ pg_cluster_selinux_tool }}"
+  register: pg_cluster_selinux_tool_checks
+  changed_when: false
+  failed_when: false
+  loop:
+    - "getenforce"
+    - "restorecon -V"
+  loop_control:
+    loop_var: pg_cluster_selinux_tool
+  when: >-
+    pg_cluster_pki_generation_enabled | bool
+    or (pg_cluster_patroni_external_pki_destinations | default([]) | length > 0)
+    or (pg_cluster_etcd_tls.enabled | default(false) | bool
+        and not (pg_cluster_etcd_tls.auto_generate | default(false) | bool))
+
+- name: "Requiring SELinux policy tooling for managed TLS certificates"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_selinux_tool_checks.results | map(attribute='rc') | list == [0, 0]
+      - (pg_cluster_selinux_tool_checks.results | default([]) | first | default({})).stdout | default('') | trim in ['Enforcing', 'Permissive']
+    fail_msg: "Managed TLS requires getenforce and restorecon with an active SELinux policy"
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Publishing external etcd TLS access contract"
+  ansible.builtin.set_fact:
+    pg_cluster_etcd_external_tls_access_group: >-
+      {{ pg_cluster_etcd_tls.access_group
+         | default(pg_etcd_external_tls_access_group) }}
+  when:
+    - pg_cluster_etcd_tls.enabled | default(false) | bool
+    - not (pg_cluster_etcd_tls.auto_generate | default(false) | bool)
+
+- name: "Scope generated PKI destinations to enabled capabilities"
+  ansible.builtin.set_fact:
+    pg_cluster_etcd_pki_destinations: >-
+      {{ [
+        pg_cluster_etcd_tls_effective.ca_file,
+        pg_cluster_etcd_tls_effective.client.ca_file,
+        pg_cluster_etcd_tls_effective.client.cert_file,
+        pg_cluster_etcd_tls_effective.client.key_file,
+        pg_cluster_etcd_tls_effective.peer.ca_file,
+        pg_cluster_etcd_tls_effective.peer.cert_file,
+        pg_cluster_etcd_tls_effective.peer.key_file
+      ] | unique | list if pg_cluster_etcd_tls.auto_generate | default(false) | bool else [] }}
+    pg_cluster_patroni_pki_destinations: >-
+      {{ [
+        pg_cluster_patroni_restapi_effective.cafile,
+        pg_cluster_patroni_restapi_effective.certfile,
+        pg_cluster_patroni_restapi_effective.keyfile
+       ] if pg_cluster_patroni_restapi.auto_generate | default(false) | bool else [] }}
+
+- name: "Setting generated etcd CA destinations"
+  ansible.builtin.set_fact:
+    pg_cluster_generated_etcd_ca_destinations: >-
+      {{ [
+         pg_cluster_etcd_tls_effective.ca_file,
+         pg_cluster_etcd_tls_effective.client.ca_file,
+         pg_cluster_etcd_tls_effective.peer.ca_file
+       ] | unique if pg_cluster_etcd_tls.auto_generate | default(false) | bool else [] }}
+
+- name: "Setting generated PKI destinations"
+  ansible.builtin.set_fact:
+    pg_cluster_generated_pki_destinations: >-
+      {{ (pg_cluster_etcd_pki_destinations + pg_cluster_patroni_pki_destinations)
+         | unique | list }}
+
+- name: "Normalizing external Patroni PKI destinations to a native list"
+  ansible.builtin.set_fact:
+    pg_cluster_patroni_external_pki_destinations: >-
+      {{ [pg_cluster_patroni_external_pki_destinations]
+         if pg_cluster_patroni_external_pki_destinations is string else
+         (pg_cluster_patroni_external_pki_destinations | default([], true) | list) }}
+
+- name: "Checking external Patroni PKI destination list shape"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_patroni_external_pki_destinations is sequence
+      - pg_cluster_patroni_external_pki_destinations is not string
+      - pg_cluster_patroni_external_pki_destinations | type_debug == 'list'
+      - pg_cluster_patroni_external_pki_destinations | select('string') | list | length == pg_cluster_patroni_external_pki_destinations | length
+    fail_msg: "External Patroni PKI destinations must be a native list of paths"
+
+- name: "Checking explicit Patroni TLS paths"
+  ansible.builtin.include_tasks: validate/validate_patroni_tls_path.yml
+  vars:
+    pg_patroni_tls_path_records:
+      - {name: "cafile", path: "{{ pg_cluster_patroni_restapi_effective.cafile }}"}
+      - {name: "certfile", path: "{{ pg_cluster_patroni_restapi_effective.certfile }}"}
+      - {name: "keyfile", path: "{{ pg_cluster_patroni_restapi_effective.keyfile }}"}
+  when: pg_cluster_patroni_external_pki_destinations | default([]) | length > 0
+
+- name: "Checking explicitly managed Patroni TLS parent components"
+  ansible.builtin.include_tasks: validate/validate_external_path_ancestors.yml
+  vars:
+    pg_external_path_paths: "{{ pg_cluster_patroni_external_pki_destinations }}"
+    pg_external_path_acl_paths: "{{ pg_cluster_patroni_external_pki_destinations }}"
+    pg_external_path_service_group: "{{ pg_patroni_group }}"
+    pg_external_path_immediate_groups: ["root", "{{ pg_patroni_group }}"]
+  when: pg_cluster_patroni_external_pki_destinations | default([]) | length > 0
+
+- name: "Checking explicitly managed Patroni TLS destination files"
+  ansible.builtin.stat:
+    path: "{{ pg_cluster_external_tls_path }}"
+    follow: false
+  register: pg_cluster_external_tls_file_stats
+  loop: "{{ pg_cluster_patroni_external_pki_destinations | default([]) }}"
+  loop_control:
+    loop_var: pg_cluster_external_tls_path
+
+- name: "Rejecting unsafe explicitly managed Patroni TLS destination files"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_external_tls_stat.stat.isreg | default(false)
+      - not (pg_cluster_external_tls_stat.stat.islnk | default(false))
+      - pg_cluster_external_tls_stat.stat.pw_name | default('') == 'root'
+      - pg_cluster_external_tls_stat.stat.gr_name | default('') == pg_patroni_group
+      - pg_cluster_external_tls_stat.stat.mode | default('') == '0640'
+    fail_msg: >-
+      Explicitly managed Patroni TLS files must be existing root-owned,
+      non-symlink regular files owned by {{ pg_patroni_group }} with mode 0640;
+      the role will not chown externally managed paths
+  loop: "{{ pg_cluster_external_tls_file_stats.results | default([]) }}"
+  loop_control:
+    loop_var: pg_cluster_external_tls_stat
+
+- name: "Checking access to explicitly managed Patroni TLS files"
+  ansible.builtin.command:
+    argv: ["test", "-r", "{{ pg_cluster_external_tls_path }}"]
+  become: true
+  become_user: "{{ pg_patroni_user }}"
+  changed_when: false
+  loop: "{{ pg_cluster_patroni_external_pki_destinations | default([]) }}"
+  loop_control:
+    loop_var: pg_cluster_external_tls_path
+
+- name: "Cryptographically validating explicitly managed Patroni TLS material"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    ca={{ pg_cluster_patroni_restapi_effective.cafile | quote }}
+    cert={{ pg_cluster_patroni_restapi_effective.certfile | quote }}
+    key={{ pg_cluster_patroni_restapi_effective.keyfile | quote }}
+    work=$(mktemp -d)
+    trap 'rm -rf -- "$work"' EXIT
+    openssl x509 -in "$ca" -noout
+    openssl x509 -in "$cert" -noout
+    ca_text=$(openssl x509 -in "$ca" -noout -text)
+    cert_text=$(openssl x509 -in "$cert" -noout -text)
+    [[ "$ca_text" =~ CA:[[:space:]]*TRUE ]]
+    [[ "$ca_text" =~ keyCertSign ]]
+    openssl verify -CAfile "$ca" "$ca"
+    [[ "$cert_text" =~ CA:[[:space:]]*FALSE ]]
+    [[ "$cert_text" =~ digitalSignature ]]
+    [[ "$cert_text" =~ serverAuth ]]
+    openssl pkey -in "$key" -pubout -out "$work/key.pub"
+    openssl x509 -in "$cert" -pubkey -noout -out "$work/cert.pub"
+    cmp -s "$work/key.pub" "$work/cert.pub"
+    openssl verify -CAfile "$ca" "$cert"
+     {% for identity in pg_cluster_patroni_tls_identity_names | default([]) %}
+      {% if identity is ansible.utils.ip_address %}openssl x509 -in "$cert" -checkip {{ identity | quote }} -noout
+      openssl verify -CAfile "$ca" -verify_ip {{ identity | quote }} "$cert"
+      {% else %}openssl x509 -in "$cert" -checkhost {{ identity | quote }} -noout
+      openssl verify -CAfile "$ca" -verify_hostname {{ identity | quote }} "$cert"
+      {% endif %}
+     {% endfor %}
+  args:
+    executable: "/bin/bash"
+  changed_when: false
+  no_log: true
+  when:
+    - pg_cluster_patroni_external_pki_destinations | default([]) | length > 0
+
+- name: "Checking SELinux context of explicitly managed Patroni TLS files"
+  ansible.builtin.command:
+    argv: ["restorecon", "-n", "-v", "{{ pg_cluster_external_tls_path }}"]
+  register: pg_cluster_external_tls_selinux_checks
+  changed_when: false
+  loop: "{{ pg_cluster_patroni_external_pki_destinations | default([]) }}"
+  loop_control:
+    loop_var: pg_cluster_external_tls_path
+  when:
+    - pg_cluster_patroni_external_pki_destinations | default([]) | length > 0
+    - (pg_cluster_selinux_tool_checks.results | default([]) | first | default({})).stdout | default('') | trim in ['Enforcing', 'Permissive']
+
+- name: "Rejecting mismatched SELinux contexts for explicitly managed Patroni TLS files"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_external_tls_selinux_check.rc == 0
+      - pg_cluster_external_tls_selinux_check.stdout | trim == ''
+      - pg_cluster_external_tls_selinux_check.stderr | trim == ''
+    fail_msg: "Explicitly managed Patroni TLS files must already have the SELinux context prescribed by policy"
+  loop: "{{ pg_cluster_external_tls_selinux_checks.results | default([]) }}"
+  loop_control:
+    loop_var: pg_cluster_external_tls_selinux_check
+  when:
+    - pg_cluster_patroni_external_pki_destinations | default([]) | length > 0
+    - (pg_cluster_selinux_tool_checks.results | default([]) | first | default({})).stdout | default('') | trim in ['Enforcing', 'Permissive']
+
+- name: "Updating normalized cluster TLS settings"
+  ansible.builtin.set_fact:
+    pg_cluster: >-
+      {{
+        pg_cluster
+        | combine({
+            'dcs': pg_cluster.dcs | combine({
+              'etcd': (pg_cluster.dcs | default({})).etcd | default({}) | combine({'tls': pg_cluster_etcd_tls_effective}, recursive=true)
+            }, recursive=true),
+            'patroni': pg_cluster.patroni | combine({'restapi': pg_cluster_patroni_restapi_effective}, recursive=true)
+          }, recursive=true)
+      }}
+
+- name: "Checking generated cluster certificate destinations"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_certificate_path is match('^/etc/(etcd|patroni)/pki/[A-Za-z0-9_-][A-Za-z0-9_.-]*$')
+    fail_msg: "Generated cluster certificate paths must remain below /etc/etcd/pki or /etc/patroni/pki"
+  loop: "{{ (pg_cluster_etcd_pki_destinations + pg_cluster_patroni_pki_destinations) | unique | list }}"
+  loop_control:
+    loop_var: pg_cluster_certificate_path
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+# This is intentionally a read-only gate.  In particular, do not move any of
+# the directory tasks below it: file(state=directory) can create and chown
+# missing ancestors, which is unsafe when a path has been replaced by a link.
+- name: "Deriving cluster PKI directories and metadata paths for preflight"
+  ansible.builtin.set_fact:
+    pg_cluster_certificate_serial_registry_directory: "{{ pg_cluster_registry_directory }}"
+    pg_cluster_certificate_pki_lock_directory: "{{ pg_cluster_lock_directory }}"
+    pg_cluster_certificate_serial_registry: "{{ pg_cluster_registry_path }}"
+    pg_cluster_certificate_serial_lock: "{{ pg_cluster_lock_path }}"
+    pg_cluster_seed_pki_artifacts: >-
+      {% set paths = [
+         pg_cluster_certificate_seed_directory ~ '/' ~ pg_cluster_certificate_name ~ '.ca.key',
+         pg_cluster_certificate_seed_directory ~ '/' ~ pg_cluster_certificate_name ~ '.ca.crt'
+      ] %}
+      {% for member in pg_cluster_certificate_members %}
+      {% set prefix = pg_cluster_certificate_seed_directory ~ '/' ~ pg_cluster_certificate_name ~ '-'
+         ~ (member.host | regex_replace('[^A-Za-z0-9_.-]', '_')) ~ '-'
+         ~ ((member.host | string | hash('sha256'))[0:12]) ~ '-' ~ (member.certificate_role | default('patroni')) %}
+      {% for extension in ['key', 'crt', 'csr', 'ext'] %}{% set _ = paths.append(prefix ~ '.' ~ extension) %}{% endfor %}
+      {% endfor %}{{ paths }}
+    pg_cluster_pki_preflight_directories: >-
+      {{ ([pg_cluster_certificate_seed_directory,
+           pg_cluster_certificate_serial_registry_directory,
+           pg_cluster_certificate_pki_lock_directory,
+           pg_cluster_metadata_directory,
+           pg_cluster_metadata_directory ~ '/' ~
+             (pg_version | string) ~ '-' ~ (pg_cluster.name | string)]
+          + (pg_cluster_generated_pki_destinations | default([]) | map('dirname') | list)
+          + (pg_cluster_etcd_pki_destinations | default([]) | map('dirname') | list)
+          + (pg_cluster_patroni_pki_destinations | default([]) | map('dirname') | list)) | unique }}
+
+- name: "Deriving every ancestor of cluster PKI directories and artifacts"
+  ansible.builtin.set_fact:
+    pg_cluster_pki_preflight_paths: >-
+      {% set ns = namespace(paths=['/']) %}
+      {% for path in (pg_cluster_pki_preflight_directories + pg_cluster_seed_pki_artifacts +
+                      pg_cluster_generated_pki_destinations +
+                      [pg_cluster_certificate_serial_registry, pg_cluster_certificate_serial_lock]) %}
+      {% set parts = path.split('/') %}
+      {% for index in range(1, parts | length) %}
+      {% set value = '/' ~ (parts[1:index + 1] | join('/')) %}
+      {% if value not in ns.paths %}{% set ns.paths = ns.paths + [value] %}{% endif %}
+      {% endfor %}
+      {% endfor %}{{ ns.paths }}
+
+- name: "Checking cluster PKI preflight tools"
+  ansible.builtin.shell: "command -v {{ pg_cluster_preflight_tool }}"
+  args:
+    executable: "/bin/bash"
+  loop:
+    - "stat"
+    - "namei"
+    - "getfacl"
+    - "setfacl"
+    - "openssl"
+    - "flock"
+    - "install"
+  loop_control:
+    loop_var: pg_cluster_preflight_tool
+  changed_when: false
+
+- name: "Inspecting every cluster PKI preflight path without following links"
+  ansible.builtin.stat:
+    path: "{{ pg_cluster_pki_preflight_path }}"
+    follow: false
+  loop: "{{ pg_cluster_pki_preflight_paths }}"
+  loop_control:
+    loop_var: pg_cluster_pki_preflight_path
+  register: pg_cluster_pki_preflight_stats
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  become: true
+  become_user: "root"
+
+- name: "Checking cluster PKI preflight path components"
+  ansible.builtin.command:
+    argv: ["/usr/bin/namei", "-mo", "{{ pg_cluster_pki_preflight_path }}"]
+  loop: "{{ pg_cluster_pki_preflight_paths }}"
+  loop_control:
+    loop_var: pg_cluster_pki_preflight_path
+  register: pg_cluster_pki_preflight_namei
+  changed_when: false
+  failed_when: false
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  become: true
+  become_user: "root"
+
+- name: "Rejecting symlinks and unsafe cluster PKI ancestors"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_pki_preflight_namei_result.rc == 0
+      - pg_cluster_pki_preflight_namei_result.stdout is not search(' -> ')
+      - pg_cluster_pki_preflight_namei_result.stderr is not search('Permission denied')
+    fail_msg: "Cluster PKI seed, lock, metadata, generated paths and every ancestor must be traversable non-symlink paths"
+  loop: "{{ pg_cluster_pki_preflight_namei.results }}"
+  loop_control:
+    loop_var: pg_cluster_pki_preflight_namei_result
+
+- name: "Inspecting cluster PKI directory metadata and ACLs before mutation"
+  ansible.builtin.command:
+    argv: ["/usr/bin/getfacl", "--absolute-names", "--", "{{ pg_cluster_pki_preflight_stat_result.pg_cluster_pki_preflight_path }}"]
+  loop: "{{ pg_cluster_pki_preflight_stats.results }}"
+  loop_control:
+    loop_var: pg_cluster_pki_preflight_stat_result
+  when: pg_cluster_pki_preflight_stat_result.stat.exists and pg_cluster_pki_preflight_stat_result.stat.isdir
+  register: pg_cluster_pki_preflight_acls
+  changed_when: false
+  failed_when: false
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  become: true
+  become_user: "root"
+
+- name: "Rejecting unsafe cluster PKI directory metadata and ACLs"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (pg_cluster_pki_preflight_stat.stat.isdir and not (pg_cluster_pki_preflight_stat.stat.islnk | default(false)) and
+         pg_cluster_pki_preflight_stat.stat.pw_name | default('') == 'root' and
+         pg_cluster_pki_preflight_stat.stat.mode is match('^0[0-7][0145][0145]$') and
+         (pg_cluster_pki_preflight_acl.rc | default(0)) == 0 and
+         pg_cluster_pki_preflight_acl.stdout is not search('^default:', multiline=true) and
+         pg_cluster_pki_preflight_acl.stdout is not search('^user:[^:]+:', multiline=true) and
+         pg_cluster_pki_preflight_acl.stdout is not search('^group:[^:]+:', multiline=true))
+        or
+        (pg_cluster_pki_preflight_stat.stat.isreg and not (pg_cluster_pki_preflight_stat.stat.islnk | default(false)) and
+         pg_cluster_pki_preflight_stat.stat.pw_name | default('') == 'root' and
+         pg_cluster_pki_preflight_stat.stat.mode in ['0600', '0640', '0644'] and
+         (pg_cluster_pki_preflight_stat.stat.gr_name | default('') ==
+          ('root' if pg_cluster_pki_preflight_stat.pg_cluster_pki_preflight_path is match('^(/var|/var/lib/postgresql-pki-seed)')
+            else ('etcd' if pg_cluster_pki_preflight_stat.pg_cluster_pki_preflight_path is match('^/etc/etcd/') else pg_patroni_group))))
+    fail_msg: "Existing cluster PKI directories and ancestors must be root-owned, non-writable, non-symlink directories without extended ACLs"
+  loop: "{{ pg_cluster_pki_preflight_stats.results }}"
+  loop_control:
+    loop_var: pg_cluster_pki_preflight_stat
+  vars:
+    pg_cluster_pki_preflight_acl: >-
+      {{ (pg_cluster_pki_preflight_acls.results | default([])
+      | selectattr('pg_cluster_pki_preflight_stat_result.pg_cluster_pki_preflight_path', 'equalto', pg_cluster_pki_preflight_stat.pg_cluster_pki_preflight_path)
+      | first | default({})) }}
+  when: pg_cluster_pki_preflight_stat.stat.exists
+
+- name: "Deriving local generated PKI destination ancestors"
+  ansible.builtin.set_fact:
+    pg_cluster_local_pki_preflight_paths: >-
+      {% set ns = namespace(paths=['/']) %}
+      {% for path in (pg_cluster_generated_pki_destinations +
+                      (pg_cluster_generated_pki_destinations | map('dirname') | list)) %}
+      {% set parts = path.split('/') %}
+      {% for index in range(1, parts | length) %}
+      {% set value = '/' ~ (parts[1:index + 1] | join('/')) %}
+      {% if value not in ns.paths %}{% set ns.paths = ns.paths + [value] %}{% endif %}
+      {% endfor %}{% endfor %}{{ ns.paths }}
+
+- name: "Inspecting local generated PKI destinations and ancestors"
+  ansible.builtin.stat:
+    path: "{{ pg_cluster_local_pki_path }}"
+    follow: false
+  loop: "{{ pg_cluster_local_pki_preflight_paths }}"
+  loop_control:
+    loop_var: pg_cluster_local_pki_path
+  register: pg_cluster_local_pki_stats
+  become: true
+  become_user: "root"
+
+- name: "Inspecting local generated PKI destination ACLs"
+  ansible.builtin.command:
+    argv: ["/usr/bin/getfacl", "--absolute-names", "--", "{{ pg_cluster_local_pki_stat_result.pg_cluster_local_pki_path }}"]
+  loop: "{{ pg_cluster_local_pki_stats.results }}"
+  loop_control:
+    loop_var: pg_cluster_local_pki_stat_result
+  when: pg_cluster_local_pki_stat_result.stat.exists
+  register: pg_cluster_local_pki_acls
+  changed_when: false
+  failed_when: false
+  become: true
+  become_user: "root"
+
+- name: "Rejecting unsafe local generated PKI destinations and ancestors"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_local_pki_stat.stat.isdir or pg_cluster_local_pki_stat.stat.isreg
+      - not (pg_cluster_local_pki_stat.stat.islnk | default(false))
+      - pg_cluster_local_pki_stat.stat.pw_name | default('') == 'root'
+      - pg_cluster_local_pki_stat.stat.mode is match('^0[0-7][0145][0145]$')
+      - pg_cluster_local_pki_acl.rc | default(1) == 0
+      - pg_cluster_local_pki_acl.stdout is not search('^default:', multiline=true)
+      - pg_cluster_local_pki_acl.stdout is not search('^user:[^:]+:', multiline=true)
+      - pg_cluster_local_pki_acl.stdout is not search('^group:[^:]+:', multiline=true)
+    fail_msg: "Generated PKI destinations and every local ancestor must be root-owned, non-writable, non-symlink paths without extended ACLs"
+  loop: "{{ pg_cluster_local_pki_stats.results }}"
+  loop_control:
+    loop_var: pg_cluster_local_pki_stat
+  vars:
+    pg_cluster_local_pki_acl: >-
+      {{ (pg_cluster_local_pki_acls.results | default([])
+          | selectattr('pg_cluster_local_pki_stat_result.pg_cluster_local_pki_path', 'equalto', pg_cluster_local_pki_stat.pg_cluster_local_pki_path)
+          | first | default({})) }}
+  when: pg_cluster_local_pki_stat.stat.exists
+
+- name: "Checking every generated PKI path component before mutation"
+  ansible.builtin.command:
+    argv: ["/usr/bin/namei", "-mo", "{{ pg_cluster_pki_path }}"]
+  register: pg_cluster_pki_path_checks
+  changed_when: false
+  failed_when: false
+  loop: "{{ pg_cluster_generated_pki_destinations }}"
+  loop_control:
+    loop_var: pg_cluster_pki_path
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Checking generated PKI destinations before namei inspection"
+  ansible.builtin.stat:
+    path: "{{ pg_cluster_generated_pki_destination }}"
+    follow: false
+  loop: "{{ pg_cluster_generated_pki_destinations }}"
+  loop_control:
+    loop_var: pg_cluster_generated_pki_destination
+  register: pg_cluster_generated_pki_destination_stats
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Rejecting symlinked generated PKI path components"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_pki_path_check.failed | default(false) | bool is false
+      - >-
+        pg_cluster_pki_path_check.rc | default(-1) == 0 or
+        (pg_cluster_pki_path_check.rc | default(-1) == 1 and
+        (pg_cluster_generated_pki_destination_stats.results |
+         selectattr('pg_cluster_generated_pki_destination', 'equalto', pg_cluster_pki_path_check.pg_cluster_pki_path) |
+         list | length == 1) and
+        (((pg_cluster_generated_pki_destination_stats.results |
+            selectattr('pg_cluster_generated_pki_destination', 'equalto', pg_cluster_pki_path_check.pg_cluster_pki_path) |
+           first).failed | default(false) | bool) is false) and
+        ((pg_cluster_generated_pki_destination_stats.results |
+            selectattr('pg_cluster_generated_pki_destination', 'equalto', pg_cluster_pki_path_check.pg_cluster_pki_path) |
+          first).stat.exists is defined) and
+        (((pg_cluster_generated_pki_destination_stats.results |
+           selectattr('pg_cluster_generated_pki_destination', 'equalto', pg_cluster_pki_path_check.pg_cluster_pki_path) |
+           first).stat.exists | bool) is false))
+      - pg_cluster_pki_path_check.stdout is not search(' -> ')
+      - pg_cluster_pki_path_check.stderr is not search('Permission denied')
+    fail_msg: >-
+      Every existing component of generated etcd and Patroni PKI paths must be
+      a traversable non-symlink path; install namei and correct the path before
+      retrying
+  loop: "{{ pg_cluster_pki_path_checks.results }}"
+  loop_control:
+    loop_var: pg_cluster_pki_path_check
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Checking generated cluster certificate destinations themselves"
+  ansible.builtin.stat:
+    path: "{{ pg_cluster_certificate_path }}"
+    follow: false
+  loop: "{{ pg_cluster_generated_pki_destinations }}"
+  loop_control:
+    loop_var: pg_cluster_certificate_path
+  register: pg_cluster_certificate_destination_stats
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Rejecting unsafe pre-existing generated cluster certificate destinations before mutation"
+  ansible.builtin.assert:
+    that:
+      - >-
+        not pg_cluster_certificate_destination_stat.stat.exists
+        or (pg_cluster_certificate_destination_stat.stat.isreg
+        and not (pg_cluster_certificate_destination_stat.stat.islnk | default(false)))
+      - >-
+        not pg_cluster_certificate_destination_stat.stat.exists
+        or ((pg_cluster_pki_path_checks.results
+             | selectattr('pg_cluster_pki_path', 'equalto', pg_cluster_certificate_destination_stat.pg_cluster_certificate_path)
+             | list | length == 1)
+            and ((pg_cluster_pki_path_checks.results
+                   | selectattr('pg_cluster_pki_path', 'equalto', pg_cluster_certificate_destination_stat.pg_cluster_certificate_path)
+                  | first).failed | default(false) | bool) is false
+            and ((pg_cluster_pki_path_checks.results
+                   | selectattr('pg_cluster_pki_path', 'equalto', pg_cluster_certificate_destination_stat.pg_cluster_certificate_path)
+                  | first).rc | default(-1)) == 0
+            and ((pg_cluster_pki_path_checks.results
+                   | selectattr('pg_cluster_pki_path', 'equalto', pg_cluster_certificate_destination_stat.pg_cluster_certificate_path)
+                  | first).stdout | default('')) is not search(' -> '))
+    fail_msg: >-
+      Existing generated cluster certificate destinations must be regular
+      non-symlink files; absent destinations are allowed only when namei and
+      stat prove the destination path is safe to create.
+  loop: "{{ pg_cluster_certificate_destination_stats.results }}"
+  loop_control:
+    loop_var: pg_cluster_certificate_destination_stat
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Checking existing etcd and Patroni PKI parents before mutation"
+  ansible.builtin.stat:
+    path: "{{ pg_cluster_parent_path }}"
+    follow: false
+  register: pg_cluster_parent_path_checks
+  loop_control:
+    loop_var: pg_cluster_parent_path
+  vars:
+    pg_cluster_parent_paths: >-
+      {{ (pg_cluster_etcd_pki_destinations | map('dirname') | list
+          + pg_cluster_patroni_pki_destinations | map('dirname') | list
+          + (['/etc/etcd'] if pg_cluster_etcd_pki_destinations | length > 0 else [])
+          + (['/etc/patroni'] if pg_cluster_patroni_pki_destinations | length > 0 else []))
+          | unique }}
+  loop: "{{ pg_cluster_parent_paths }}"
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Rejecting unsafe existing etcd and Patroni configuration parents"
+  ansible.builtin.assert:
+    that:
+      - >-
+        not pg_cluster_parent_path_stat.stat.exists or
+        (pg_cluster_parent_path_stat.stat.isdir and
+        not (pg_cluster_parent_path_stat.stat.islnk | default(false)))
+    fail_msg: "Existing /etc/etcd and /etc/patroni configuration parents must be non-symlink directories"
+  loop: "{{ pg_cluster_parent_path_checks.results }}"
+  loop_control:
+    loop_var: pg_cluster_parent_path_stat
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Ensuring generated cluster certificate directories exist"
+  ansible.builtin.file:
+    path: "{{ pg_cluster_pki_directory }}"
+    state: directory
+    mode: "0750"
+    owner: "root"
+    group: "{{ 'etcd' if pg_cluster_pki_directory is match('^/etc/etcd/') else pg_patroni_group }}"
+  become: true
+  become_user: "root"
+  loop: "{{ pg_cluster_generated_pki_destinations | map('dirname') | unique | list }}"
+  loop_control:
+    loop_var: pg_cluster_pki_directory
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Ensuring generated PKI parent directories have expected ownership"
+  ansible.builtin.file:
+    path: "{{ pg_cluster_capability_parent.path }}"
+    state: directory
+    owner: "root"
+    group: "{{ pg_cluster_capability_parent.group }}"
+    mode: "{{ pg_cluster_capability_parent.mode }}"
+  become: true
+  become_user: "root"
+  loop:
+    - {path: "/etc/patroni", group: "root", mode: "0755", enabled: "{{ pg_cluster_patroni_pki_destinations | length > 0 }}"}
+    - {path: "/etc/etcd", group: "root", mode: "0755", enabled: "{{ pg_cluster_etcd_pki_destinations | length > 0 }}"}
+  loop_control:
+    loop_var: pg_cluster_capability_parent
+  when: pg_cluster_capability_parent.enabled | bool
+
+- name: "Inspecting generated PKI directory ACLs before removal"
+  ansible.builtin.command:
+    argv: ["/usr/bin/getfacl", "--absolute-names", "--", "{{ pg_cluster_generated_pki_acl_path }}"]
+  loop: "{{ pg_cluster_generated_pki_destinations | map('dirname') | unique | list }}"
+  loop_control:
+    loop_var: pg_cluster_generated_pki_acl_path
+  register: pg_cluster_generated_pki_acl_before_removal
+  changed_when: false
+  become: true
+  become_user: "root"
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Removing inherited default ACLs from generated PKI directories"
+  ansible.builtin.command:
+    argv: ["setfacl", "-k", "--", "{{ pg_cluster_generated_pki_acl_path }}"]
+  loop: "{{ pg_cluster_generated_pki_destinations | map('dirname') | unique | list }}"
+  loop_control:
+    loop_var: pg_cluster_generated_pki_acl_path
+  changed_when: true
+  become: true
+  become_user: "root"
+  when:
+    - pg_cluster_pki_generation_enabled | bool
+    - not ansible_check_mode
+    - >-
+      (pg_cluster_generated_pki_acl_before_removal.results
+          | selectattr('pg_cluster_generated_pki_acl_path', 'equalto', pg_cluster_generated_pki_acl_path) | first).stdout
+      is search('^default:', multiline=true)
+
+- name: "Inspecting ACLs on generated PKI directories"
+  ansible.builtin.command:
+    argv: ["/usr/bin/getfacl", "--absolute-names", "--", "{{ pg_cluster_generated_pki_acl_path }}"]
+  loop: "{{ pg_cluster_generated_pki_destinations | map('dirname') | unique | list }}"
+  loop_control:
+    loop_var: pg_cluster_generated_pki_acl_path
+  register: pg_cluster_generated_pki_acl_checks
+  changed_when: false
+  become: true
+  become_user: "root"
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Rejecting inherited default ACLs on generated PKI paths"
+  ansible.builtin.assert:
+    that: pg_cluster_generated_pki_acl.stdout is not search('^default:', multiline=true)
+    fail_msg: "Generated PKI directories must not retain inherited default ACLs"
+  loop: "{{ pg_cluster_generated_pki_acl_checks.results | default([]) }}"
+  loop_control:
+    loop_var: pg_cluster_generated_pki_acl
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Verifying generated PKI directory ownership and modes"
+  ansible.builtin.stat:
+    path: "{{ pg_cluster_pki_directory }}"
+    follow: false
+  loop: "{{ pg_cluster_generated_pki_destinations | map('dirname') | unique | list }}"
+  loop_control:
+    loop_var: pg_cluster_pki_directory
+  register: pg_cluster_pki_directory_stats
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Rejecting unsafe generated PKI directory ownership or modes"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_pki_directory_stat.stat.isdir
+      - not (pg_cluster_pki_directory_stat.stat.islnk | default(false))
+      - pg_cluster_pki_directory_stat.stat.pw_name == 'root'
+      - >-
+        pg_cluster_pki_directory_stat.stat.gr_name ==
+        ('etcd' if pg_cluster_pki_directory_stat.pg_cluster_pki_directory
+        is match('^/etc/etcd/') else pg_patroni_group)
+      - pg_cluster_pki_directory_stat.stat.mode == '0750'
+    fail_msg: "Generated PKI directories must be root-owned, non-symlink directories with capability-specific group and mode"
+  loop: "{{ pg_cluster_pki_directory_stats.results | default([]) }}"
+  loop_control:
+    loop_var: pg_cluster_pki_directory_stat
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Setting collision-resistant generated cluster PKI artifact paths"
+  ansible.builtin.set_fact:
+    pg_cluster_seed_pki_artifacts: >-
+      {% set paths = [
+         pg_cluster_certificate_seed_directory ~ '/' ~ pg_cluster_certificate_name ~ '.ca.key',
+         pg_cluster_certificate_seed_directory ~ '/' ~ pg_cluster_certificate_name ~ '.ca.crt',
+      ] %}
+       {% set member_directory = pg_cluster_certificate_seed_directory %}
+       {% for member in pg_cluster_certificate_members %}
+      {% set prefix = member_directory ~ '/' ~ pg_cluster_certificate_name ~ '-'
+         ~ (member.host | regex_replace('[^A-Za-z0-9_.-]', '_')) ~ '-'
+          ~ ((member.host | string | hash('sha256'))[0:12]) ~ '-'
+          ~ (member.certificate_role | default('patroni')) %}
+      {% for extension in ['key', 'crt', 'csr', 'ext'] %}
+      {% set _ = paths.append(prefix ~ '.' ~ extension) %}
+      {% endfor %}
+      {% endfor %}
+      {{ paths }}
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Setting restrictive per-CA serial registry path"
+  ansible.builtin.set_fact:
+    pg_cluster_certificate_serial_registry_directory: "{{ pg_cluster_registry_directory }}"
+    pg_cluster_certificate_pki_lock_directory: "{{ pg_cluster_lock_directory }}"
+    pg_cluster_certificate_serial_registry: "{{ pg_cluster_registry_path }}"
+    pg_cluster_certificate_serial_lock: "{{ pg_cluster_lock_path }}"
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Ensuring dedicated certificate seed artifact directory is root-only"
+  ansible.builtin.file:
+    path: "{{ pg_cluster_certificate_seed_directory }}"
+    state: "directory"
+    owner: "root"
+    group: "root"
+    mode: "0700"
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  become: true
+  become_user: "root"
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Inspecting dedicated certificate seed directory ACL before removal"
+  ansible.builtin.command:
+    argv: ["/usr/bin/getfacl", "--absolute-names", "--", "{{ pg_cluster_certificate_seed_directory }}"]
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  become: true
+  become_user: "root"
+  register: pg_cluster_seed_directory_acl_before_removal
+  changed_when: false
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Removing default ACLs from the dedicated certificate seed directory"
+  ansible.builtin.command:
+    argv: ["setfacl", "-k", "--", "{{ pg_cluster_certificate_seed_directory }}"]
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  become: true
+  become_user: "root"
+  changed_when: true
+  when:
+    - pg_cluster_pki_generation_enabled | bool
+    - not ansible_check_mode
+    - pg_cluster_seed_directory_acl_before_removal.stdout is search('^default:', multiline=true)
+
+- name: "Verifying dedicated certificate seed directory ACLs and metadata"
+  ansible.builtin.command:
+    argv: ["/usr/bin/getfacl", "--absolute-names", "--", "{{ pg_cluster_certificate_seed_directory }}"]
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  become: true
+  become_user: "root"
+  register: pg_cluster_seed_directory_acl
+  changed_when: false
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Rejecting unsafe certificate seed directory ACLs"
+  ansible.builtin.assert:
+    that: pg_cluster_seed_directory_acl.stdout is not search('^default:', multiline=true)
+    fail_msg: "The certificate seed artifact directory must not have default ACL entries"
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Ensuring dedicated serial registry directory is root-owned and restrictive"
+  ansible.builtin.stat:
+    path: "{{ pg_cluster_serial_registry_path }}"
+    follow: false
+  loop:
+    - "/var"
+    - "/var/lib"
+    - "{{ pg_cluster_certificate_serial_registry_directory }}"
+  loop_control:
+    loop_var: pg_cluster_serial_registry_path
+  register: pg_cluster_serial_registry_directory_stats
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Ensuring dedicated cluster PKI lock directory is root-controlled"
+  ansible.builtin.stat:
+    path: "{{ pg_cluster_certificate_pki_lock_path }}"
+    follow: false
+  loop:
+    - "/"
+    - "/var"
+    - "/var/lib"
+    - "{{ pg_cluster_certificate_serial_registry_directory }}"
+    - "{{ pg_cluster_certificate_pki_lock_directory }}"
+  loop_control:
+    loop_var: pg_cluster_certificate_pki_lock_path
+  register: pg_cluster_certificate_pki_lock_directory_stats
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  become: true
+  become_user: "root"
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Inspecting cluster PKI lock directory ACLs before creation"
+  ansible.builtin.command:
+    argv: ["/usr/bin/getfacl", "--absolute-names", "--", "{{ pg_cluster_certificate_pki_lock_stat.pg_cluster_certificate_pki_lock_path }}"]
+  loop: "{{ pg_cluster_certificate_pki_lock_directory_stats.results }}"
+  loop_control:
+    loop_var: pg_cluster_certificate_pki_lock_stat
+  register: pg_cluster_certificate_pki_lock_directory_acls
+  changed_when: false
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  become: true
+  become_user: "root"
+  when:
+    - pg_cluster_pki_generation_enabled | bool
+    - pg_cluster_certificate_pki_lock_stat.stat.exists
+
+- name: "Rejecting unsafe cluster PKI lock directory or ancestors"
+  ansible.builtin.assert:
+    that:
+      - >-
+        not pg_cluster_certificate_pki_lock_stat.stat.exists or
+        (pg_cluster_certificate_pki_lock_stat.stat.isdir and not (pg_cluster_certificate_pki_lock_stat.stat.islnk | default(false)) and
+        pg_cluster_certificate_pki_lock_stat.stat.uid == 0 and pg_cluster_certificate_pki_lock_stat.stat.gid == 0 and
+        pg_cluster_certificate_pki_lock_stat.stat.mode is match('^0[0-7][0145][0145]$'))
+    fail_msg: "Cluster PKI lock directory and every ancestor must be root-owned, directories, non-writable by group/other, and free of extended ACLs"
+  loop: "{{ pg_cluster_certificate_pki_lock_directory_stats.results }}"
+  loop_control:
+    loop_var: pg_cluster_certificate_pki_lock_stat
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Rejecting extended ACLs on cluster PKI lock directories"
+  ansible.builtin.assert:
+    that: pg_cluster_certificate_pki_lock_acl.stdout is not search('(^|\\n)(user|group):[^:\\n]+:|(^|\\n)default:', multiline=true)
+    fail_msg: "Cluster PKI lock directory and ancestors must not have extended or default ACL entries"
+  loop: "{{ pg_cluster_certificate_pki_lock_directory_acls.results }}"
+  loop_control:
+    loop_var: pg_cluster_certificate_pki_lock_acl
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Creating dedicated cluster PKI lock directory"
+  ansible.builtin.file:
+    path: "{{ pg_cluster_certificate_pki_lock_directory }}"
+    state: "directory"
+    owner: "root"
+    group: "root"
+    mode: "0700"
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  become: true
+  become_user: "root"
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Validating serial registry directory ownership and type"
+  ansible.builtin.assert:
+    that:
+      - >-
+        not pg_cluster_serial_registry_stat.stat.exists or
+        (pg_cluster_serial_registry_stat.stat.isdir and not (pg_cluster_serial_registry_stat.stat.islnk | default(false)) and
+        pg_cluster_serial_registry_stat.stat.pw_name == "root" and pg_cluster_serial_registry_stat.stat.gr_name == "root" and
+        pg_cluster_serial_registry_stat.stat.mode in ["0700", "0710", "0711", "0750", "0751", "0755"])
+    fail_msg: "Serial registry and every parent component must be root-owned, non-symlink directories"
+  loop: "{{ pg_cluster_serial_registry_directory_stats.results }}"
+  loop_control:
+    loop_var: pg_cluster_serial_registry_stat
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Ensuring dedicated serial registry directory is root-owned and restrictive"
+  ansible.builtin.file:
+    path: "{{ pg_cluster_certificate_serial_registry_directory }}"
+    state: "directory"
+    owner: "root"
+    group: "root"
+    mode: "0700"
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  become: true
+  become_user: "root"
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Ensuring serial registry and lock are root-owned and restrictive"
+  become: true
+  become_user: "root"
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  when: pg_cluster_pki_generation_enabled | bool
+  block:
+    - name: "Checking pre-existing serial registry and lock paths"
+      ansible.builtin.stat:
+        path: "{{ pg_cluster_serial_file_path }}"
+        follow: false
+      loop:
+        - "{{ pg_cluster_certificate_serial_registry }}"
+        - "{{ pg_cluster_certificate_serial_lock }}"
+      loop_control:
+        loop_var: pg_cluster_serial_file_path
+      register: pg_cluster_existing_serial_files
+
+
+    - name: "Rejecting pre-existing serial registry or lock symlinks"
+      ansible.builtin.assert:
+        that:
+          - >-
+            not pg_cluster_existing_serial_file.stat.exists or
+            (pg_cluster_existing_serial_file.stat.isreg and not (pg_cluster_existing_serial_file.stat.islnk | default(false)) and
+            pg_cluster_existing_serial_file.stat.uid == 0 and
+            pg_cluster_existing_serial_file.stat.gid == 0 and
+            pg_cluster_existing_serial_file.stat.mode == "0600")
+        fail_msg: "Serial registry and lock paths must be root-owned 0600 regular non-symlink files"
+      loop: "{{ pg_cluster_existing_serial_files.results }}"
+      loop_control:
+        loop_var: pg_cluster_existing_serial_file
+
+    - name: "Creating serial registry and lock files"
+      ansible.builtin.file:
+        path: "{{ pg_cluster_serial_file_path }}"
+        state: "touch"
+        owner: "root"
+        group: "root"
+        mode: "0600"
+      loop:
+        - "{{ pg_cluster_certificate_serial_registry }}"
+        - "{{ pg_cluster_certificate_serial_lock }}"
+      loop_control:
+        loop_var: pg_cluster_serial_file_path
+
+- name: "Installing shared cluster PKI registry parser"
+  ansible.builtin.copy:
+    src: "pki_registry.sh"
+    dest: "/usr/local/libexec/postgresql-pki-registry.sh"
+    owner: "root"
+    group: "root"
+    mode: "0755"
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  become: true
+  become_user: "root"
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Acquiring shared cluster PKI transaction lease"
+  ansible.builtin.shell: |
+     set -euo pipefail
+     source /usr/local/libexec/postgresql-pki-registry.sh
+     lease_dir={{ pg_cluster_certificate_pki_lock_directory | quote }}
+     lock="$lease_dir/{{ pg_cluster_certificate_name }}.pki.transaction"
+     validate_pki_directory_path "$lease_dir"
+     validate_pki_serial_paths "$lease_dir/owner" "$lease_dir/owner"
+      if ! mkdir "$lock" 2>/dev/null; then
+        printf 'Cluster PKI transaction is already active or abandoned: %s.\n' "$lock" >&2
+        printf '%s\n' 'Inspect manifest, journal, .new, and backup artifacts on the seed host.' >&2
+        printf '%s\n' 'After confirming no run is active, recover/remove the stage directory and lease before retrying.' >&2
+        exit 1
+      fi
+     printf 'pid=%s host=%s started=%s\n' "$$" "{{ inventory_hostname }}" "$(date -u +%FT%TZ)" >"$lock/owner"
+      chown root:root "$lock" "$lock/owner"; chmod 0700 "$lock"; chmod 0600 "$lock/owner"
+  args:
+    executable: "/bin/bash"
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  become: true
+  become_user: "root"
+  changed_when: true
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Validating serial registry and lock are regular non-symlink files"
+  ansible.builtin.stat:
+    path: "{{ pg_cluster_serial_file_path }}"
+    follow: false
+  loop:
+    - "{{ pg_cluster_certificate_serial_registry }}"
+    - "{{ pg_cluster_certificate_serial_lock }}"
+  loop_control:
+    loop_var: pg_cluster_serial_file_path
+  register: pg_cluster_serial_file_stats
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Rejecting unsafe serial registry and lock files"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_serial_file_stat.stat.isreg
+      - not (pg_cluster_serial_file_stat.stat.islnk | default(false))
+      - pg_cluster_serial_file_stat.stat.pw_name == "root"
+      - pg_cluster_serial_file_stat.stat.gr_name == "root"
+      - pg_cluster_serial_file_stat.stat.mode == "0600"
+    fail_msg: "Serial registry and lock must be root-owned regular files with mode 0600"
+  loop: "{{ pg_cluster_serial_file_stats.results }}"
+  loop_control:
+    loop_var: pg_cluster_serial_file_stat
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Validating every existing generated certificate serial"
+  ansible.builtin.shell: |
+    set -euo pipefail
+     registry={{ pg_cluster_certificate_serial_registry | quote }}
+       registry_lock={{ pg_cluster_certificate_serial_lock | quote }}
+      source /usr/local/libexec/postgresql-pki-registry.sh
+      validate_pki_serial_paths "$registry" "$registry_lock"
+      exec 8>"$registry_lock"; flock -x 8
+    validate_pki_serial_registry "$registry"
+    declare -A seen_serials=() certificate_serials=()
+    while IFS= read -r serial || [[ -n "$serial" ]]; do
+      seen_serials[${serial,,}]=1
+    done <"$registry"
+    shopt -s nullglob
+    for cert in {{ pg_cluster_certificate_seed_directory | quote }}/*.crt; do
+      [[ -f "$cert" ]] || continue
+      value=$(openssl x509 -in "$cert" -noout -serial 2>/dev/null | awk -F= '{print $2}') || {
+        printf 'Malformed existing certificate: %s\n' "$cert" >&2; exit 1;
+      }
+      [[ "$value" =~ ^[0-9A-Fa-f]+$ && ! "$value" =~ ^0+$ ]] || {
+        printf 'Invalid or zero certificate serial: %s\n' "$cert" >&2; exit 1;
+      }
+      serial_key="${value,,}"
+      [[ -z "${certificate_serials[$serial_key]+x}" ]] || { printf 'Duplicate existing certificate serial: %s\n' "$cert" >&2; exit 1; }
+      certificate_serials[$serial_key]="$cert"
+      if [[ -z "${seen_serials[$serial_key]+x}" ]]; then
+        printf '%s\n' "$value" >>"$registry"; sync -f "$registry"; seen_serials[$serial_key]=1
+      fi
+    done
+  args:
+    executable: "/bin/bash"
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  become: true
+  become_user: "root"
+  changed_when: false
+  no_log: true
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Checking generated PostgreSQL PKI paths before mutation"
+  ansible.builtin.command:
+    argv:
+      - namei
+      - -mo
+      - "{{ pg_cluster_pki_path }}"
+  register: pg_cluster_pki_path_checks
+  changed_when: false
+  failed_when: false
+  loop: "{{ pg_cluster_seed_pki_artifacts }}"
+  loop_control:
+    loop_var: pg_cluster_pki_path
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Rejecting unsafe generated PostgreSQL PKI paths"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_pki_path_check.rc == 0
+      - pg_cluster_pki_path_check.stdout is not search(' -> ')
+    fail_msg: "Generated PostgreSQL PKI paths and every existing parent component must be non-symlinked"
+  loop: "{{ pg_cluster_pki_path_checks.results }}"
+  loop_control:
+    loop_var: pg_cluster_pki_path_check
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Checking existing generated PostgreSQL PKI artifacts"
+  ansible.builtin.stat:
+    path: "{{ pg_cluster_pki_artifact }}"
+    follow: false
+  loop: "{{ pg_cluster_seed_pki_artifacts }}"
+  loop_control:
+    loop_var: pg_cluster_pki_artifact
+  register: pg_cluster_seed_pki_artifact_stats
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Rejecting unsafe existing generated PostgreSQL PKI artifacts"
+  ansible.builtin.assert:
+    that:
+      - not pg_cluster_seed_pki_artifact_stat.stat.exists or pg_cluster_seed_pki_artifact_stat.stat.isreg
+      - not pg_cluster_seed_pki_artifact_stat.stat.exists or not (pg_cluster_seed_pki_artifact_stat.stat.islnk | default(false))
+      - not pg_cluster_seed_pki_artifact_stat.stat.exists or pg_cluster_seed_pki_artifact_stat.stat.uid == 0
+      - not pg_cluster_seed_pki_artifact_stat.stat.exists or pg_cluster_seed_pki_artifact_stat.stat.gid == 0
+      - >-
+        not pg_cluster_seed_pki_artifact_stat.stat.exists
+          or pg_cluster_seed_pki_artifact_stat.stat.mode ==
+          ('0644' if pg_cluster_seed_pki_artifact_stat.pg_cluster_seed_pki_artifact
+          .endswith(('.crt', '.srl')) else '0600')
+    fail_msg: "Existing generated PostgreSQL PKI artifacts must be root-owned, regular, non-symlink files with approved modes"
+  loop: "{{ pg_cluster_seed_pki_artifact_stats.results }}"
+  loop_control:
+    loop_var: pg_cluster_seed_pki_artifact_stat
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Reconciling cluster certificate authority material as one rollback transaction"
+  ansible.builtin.shell: |
+    set -euo pipefail
+     ca_key="{{ pg_cluster_certificate_seed_directory }}/{{ pg_cluster_certificate_name }}.ca.key"
+     ca_crt="{{ pg_cluster_certificate_seed_directory }}/{{ pg_cluster_certificate_name }}.ca.crt"
+       source /usr/local/libexec/postgresql-pki-registry.sh
+       root_dir=$(dirname "$ca_key"); tx_lock={{ (pg_cluster_certificate_pki_lock_directory ~ '/.' ~ pg_cluster_certificate_name ~ '.ca.lock') | quote }}
+       validate_pki_serial_paths "$tx_lock" "$tx_lock"
+       exec 9>"$tx_lock"; flock -x 9
+     for orphan in "$root_dir"/.{{ pg_cluster_certificate_name }}.ca.stage.*; do
+        [[ -d "$orphan" ]] || continue
+        printf 'Unfinished CA transaction requires operator recovery: %s; inspect manifest/journal before cleanup\n' "$orphan" >&2
+       exit 1
+     done
+      # FD 9 is the transaction lock.  The registry uses FD 8 below and is
+      # never aliased to the transaction descriptor.
+      tmp=$(mktemp -d "$root_dir/.{{ pg_cluster_certificate_name }}.ca.stage.XXXXXXXX")
+    backup="$tmp/backup"; mkdir -m 0700 "$backup"
+    manifest="$tmp/manifest"; journal="$tmp/journal"
+    : >"$manifest"; : >"$journal"; chmod 0600 "$manifest" "$journal"
+    sync_file() { sync -f "$1" || { printf 'Unable to persist CA transaction record: %s\n' "$1" >&2; exit 1; }; }
+    record() { printf '%s\n' "$1" >>"$manifest" && sync_file "$manifest"; }
+    record "destination key $ca_key existed=$([[ -e "$ca_key" ]] && printf yes || printf no) backup=$backup/key replacement=no moved=no"
+    record "destination crt $ca_crt existed=$([[ -e "$ca_crt" ]] && printf yes || printf no) backup=$backup/crt replacement=no moved=no"
+      registry={{ pg_cluster_certificate_serial_registry | quote }}
+       registry_lock={{ pg_cluster_certificate_serial_lock | quote }}
+       source /usr/local/libexec/postgresql-pki-registry.sh
+         validate_pki_serial_paths "$registry" "$registry_lock"
+         exec 8>"$registry_lock"; flock -x 8
+      validate_pki_serial_registry "$registry"
+      declare -A seen_serials=()
+     committed=0
+    cleanup_tmp() {
+      status=$?
+      failed=0
+       if [[ "$status" != 0 ]]; then
+        for pair in "key:$ca_key" "crt:$ca_crt"; do
+          name=${pair%%:*}; dest=${pair#*:}
+           if grep -q "destination $name .*replacement=yes" "$manifest"; then
+             expected_inode=$(sed -n "s/.*destination $name .* inode=\([^ ]*\) hash=\([^ ]*\).*/\1/p" "$manifest" | tail -n 1)
+             expected_hash=$(sed -n "s/.*destination $name .* inode=\([^ ]*\) hash=\([^ ]*\).*/\2/p" "$manifest" | tail -n 1)
+              if [[ ! -e "$dest" || "$(stat -c %i "$dest")" != "$expected_inode" || "$(sha256sum "$dest" | cut -d' ' -f1)" != "$expected_hash" ]]; then
+                printf 'Refusing CA rollback: destination changed outside this transaction: %s\n' "$dest" >&2
+                failed=1
+                continue
+              fi
+             rm -f -- "$dest" || failed=1
+             [[ ! -e "$dest" ]] || failed=1
+           fi
+           if [[ -e "$backup/$name" ]]; then
+             mv -f -- "$backup/$name" "$dest" || failed=1
+             [[ -e "$dest" ]] || failed=1
+           fi
+        done
+      fi
+      if [[ "$failed" != 0 ]]; then printf 'CA rollback failed; preserving staging path: %s (backup: %s)\n' "$tmp" "$backup" >&2; exit 1; fi
+       rm -rf -- "$tmp" "$backup" || { printf 'CA cleanup failed; preserving paths: %s %s\n' "$tmp" "$backup" >&2; exit 1; }; sync -f "$root_dir"
+      trap - EXIT
+      exit "$status"
+    }
+    trap cleanup_tmp EXIT
+     invalid=0
+     operational=0
+     # Tool availability and path safety are established by the staged
+     # cluster certificate preflight before this transaction starts.
+    for path in "$ca_key" "$ca_crt"; do [[ ! -e "$path" || -r "$path" ]] || { printf 'Cannot read CA destination: %s\n' "$path" >&2; exit 1; }; done
+     if [[ -e "$ca_key" && -e "$ca_crt" ]]; then
+      if ! openssl pkey -in "$ca_key" -pubout -out "$tmp/key.pub" 2>"$tmp/key.err"; then
+        invalid=1
+      fi
+      if ! openssl x509 -in "$ca_crt" -pubkey -noout -out "$tmp/crt.pub" 2>"$tmp/crt.err"; then
+        invalid=1
+      fi
+      if [[ -s "$tmp/key.pub" && -s "$tmp/crt.pub" ]]; then
+        if cmp -s "$tmp/key.pub" "$tmp/crt.pub"; then cmp_rc=0; else cmp_rc=$?; fi
+        [[ "$cmp_rc" == 0 ]] || { [[ "$cmp_rc" == 1 ]] && invalid=1 || operational=1; }
+      fi
+      if ! openssl x509 -in "$ca_crt" -checkend 0 -noout >/dev/null 2>"$tmp/crt.err"; then
+        invalid=1
+      fi
+      if ! ca_text=$(openssl x509 -in "$ca_crt" -noout -text 2>"$tmp/crt.err"); then
+        invalid=1
+      else
+        [[ "$ca_text" =~ CA:[[:space:]]*TRUE ]] || invalid=1
+        [[ "$ca_text" =~ keyCertSign ]] || invalid=1
+        [[ "$ca_text" =~ cRLSign ]] || invalid=1
+      fi
+      if ! openssl verify -CAfile "$ca_crt" "$ca_crt" >"$tmp/verify.out" 2>"$tmp/verify.err"; then
+        invalid=1
+      fi
+      ca_serial=$(openssl x509 -in "$ca_crt" -noout -serial 2>/dev/null | sed 's/^serial=//') || invalid=1
+      [[ "$ca_serial" =~ ^[0-9A-Fa-f]+$ && ! "$ca_serial" =~ ^0+$ ]] || invalid=1
+      shopt -s nullglob
+      for existing in "$root_dir"/*.crt; do
+        existing_serial=$(openssl x509 -in "$existing" -noout -serial 2>/dev/null | sed 's/^serial=//') || {
+          printf 'Malformed existing certificate: %s\n' "$existing" >&2; exit 1;
+        }
+        [[ "$existing_serial" =~ ^[0-9A-Fa-f]+$ && ! "$existing_serial" =~ ^0+$ ]] || {
+          printf 'Invalid or zero certificate serial: %s\n' "$existing" >&2; exit 1;
+        }
+        [[ -z "${seen_serials[${existing_serial,,}]+x}" ]] || {
+          [[ "$existing" == "$ca_crt" ]] || { printf 'Duplicate existing certificate serial: %s\n' "$existing" >&2; exit 1; }
+        }
+        if [[ -z "${seen_serials[${existing_serial,,}]+x}" ]]; then
+          printf '%s\n' "$existing_serial" >>"$registry"
+          sync -f "$registry"; seen_serials[${existing_serial,,}]=1
+        fi
+        [[ "$existing" == "$ca_crt" || "${existing_serial,,}" != "${ca_serial,,}" ]] || invalid=1
+      done
+    else
+      invalid=1
+    fi
+    [[ "$operational" == 0 ]] || { printf '%s\n' 'CA inspection failed operationally; preserving existing material' >&2; exit 1; }
+    if [[ "$invalid" == 1 ]]; then
+      openssl genrsa -out "$tmp/key" "{{ pg_cluster_certificate_key_bits }}"
+        while :; do
+          serial=$(openssl rand -hex 16) || exit 1
+          [[ "$serial" =~ ^[0-9a-fA-F]{32}$ && ! "$serial" =~ ^0+$ ]] || continue
+          grep -ixq "$serial" "$registry" && continue
+          break
+        done
+        printf '%s\n' "$serial" >>"$registry"; sync -f "$registry"
+      openssl req -new -x509 -key "$tmp/key" -out "$tmp/crt" \
+        -set_serial "0x$serial" -days "{{ pg_cluster_certificate_days }}" -subj "/CN={{ pg_cluster_certificate_name }}-ca" \
+        -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign,cRLSign
+      openssl pkey -in "$tmp/key" -pubout -out "$tmp/key.pub"
+      openssl x509 -in "$tmp/crt" -pubkey -noout -out "$tmp/crt.pub"
+      cmp -s "$tmp/key.pub" "$tmp/crt.pub"
+      openssl x509 -in "$tmp/crt" -checkend 0 -noout
+      openssl x509 -in "$tmp/crt" -noout -text | grep -q 'CA:TRUE'
+      openssl x509 -in "$tmp/crt" -noout -text | grep -q 'keyCertSign'
+      openssl verify -CAfile "$tmp/crt" "$tmp/crt"
+       install -m 0600 "$tmp/key" "$ca_key.new"
+       install -m 0644 "$tmp/crt" "$ca_crt.new"
+       sync -f "$ca_key.new"; sync -f "$ca_crt.new"; sync -f "$root_dir"
+       for pair in "key:$ca_key" "crt:$ca_crt"; do
+         name=${pair%%:*}; dest=${pair#*:}
+         if [[ -e "$dest" ]]; then
+           mv -f -- "$dest" "$backup/$name"
+           [[ -e "$backup/$name" && ! -e "$dest" ]] || { printf 'CA backup failed at %s\n' "$dest" >&2; exit 1; }
+           record "destination $name existed=yes backup=$backup/$name replacement=no moved=yes"
+         fi
+         mv -f -- "$tmp/$name.new" "$dest"
+         [[ -e "$dest" ]] || { printf 'CA commit failed at %s\n' "$dest" >&2; exit 1; }
+          backup_present=$([[ -e "$backup/$name" ]] && printf yes || printf no)
+           replacement_inode=$(stat -c %i "$dest"); replacement_hash=$(sha256sum "$dest" | cut -d' ' -f1)
+            replacement_record="destination $name existed=$backup_present"
+            replacement_record+=" backup=$backup/$name replacement=yes moved=$backup_present"
+            replacement_record+=" inode=$replacement_inode hash=$replacement_hash"
+            record "$replacement_record"
+           sync -f "$root_dir"
+         printf 'committed %s\n' "$name" >>"$journal"; sync_file "$journal"
+       done
+      committed=1
+      printf 'created\n'
+    fi
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  become: true
+  become_user: "root"
+  no_log: true
+  throttle: 1
+  register: pg_cluster_ca_generation
+  changed_when: "'created' in pg_cluster_ca_generation.stdout"
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Restricting generated cluster CA private key on seed host"
+  ansible.builtin.file:
+    path: "{{ pg_cluster_certificate_seed_directory }}/{{ pg_cluster_certificate_name }}.ca.key"
+    owner: root
+    group: root
+    mode: "0600"
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  become: true
+  become_user: "root"
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Reading generated cluster CA certificate"
+  ansible.builtin.slurp:
+    src: "{{ pg_cluster_certificate_seed_directory }}/{{ pg_cluster_certificate_name }}.ca.crt"
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  become: true
+  become_user: "root"
+  register: pg_cluster_ca_certificate
+  no_log: true
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Installing generated etcd cluster CA certificate"
+  ansible.builtin.copy:
+    content: "{{ pg_cluster_ca_certificate.content | b64decode }}"
+    dest: "{{ pg_cluster_generated_etcd_ca_destination }}"
+    owner: root
+    group: "etcd"
+    mode: "0640"
+  loop: "{{ pg_cluster_generated_etcd_ca_destinations }}"
+  loop_control:
+    loop_var: pg_cluster_generated_etcd_ca_destination
+  become: true
+  become_user: "root"
+  no_log: true
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool
+
+- name: "Installing generated Patroni cluster CA certificate"
+  ansible.builtin.copy:
+    content: "{{ pg_cluster_ca_certificate.content | b64decode }}"
+    dest: "{{ pg_cluster_patroni_restapi_effective.cafile }}"
+    owner: root
+    group: "{{ pg_patroni_group }}"
+    mode: "0640"
+  no_log: true
+  become: true
+  become_user: "root"
+  when:
+    - pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Creating certificate extension configuration on the seed host"
+  ansible.builtin.copy:
+    content: |
+       basicConstraints=CA:FALSE
+       keyUsage=digitalSignature,keyEncipherment
+       {% set extended_key_usage = 'clientAuth' if pg_cluster_certificate_member.certificate_role == 'client' else 'serverAuth,clientAuth' %}
+       extendedKeyUsage={{ extended_key_usage }}
+         {% set endpoint_models = (pg_cluster_etcd_member_endpoint_models
+             if pg_cluster_certificate_member.certificate_role in ['client', 'peer']
+            else pg_cluster_certificate_patroni_endpoint_models) %}
+          {% set member_endpoint_models = endpoint_models
+              | selectattr('member', 'equalto', pg_cluster_certificate_member.host) | list %}
+          {% set ns = namespace(sans=(member_endpoint_models
+             | map(attribute='san_identities') | list | flatten | unique | list)) %}
+        {% for endpoint_host in pg_cluster_dcs_san_identities %}
+        {% if endpoint_host not in ns.sans and endpoint_host not in ['0.0.0.0', '::', '*'] %}{% set ns.sans = ns.sans + [endpoint_host] %}{% endif %}
+        {% endfor %}
+       subjectAltName={% for san in ns.sans %}{{ 'IP:' if san is ansible.utils.ip_address else 'DNS:' }}{{ san }}{{ ',' if not loop.last else '' }}{% endfor %}
+    dest: "{{ cert_ext_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  loop: "{{ pg_cluster_certificate_members }}"
+  loop_control:
+    loop_var: pg_cluster_certificate_member
+  vars:
+    cert_member_prefix: "{{ pg_cluster_member_pki_directory }}/{{ pg_cluster_certificate_name }}"
+    cert_member_host: "{{ pg_cluster_certificate_member.host | regex_replace('[^A-Za-z0-9_.-]', '_') }}"
+    cert_member_hash: "{{ (pg_cluster_certificate_member.host | string | hash('sha256'))[0:12] }}"
+    cert_member_base_path: >-
+      {{ cert_member_prefix }}-{{ cert_member_host }}-{{ cert_member_hash }}-
+      {{ pg_cluster_certificate_member.certificate_role | default('patroni') }}
+    cert_ext_path: "{{ cert_member_base_path }}.ext"
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  become: true
+  become_user: "root"
+  no_log: true
+  throttle: 1
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Checking generated member certificate artifact paths are whitespace-free"
+  ansible.builtin.assert:
+    that:
+      - cert_key_path is not search('\\s')
+      - cert_csr_path is not search('\\s')
+      - cert_crt_path is not search('\\s')
+      - cert_ext_path is not search('\\s')
+    fail_msg: "Generated member certificate artifact paths must not contain folded-scalar whitespace"
+  loop: "{{ pg_cluster_certificate_members }}"
+  loop_control:
+    loop_var: pg_cluster_member
+  vars:
+    cert_member_prefix: "{{ pg_cluster_member_pki_directory }}/{{ pg_cluster_certificate_name }}"
+    cert_member_host: "{{ pg_cluster_member.host | regex_replace('[^A-Za-z0-9_.-]', '_') }}"
+    cert_member_hash: "{{ (pg_cluster_member.host | string | hash('sha256'))[0:12] }}"
+    cert_member_base_path: >-
+      {{ cert_member_prefix }}-{{ cert_member_host }}-{{ cert_member_hash }}-
+      {{ pg_cluster_member.certificate_role | default('patroni') }}
+    cert_key_path: "{{ cert_member_base_path }}.key"
+    cert_csr_path: "{{ cert_member_base_path }}.csr"
+    cert_crt_path: "{{ cert_member_base_path }}.crt"
+    cert_ext_path: "{{ cert_member_base_path }}.ext"
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Generating member certificate request on the seed host"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    key="{{ cert_key_path }}"
+    csr="{{ cert_csr_path }}"
+    crt="{{ cert_crt_path }}"
+     ca="{{ pg_cluster_certificate_seed_directory }}/{{ pg_cluster_certificate_name }}.ca.crt"
+     ca_key="{{ pg_cluster_certificate_seed_directory }}/{{ pg_cluster_certificate_name }}.ca.key"
+       source /usr/local/libexec/postgresql-pki-registry.sh
+       root_dir=$(dirname "$key"); tx_lock={{ (pg_cluster_certificate_pki_lock_directory ~ '/.' ~ cert_member_host ~ '.lock') | quote }}
+       validate_pki_serial_paths "$tx_lock" "$tx_lock"
+       exec 9>"$tx_lock"; flock -x 9
+     for orphan in "$root_dir"/.{{ cert_member_host }}.stage.*; do
+        [[ -d "$orphan" ]] || continue
+        printf 'Unfinished member PKI transaction requires operator recovery: %s; inspect manifest/journal before cleanup\n' "$orphan" >&2
+       exit 1
+     done
+      # Do not create the stage until the orphan scan has completed.  FD 9 is
+      # reserved for this directory transaction for its entire lifetime.
+      tmp=$(mktemp -d "$root_dir/.{{ cert_member_host }}.stage.XXXXXXXX")
+    backup="$tmp/backup"; mkdir -m 0700 "$backup"
+     journal="$tmp/journal"; manifest="$tmp/manifest"
+     : >"$journal"; : >"$manifest"; chmod 0600 "$journal" "$manifest"
+     sync_file() { sync -f "$1" || { printf 'Unable to persist PKI transaction record\n' >&2; exit 1; }; }
+     record() { printf '%s\n' "$1" >>"$manifest" && sync_file "$manifest"; }
+    key_exists=no; crt_exists=no; csr_exists=no
+    [[ -e "$key" ]] && key_exists=yes; [[ -e "$crt" ]] && crt_exists=yes; [[ -e "$csr" ]] && csr_exists=yes
+     record "destination key existed=$key_exists backup=$backup/key replacement=no"
+     record "destination crt existed=$crt_exists backup=$backup/crt replacement=no"
+     record "destination csr existed=$csr_exists backup=$backup/csr replacement=no"
+    key_tmp="$tmp/key"
+    csr_tmp="$tmp/request.csr"
+    crt_tmp="$tmp/cert.crt"
+    committed=0
+    cleanup_tmp() {
+      status=$?
+      failed=0
+      if [[ "$status" != 0 ]]; then
+        for pair in "key:$key" "crt:$crt" "csr:$csr"; do
+          name=${pair%%:*}; dest=${pair#*:}
+           if grep -q "destination $name .*replacement=yes" "$manifest"; then
+             expected_inode=$(sed -n "s/.*destination $name .* inode=\([^ ]*\) hash=\([^ ]*\).*/\1/p" "$manifest" | tail -n 1)
+             expected_hash=$(sed -n "s/.*destination $name .* inode=\([^ ]*\) hash=\([^ ]*\).*/\2/p" "$manifest" | tail -n 1)
+              if [[ ! -e "$dest" || "$(stat -c %i "$dest")" != "$expected_inode" || "$(sha256sum "$dest" | cut -d' ' -f1)" != "$expected_hash" ]]; then
+                printf 'Refusing member rollback: destination changed outside this transaction: %s\n' "$dest" >&2
+                failed=1
+                continue
+              fi
+             rm -f -- "$dest" || failed=1
+             [[ ! -e "$dest" ]] || failed=1
+           fi
+          if [[ -e "$backup/$name" ]]; then mv -- "$backup/$name" "$dest" || failed=1; [[ -e "$dest" ]] || failed=1; fi
+        done
+      fi
+      if [[ "$failed" != 0 ]]; then printf 'PKI rollback failed; preserving staging path: %s\n' "$tmp" >&2; exit 1; fi
+       rm -rf -- "$tmp" || { printf 'PKI rollback cleanup failed; preserving staging path: %s\n' "$tmp" >&2; exit 1; }; sync -f "$root_dir"
+      trap - EXIT
+      exit "$status"
+    }
+    trap cleanup_tmp EXIT
+      for tool in openssl install cmp flock grep awk sed cut mktemp sha256sum sync stat tail chown; do
+       command -v "$tool" >/dev/null 2>&1 || {
+         printf 'Required PKI tool is unavailable: %s\n' "$tool" >&2; exit 1;
+       }
+     done
+     changed=0
+     ca_changed="{{ pg_cluster_ca_generation.changed | default(false) | bool | ternary('1', '0') }}"
+     invalid=0
+     operational=0
+     registry={{ pg_cluster_certificate_serial_registry | quote }}
+       registry_lock={{ pg_cluster_certificate_serial_lock | quote }}
+       source /usr/local/libexec/postgresql-pki-registry.sh
+        validate_pki_serial_paths "$registry" "$registry_lock"
+        exec 8>"$registry_lock"; flock -x 8
+       validate_pki_serial_registry "$registry"
+      declare -A seen_serials=()
+    key_pub="$tmp/key.pub"
+    crt_pub="$tmp/crt.pub"
+    if [[ -e "$key" ]]; then
+      if ! openssl pkey -in "$key" -pubout -out "$key_pub" 2>"$tmp/key.err"; then
+        invalid=1
+      fi
+    else
+      invalid=1
+    fi
+    if [[ -e "$crt" ]]; then
+      if ! openssl x509 -in "$crt" -pubkey -noout -out "$crt_pub" 2>"$tmp/crt.err"; then
+        invalid=1
+      fi
+    else
+      invalid=1
+    fi
+    if [[ -s "$key_pub" && -s "$crt_pub" ]]; then
+      if cmp -s "$key_pub" "$crt_pub"; then cmp_rc=0; else cmp_rc=$?; fi
+       [[ "$cmp_rc" == 0 ]] || { [[ "$cmp_rc" == 1 ]] && invalid=1 || operational=1; }
+    fi
+     if [[ -e "$crt" ]]; then
+       member_serial=$(openssl x509 -in "$crt" -noout -serial 2>/dev/null | sed 's/^serial=//') || invalid=1
+       [[ "$member_serial" =~ ^[0-9A-Fa-f]+$ && ! "$member_serial" =~ ^0+$ ]] || invalid=1
+       declare -A member_seen=()
+       shopt -s nullglob
+       for existing in "{{ pg_cluster_member_pki_directory | quote }}"/{{ pg_cluster_certificate_name }}-*.crt; do
+           existing_serial=$(openssl x509 -in "$existing" -noout -serial 2>/dev/null | sed 's/^serial=//') || {
+             printf 'Malformed existing certificate: %s\n' "$existing" >&2; exit 1;
+           }
+           [[ "$existing_serial" =~ ^[0-9A-Fa-f]+$ && ! "$existing_serial" =~ ^0+$ ]] || {
+             printf 'Invalid or zero certificate serial: %s\n' "$existing" >&2; exit 1;
+           }
+          if [[ -n "${member_seen[${existing_serial,,}]+x}" ]]; then
+            printf 'Duplicate existing certificate serial: %s\n' "$existing" >&2; exit 1
+         fi
+         member_seen[${existing_serial,,}]="$existing"
+         if [[ -z "${seen_serials[${existing_serial,,}]+x}" ]]; then
+            printf '%s\n' "$existing_serial" >>"$registry"; sync -f "$registry"; seen_serials[${existing_serial,,}]=1
+         fi
+       done
+       [[ -z "${seen_serials[${member_serial,,}]+x}" ]] || true
+       if ! leaf_text=$(openssl x509 -in "$crt" -noout -text 2>"$tmp/crt.err"); then
+        invalid=1
+      else
+        [[ "$leaf_text" =~ CA:[[:space:]]*FALSE ]] || invalid=1
+        [[ "$leaf_text" =~ digitalSignature ]] || invalid=1
+        [[ "$leaf_text" =~ keyEncipherment ]] || invalid=1
+          {% if pg_cluster_certificate_member.certificate_role != 'client' %}[[ "$leaf_text" =~ serverAuth ]] || invalid=1
+         {% endif %}
+         [[ "$leaf_text" =~ clientAuth ]] || invalid=1
+      fi
+      if ! openssl x509 -in "$crt" -checkend 0 -noout >/dev/null 2>"$tmp/crt.err"; then
+        invalid=1
+      fi
+      if ! openssl verify -CAfile "$ca" "$crt" >"$tmp/verify.out" 2>"$tmp/verify.err"; then
+        invalid=1
+      fi
+      expected_san=$(awk -F= '$1 ~ /^[[:space:]]*subjectAltName[[:space:]]*$/ {gsub(/[[:space:]]/,"",$2); print $2; exit}' "{{ cert_ext_path }}")
+      if ! actual_san=$(openssl x509 -in "$crt" -noout -ext subjectAltName \
+        2>"$tmp/crt.err" | awk '/Subject Alternative Name:/ {seen=1; next} \
+        seen && NF {printf "%s",$0}' | sed -E \
+        's/IP Address:/IP:/g; s/DNS Name:/DNS:/g; s/[[:space:]]//g'); then
+        invalid=1
+       elif [[ -z "$expected_san" || -z "$actual_san" ]]; then
+         invalid=1
+       else
+         # The extension file is the generated SAN model.  A certificate may
+         # legitimately contain additional identities, so verify model
+         # coverage rather than relying on formatting and list order.
+         IFS=',' read -r -a expected_sans <<<"$expected_san"
+         for expected_identity in "${expected_sans[@]}"; do
+           [[ ",$actual_san," == *",$expected_identity,"* ]] || invalid=1
+         done
+       fi
+    fi
+    if [[ -e "$csr" ]]; then
+      openssl req -in "$csr" -noout >/dev/null 2>&1 || invalid=1
+    else
+      invalid=1
+    fi
+    [[ "$operational" == 0 ]] || { printf '%s\n' 'Certificate inspection failed operationally; preserving existing material' >&2; exit 1; }
+    if [[ "$ca_changed" == 1 || "$invalid" == 1 ]]; then
+      openssl genrsa -out "$key_tmp" "{{ pg_cluster_certificate_key_bits }}"
+      chmod 0600 "$key_tmp"
+    fi
+    issue_key="${key_tmp}"
+    [[ -s "$issue_key" ]] || issue_key="$key"
+    if [[ "$ca_changed" == 1 || "$invalid" == 1 ]]; then
+       openssl req -new -key "$issue_key" -out "$csr_tmp" -subj "/CN={{ pg_cluster_certificate_member.host }}"
+        validate_pki_serial_registry "$registry"
+        declare -A seen_serials=()
+       collision=1
+       for attempt in {1..32}; do
+         serial=$(openssl rand -hex 16) || { printf 'Unable to obtain random certificate serial\n' >&2; exit 1; }
+          [[ "$serial" =~ ^[0-9a-fA-F]{32}$ && ! "$serial" =~ ^0+$ ]] || continue
+         collision=0
+         while IFS= read -r used; do [[ -z "$used" || "${used,,}" != "${serial,,}" ]] || collision=1; done <"$registry"
+          for existing in {{ pg_cluster_member_pki_directory | quote }}/{{ pg_cluster_certificate_name }}-*.crt; do
+            [[ -f "$existing" && "$existing" != "$crt" ]] || continue
+            existing_serial=$(openssl x509 -in "$existing" -noout -serial | awk -F= '{print $2}')
+             [[ "$existing_serial" =~ ^[0-9A-Fa-f]+$ && ! "$existing_serial" =~ ^0+$ ]] || continue
+            [[ "${existing_serial,,}" != "${serial,,}" ]] || collision=1
+          done
+          existing_serial=$(openssl x509 -in "$ca" -noout -serial 2>/dev/null | awk -F= '{print $2}') || existing_serial=''
+          [[ "${existing_serial,,}" != "${serial,,}" ]] || collision=1
+         [[ "$collision" == 0 ]] && break
+       done
+       [[ "$collision" == 0 ]] || { printf 'Unable to allocate a unique certificate serial\n' >&2; exit 1; }
+       printf '%s\n' "$serial" >>"$registry"; sync -f "$registry"
+       openssl x509 -req -in "$csr_tmp" -CA "$ca" -CAkey "$ca_key" \
+        -set_serial "0x$serial" -out "$crt_tmp" \
+        -days {{ pg_cluster_certificate_days }} -sha256 \
+        -extfile "{{ cert_ext_path }}"
+      openssl verify -CAfile "$ca" "$crt_tmp"
+      generated_text=$(openssl x509 -in "$crt_tmp" -noout -text)
+      [[ "$generated_text" =~ CA:[[:space:]]*FALSE ]]
+      [[ "$generated_text" =~ digitalSignature ]]
+      [[ "$generated_text" =~ keyEncipherment ]]
+        {% if pg_cluster_certificate_member.certificate_role != 'client' %}[[ "$generated_text" =~ serverAuth ]]
+       {% endif %}[[ "$generated_text" =~ clientAuth ]]
+      chmod 0644 "$crt_tmp"
+       install -m 0600 "$issue_key" "$key.new"
+       install -m 0644 "$crt_tmp" "$crt.new"
+       install -m 0600 "$csr_tmp" "$csr.new"
+       sync -f "$key.new"; sync -f "$crt.new"; sync -f "$csr.new"; sync -f "$root_dir"
+        for pair in "key:$key" "crt:$crt" "csr:$csr"; do
+          name=${pair%%:*}; dest=${pair#*:}
+          if [[ -e "$dest" ]]; then
+            mv -f -- "$dest" "$backup/$name"
+            [[ -e "$backup/$name" && ! -e "$dest" ]] || { printf 'PKI backup failed at %s\n' "$dest" >&2; exit 1; }
+            record "destination $name existed=yes backup=$backup/$name moved=yes replacement=no"
+          fi
+          mv -f -- "$tmp/$name.new" "$dest"
+          [[ -e "$dest" ]] || { printf 'PKI commit failed at %s\n' "$dest" >&2; exit 1; }
+           replacement_inode=$(stat -c %i "$dest"); replacement_hash=$(sha256sum "$dest" | cut -d' ' -f1)
+           record "destination $name replacement=yes inode=$replacement_inode hash=$replacement_hash"
+           sync -f "$root_dir"
+          printf 'committed %s\n' "$name" >>"$journal"; sync_file "$journal"
+        done
+      committed=1
+       # A successful no-op must not enter rollback: the existing valid pair is
+       # not owned by this transaction.
+       changed=1
+    fi
+     [[ "$changed" == 1 ]] && printf 'created\n'
+  args:
+    executable: /bin/bash
+  vars:
+    cert_member_prefix: "{{ pg_cluster_member_pki_directory }}/{{ pg_cluster_certificate_name }}"
+    cert_member_host: "{{ pg_cluster_certificate_member.host | regex_replace('[^A-Za-z0-9_.-]', '_') }}"
+    cert_member_hash: "{{ (pg_cluster_certificate_member.host | string | hash('sha256'))[0:12] }}"
+    cert_member_base_path: >-
+      {{ cert_member_prefix }}-{{ cert_member_host }}-{{ cert_member_hash }}-
+      {{ pg_cluster_certificate_member.certificate_role | default('patroni') }}
+    cert_key_path: "{{ cert_member_base_path }}.key"
+    cert_csr_path: "{{ cert_member_base_path }}.csr"
+    cert_crt_path: "{{ cert_member_base_path }}.crt"
+    cert_ext_path: "{{ cert_member_base_path }}.ext"
+  loop: "{{ pg_cluster_certificate_members }}"
+  loop_control:
+    loop_var: pg_cluster_certificate_member
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  become: true
+  become_user: "root"
+  no_log: true
+  changed_when: "'created' in pg_cluster_member_certificate_generation.stdout"
+  register: pg_cluster_member_certificate_generation
+  throttle: 1
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Normalizing generated PostgreSQL PKI artifact ownership"
+  ansible.builtin.file:
+    path: "{{ pg_cluster_pki_artifact }}"
+    owner: root
+    group: root
+    mode: "{{ '0644' if pg_cluster_pki_artifact.endswith('.crt') else '0600' }}"
+  loop: "{{ pg_cluster_seed_pki_artifacts }}"
+  loop_control:
+    loop_var: pg_cluster_pki_artifact
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  become: true
+  become_user: "root"
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Inspecting generated seed artifact ACLs after issuance"
+  ansible.builtin.command:
+    argv: ["/usr/bin/getfacl", "--absolute-names", "--", "{{ pg_cluster_seed_artifact }}"]
+  loop: "{{ pg_cluster_seed_pki_artifacts }}"
+  loop_control:
+    loop_var: pg_cluster_seed_artifact
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  become: true
+  become_user: "root"
+  register: pg_cluster_seed_artifact_acls
+  changed_when: false
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Rejecting default ACLs on generated seed artifacts"
+  ansible.builtin.assert:
+    that: pg_cluster_seed_artifact_acl.stdout is not search('^default:', multiline=true)
+    fail_msg: "Generated seed artifacts must not inherit default ACL entries"
+  loop: "{{ pg_cluster_seed_artifact_acls.results | default([]) }}"
+  loop_control:
+    loop_var: pg_cluster_seed_artifact_acl
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Checking Patroni cannot traverse the generated seed artifact directory"
+  ansible.builtin.command:
+    argv: ["test", "-r", "{{ pg_cluster_certificate_seed_directory }}"]
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  become: true
+  become_user: "{{ pg_patroni_user }}"
+  register: pg_cluster_seed_patroni_access
+  changed_when: false
+  failed_when: false
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Rejecting Patroni access to generated seed artifacts"
+  ansible.builtin.assert:
+    that: pg_cluster_seed_patroni_access.rc != 0
+    fail_msg: "Patroni must not be able to read the generated certificate seed directory"
+  when: pg_cluster_pki_generation_enabled | bool
+
+
+- name: "Reading local generated member certificate and key"
+  ansible.builtin.slurp:
+    src: "{{ cert_member_artifact_path }}"
+  loop:
+    - crt
+    - key
+  loop_control:
+    loop_var: pg_cluster_member_artifact_extension
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  register: pg_cluster_member_certificate_files
+  no_log: true
+  vars:
+    cert_member_prefix: "{{ pg_cluster_member_pki_directory }}/{{ pg_cluster_certificate_name }}"
+    cert_member_host: "{{ pg_cluster_local_patroni_members[0].host | regex_replace('[^A-Za-z0-9_.-]', '_') }}"
+    cert_member_hash: "{{ (pg_cluster_local_patroni_members[0].host | string | hash('sha256'))[0:12] }}"
+    cert_member_base_path: "{{ cert_member_prefix }}-{{ cert_member_host }}-{{ cert_member_hash }}-{{ cert_member_role }}"
+    cert_member_artifact_path: "{{ cert_member_base_path }}.{{ pg_cluster_member_artifact_extension }}"
+    cert_member_role: "patroni"
+  when:
+    - pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Reading local generated etcd client and peer certificates and keys"
+  ansible.builtin.slurp:
+    src: "{{ cert_member_artifact_path }}"
+  loop:
+    - client.crt
+    - client.key
+    - peer.crt
+    - peer.key
+  loop_control:
+    loop_var: pg_cluster_etcd_artifact_name
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  register: pg_cluster_etcd_member_certificate_files
+  no_log: true
+  vars:
+    cert_member_prefix: "{{ pg_cluster_member_pki_directory }}/{{ pg_cluster_certificate_name }}"
+    cert_member_host: "{{ pg_cluster_local_etcd_members[0].host | regex_replace('[^A-Za-z0-9_.-]', '_') }}"
+    cert_member_hash: "{{ (pg_cluster_local_etcd_members[0].host | string | hash('sha256'))[0:12] }}"
+    cert_member_artifact_path: >-
+      {{ cert_member_prefix }}-{{ cert_member_host }}-{{ cert_member_hash }}-
+      {{ pg_cluster_etcd_artifact_name.split('.')[0] }}.{{ pg_cluster_etcd_artifact_name.split('.')[1] }}
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool
+
+- name: "Checking Patroni certificate pair shares a filesystem"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_patroni_restapi_effective.certfile | dirname == pg_cluster_patroni_restapi_effective.keyfile | dirname
+    fail_msg: "Generated Patroni certificate and key must share a parent filesystem for pair rollback"
+  when:
+    - pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Installing generated Patroni REST API certificate pair with rollback journal"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    cert={{ pg_cluster_patroni_restapi_effective.certfile | quote }}
+    key={{ pg_cluster_patroni_restapi_effective.keyfile | quote }}
+     dir=$(dirname -- "$cert"); lock={{ (pg_cluster_certificate_pki_lock_directory ~ '/patroni-pki.lock') | quote }}
+     source /usr/local/libexec/postgresql-pki-registry.sh
+     validate_pki_serial_paths "$lock" "$lock"
+     exec 9>"$lock"; flock -x 9
+     for orphan in "$dir"/.patroni-pki.stage.*; do
+        [[ -d "$orphan" ]] || continue
+        printf 'Unfinished Patroni PKI transaction requires operator recovery: %s; inspect manifest/journal before cleanup\n' "$orphan" >&2
+       exit 1
+      done
+      stage=$(mktemp -d "$dir/.patroni-pki.stage.XXXXXXXX")
+     journal="$stage/journal"; manifest="$stage/manifest"
+     : >"$journal"; : >"$manifest"; chmod 0600 "$journal" "$manifest"
+    sync_file() { sync -f "$1" || { printf 'Unable to persist Patroni PKI transaction record\n' >&2; exit 1; }; }
+    record() { printf '%s\n' "$1" >>"$manifest" && sync_file "$manifest"; }
+    rollback() {
+      rc=$1; failed=0
+      for pair in "cert:$cert" "key:$key"; do
+        name=${pair%%:*}; dest=${pair#*:}
+        if grep -q "destination $name .*replacement=yes" "$manifest"; then
+           expected_inode=$(sed -n "s/.*destination $name .* inode=\([^ ]*\) hash=\([^ ]*\).*/\1/p" "$manifest" | tail -n 1)
+           expected_hash=$(sed -n "s/.*destination $name .* inode=\([^ ]*\) hash=\([^ ]*\).*/\2/p" "$manifest" | tail -n 1)
+           if [[ ! -e "$dest" || "$(stat -c %i "$dest")" != "$expected_inode" || "$(sha256sum "$dest" | cut -d' ' -f1)" != "$expected_hash" ]]; then
+             printf 'Refusing Patroni rollback: destination changed outside this transaction: %s\n' "$dest" >&2
+             failed=1
+             continue
+           fi
+           rm -f -- "$dest" || failed=1
+          [[ ! -e "$dest" ]] || failed=1
+        fi
+        if [[ -e "$stage/backup.$name" ]]; then
+          mv -- "$stage/backup.$name" "$dest" || failed=1
+          [[ -e "$dest" ]] || failed=1
+        fi
+      done
+      if [[ "$failed" != 0 ]]; then printf 'Patroni PKI rollback failed; preserving staging path: %s\n' "$stage" >&2; exit 1; fi
+       rm -rf -- "$stage" || { printf 'Patroni PKI cleanup failed; preserving staging path: %s\n' "$stage" >&2; exit 1; }; sync -f "$dir"; exit "$rc"
+    }
+    trap 'rc=$?; [[ "$rc" == 0 ]] || rollback "$rc"' EXIT
+    cert_exists=no; key_exists=no; [[ -e "$cert" ]] && cert_exists=yes; [[ -e "$key" ]] && key_exists=yes
+    record "destination cert existed=$cert_exists backup=$stage/backup.cert replacement=no"
+    record "destination key existed=$key_exists backup=$stage/backup.key replacement=no"
+    printf '%s' {{ pg_cluster_member_certificate_files.results[0].content | quote }} | base64 -d >"$stage/cert"
+    printf '%s' {{ pg_cluster_member_certificate_files.results[1].content | quote }} | base64 -d >"$stage/key"
+     for tool in openssl install cmp dirname mktemp sync flock stat sha256sum cut sed tail chown; do
+      command -v "$tool" >/dev/null 2>&1 || {
+        printf 'Required PKI tool is unavailable: %s\n' "$tool" >&2; exit 1;
+      }
+    done
+    openssl x509 -in "$stage/cert" -noout
+    openssl pkey -in "$stage/key" -noout
+    if [[ -f "$cert" && -f "$key" ]] \
+      && cmp -s "$stage/cert" "$cert" && cmp -s "$stage/key" "$key"; then
+      rm -rf -- "$stage" || {
+        printf 'Patroni PKI staging cleanup failed; preserving path: %s\n' "$stage" >&2
+        exit 1
+      }
+      exit 0
+    fi
+     install -o root -g {{ pg_patroni_group | quote }} -m 0640 "$stage/cert" "$stage/cert.new"
+     install -o root -g {{ pg_patroni_group | quote }} -m 0640 "$stage/key" "$stage/key.new"
+     sync -f "$stage/cert.new"; sync -f "$stage/key.new"; sync -f "$stage"
+    for pair in "cert:$cert" "key:$key"; do
+      name=${pair%%:*}; dest=${pair#*:}
+      if [[ -e "$dest" ]]; then
+        mv -- "$dest" "$stage/backup.$name"
+        [[ -e "$stage/backup.$name" && ! -e "$dest" ]] || { printf 'Patroni PKI backup failed at %s\n' "$dest" >&2; exit 1; }
+        record "destination $name moved=yes replacement=no"
+      fi
+      mv -- "$stage/$name.new" "$dest"
+      [[ -e "$dest" ]] || { printf 'Patroni PKI commit failed at %s\n' "$dest" >&2; exit 1; }
+       replacement_inode=$(stat -c %i "$dest"); replacement_hash=$(sha256sum "$dest" | cut -d' ' -f1)
+       record "destination $name replacement=yes inode=$replacement_inode hash=$replacement_hash"
+       sync -f "$dir"
+      printf 'committed %s\n' "$name" >>"$journal"; sync_file "$journal"
+    done
+    printf 'committed\n'
+    rm -rf -- "$stage" || { printf 'Patroni PKI cleanup failed; preserving staging path: %s\n' "$stage" >&2; exit 1; }
+  args:
+    executable: "/bin/bash"
+  no_log: true
+  become: true
+  become_user: "root"
+  changed_when: "'committed' in pg_patroni_pair_install.stdout"
+  register: pg_patroni_pair_install
+  when:
+    - pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Restricting generated Patroni member private key"
+  ansible.builtin.file:
+    path: "{{ pg_cluster_patroni_restapi_effective.keyfile }}"
+    owner: root
+    group: "{{ pg_patroni_group }}"
+    mode: "0640"
+  become: true
+  become_user: "root"
+  when:
+    - pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+
+- name: "Verifying generated certificate destination metadata"
+  ansible.builtin.stat:
+    path: "{{ pg_cluster_generated_destination }}"
+    follow: false
+  loop: "{{ pg_cluster_generated_pki_destinations }}"
+  loop_control:
+    loop_var: pg_cluster_generated_destination
+  register: pg_cluster_generated_destination_stats
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Rejecting unsafe generated certificate destinations"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_generated_destination_stat.stat.exists
+      - pg_cluster_generated_destination_stat.stat.isreg
+      - not (pg_cluster_generated_destination_stat.stat.islnk | default(false))
+      - pg_cluster_generated_destination_stat.stat.pw_name == "root"
+      - >-
+        pg_cluster_generated_destination_stat.stat.gr_name ==
+        ("etcd" if pg_cluster_generated_destination_stat.pg_cluster_generated_destination
+        in pg_cluster_generated_etcd_ca_destinations else ("etcd" if
+        pg_cluster_generated_destination_stat.pg_cluster_generated_destination is
+        match("^/etc/etcd/") else pg_patroni_group))
+      - >-
+        pg_cluster_generated_destination_stat.stat.mode ==
+         ("0640" if pg_cluster_generated_destination_stat.pg_cluster_generated_destination in
+        pg_cluster_generated_etcd_ca_destinations else "0640")
+    fail_msg: >-
+      Generated certificate destinations must be regular non-symlink files with
+      exact root ownership and capability-specific permissions.
+  loop: "{{ pg_cluster_generated_destination_stats.results | default([]) }}"
+  loop_control:
+    loop_var: pg_cluster_generated_destination_stat
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Verifying generated etcd client and peer certificate identities"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    ca={{ (pg_cluster_certificate_seed_directory ~ '/' ~ pg_cluster_certificate_name ~ '.ca.crt') | quote }}
+    host={{ pg_etcd_member_record.host | quote }}
+    base={{ pg_cluster_member_pki_directory | quote }}
+    name={{ pg_cluster_certificate_name | quote }}
+    hostpart={{ pg_generated_etcd_member_host | quote }}
+    hashpart={{ pg_generated_etcd_member_hash | quote }}
+    prefix="${base}/${name}-${hostpart}-${hashpart}"
+    client="${prefix}-client.crt"
+    peer="${prefix}-peer.crt"
+    client_text=$(openssl x509 -in "$client" -noout -text)
+    peer_text=$(openssl x509 -in "$peer" -noout -text)
+    client_serial=$(openssl x509 -in "$client" -noout -serial)
+    peer_serial=$(openssl x509 -in "$peer" -noout -serial)
+    client_fingerprint=$(openssl x509 -in "$client" -noout -fingerprint -sha256)
+    peer_fingerprint=$(openssl x509 -in "$peer" -noout -fingerprint -sha256)
+    [[ "$client_serial" != "$peer_serial" ]]
+    [[ "$client_fingerprint" != "$peer_fingerprint" ]]
+    [[ "$client_text" =~ CA:[[:space:]]*FALSE && "$peer_text" =~ CA:[[:space:]]*FALSE ]]
+    [[ "$client_text" =~ clientAuth && ! "$client_text" =~ serverAuth ]]
+    [[ "$peer_text" =~ clientAuth && "$peer_text" =~ serverAuth ]]
+    openssl verify -CAfile "$ca" "$client" "$peer" >/dev/null
+    if [[ "$host" == *:* || "$host" =~ ^[0-9.]+$ ]]; then
+      openssl x509 -in "$client" -checkip "$host" -noout
+      openssl x509 -in "$peer" -checkip "$host" -noout
+    else
+      openssl x509 -in "$client" -checkhost "$host" -noout
+      openssl x509 -in "$peer" -checkhost "$host" -noout
+    fi
+  args:
+    executable: "/bin/bash"
+  loop: "{{ pg_cluster_etcd_members }}"
+  loop_control:
+    loop_var: pg_etcd_member_record
+  vars:
+    pg_generated_etcd_member_host: "{{ pg_etcd_member_record.host | regex_replace('[^A-Za-z0-9_.-]', '_') }}"
+    pg_generated_etcd_member_hash: "{{ (pg_etcd_member_record.host | string | hash('sha256'))[0:12] }}"
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  become: true
+  become_user: "root"
+  changed_when: false
+  no_log: true
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool
+
+- name: "Checking generated certificate transaction artifacts"
+  ansible.builtin.find:
+    paths:
+      - "{{ pg_cluster_certificate_seed_directory }}"
+      - "/var/lib/postgresql-pki"
+    patterns:
+      - ".stage.*"
+      - ".*.stage.*"
+      - "manifest"
+      - "journal"
+      - "*.new"
+      - "*.backup*"
+      - "backup.*"
+    recurse: true
+    hidden: true
+    file_type: any
+  register: pg_cluster_generated_transaction_artifacts
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  become: true
+  become_user: "root"
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Rejecting leftover generated certificate transaction artifacts"
+  ansible.builtin.assert:
+    that: pg_cluster_generated_transaction_artifacts.files | length == 0
+    fail_msg: >-
+      Generated certificate convergence left transaction artifacts on seed host
+      {{ pg_cluster_certificate_seed_host }}: {{ pg_cluster_generated_transaction_artifacts.files
+      | map(attribute='path') | list | join(', ') }}. Fail-closed recovery: stop
+      competing runs, inspect every manifest and journal, verify destination
+      inode/hash ownership, restore backups only according to the journal, then
+      remove abandoned stage/.new/backup artifacts and the shared transaction
+      lease before retrying.
+  when: pg_cluster_pki_generation_enabled | bool
+
+- name: "Releasing shared cluster PKI transaction lease"
+  ansible.builtin.file:
+    path: "{{ pg_cluster_certificate_pki_lock_directory }}/{{ pg_cluster_certificate_name }}.pki.transaction"
+    state: "absent"
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  become: true
+  become_user: "root"
+  when: pg_cluster_pki_generation_enabled | bool

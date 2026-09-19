@@ -1,0 +1,99 @@
+---
+# yamllint disable rule:line-length
+- name: "Validate and publish the external-network IPv4 address and subnet"
+  vars:
+    # Keep raw candidates harmless when an invalid fixture deliberately omits a
+    # value.  ipaddr must only be evaluated after the type/non-empty guards.
+    pg_replication_external_ipv4_candidate: "{{ pg_replication_external_network_case.ipv4 | default(none) }}"
+  block:  # noqa syntax-check[specific] -- task fragment is included by converge.yml
+    - name: "Validate the external-network subnet collection before selecting a subnet"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_external_network_case.subnets is defined
+          - pg_replication_external_network_case.subnets is sequence
+          - pg_replication_external_network_case.subnets is not string
+          - pg_replication_external_network_case.subnets | length == 1
+          - (pg_replication_external_network_case.subnets | first | default({})) is mapping
+          - "'subnet' in (pg_replication_external_network_case.subnets | first | default({}))"
+        fail_msg: >-
+          The configured external replication network must expose exactly one
+          subnet mapping
+    - name: "Select the validated external-network subnet"
+      ansible.builtin.set_fact:
+        pg_replication_external_subnet_candidate: >-
+          {{ (pg_replication_external_network_case.subnets | first).subnet }}
+    - name: "Reject missing or empty external-network IPv4 and subnet values"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_external_ipv4_candidate is defined
+          - pg_replication_external_ipv4_candidate is not none
+          - pg_replication_external_ipv4_candidate is string
+          - pg_replication_external_ipv4_candidate | trim | length > 0
+          - pg_replication_external_subnet_candidate is defined
+          - pg_replication_external_subnet_candidate is not none
+          - pg_replication_external_subnet_candidate is string
+          - pg_replication_external_subnet_candidate | trim | length > 0
+        fail_msg: >-
+          External replication IPv4 and subnet values must be non-empty string values
+    - name: "Validate external-network IPv4 and subnet syntax before filters"
+      ansible.builtin.assert:
+        that:
+          - >-
+            pg_replication_external_ipv4_candidate is match(
+            '^(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.' ~
+            '(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.' ~
+            '(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.' ~
+            '(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$')
+          - >-
+            pg_replication_external_subnet_candidate is match(
+            '^(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.' ~
+            '(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.' ~
+            '(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.' ~
+            '(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])/(?:[0-9]|[1-2][0-9]|3[0-2])$')
+    - name: "Validate external-network IPv4 values before address filters"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_external_ipv4_candidate is ansible.utils.ipv4
+        fail_msg: "The configured external replication network did not provide a valid IPv4 address"
+    - name: "Validate external-network subnet alignment before arithmetic"
+      ansible.builtin.assert:
+        that:
+          - >-
+            (((pg_replication_external_subnet_candidate.split('/')[0].split('.')[0] | int) * 256 ** 3) +
+             ((pg_replication_external_subnet_candidate.split('/')[0].split('.')[1] | int) * 256 ** 2) +
+             ((pg_replication_external_subnet_candidate.split('/')[0].split('.')[2] | int) * 256) +
+             (pg_replication_external_subnet_candidate.split('/')[0].split('.')[3] | int)) %
+            (2 ** (32 - (pg_replication_external_subnet_candidate.split('/')[1] | int))) == 0
+        fail_msg: >-
+          The configured external replication network did not provide a canonical
+          IPv4 CIDR subnet
+    - name: "Validate the configured external-network IPv4 address and subnet"
+      ansible.builtin.set_fact:
+        pg_replication_external_ipv4_unicast: "{{ pg_replication_external_ipv4_candidate | ansible.utils.ipaddr('unicast') }}"
+        pg_replication_external_ipv4_loopback: "{{ pg_replication_external_ipv4_candidate | ansible.utils.ipaddr('loopback') }}"
+        pg_replication_external_ipv4_link_local: "{{ pg_replication_external_ipv4_candidate | ansible.utils.ipaddr('link-local') }}"
+        pg_replication_external_ipv4_unspecified: "{{ pg_replication_external_ipv4_candidate | ansible.utils.ipaddr('unspecified') }}"
+        pg_replication_external_subnet_normalized: "{{ pg_replication_external_subnet_candidate | ansible.utils.ipaddr('network/prefix') }}"
+        pg_replication_external_ipv4_in_subnet: "{{ pg_replication_external_ipv4_candidate | ansible.utils.ipaddr(pg_replication_external_subnet_candidate) }}"
+    - name: "Require a unicast external-network IPv4 address before further parsing"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_external_ipv4_unicast is defined
+          - pg_replication_external_ipv4_unicast == pg_replication_external_ipv4_candidate
+        fail_msg: >-
+          The configured external replication network did not provide a valid
+          unicast IPv4 address
+    - name: "Validate the configured external-network IPv4 address and subnet"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_external_ipv4_loopback != pg_replication_external_ipv4_candidate
+          - pg_replication_external_ipv4_link_local != pg_replication_external_ipv4_candidate
+          - pg_replication_external_ipv4_unspecified != pg_replication_external_ipv4_candidate
+          - pg_replication_external_ipv4_in_subnet
+        fail_msg: >-
+          The configured external replication network did not provide a valid
+          unicast IPv4 address and subnet for this container
+    - name: "Publish the validated external-network IPv4 address and subnet"
+      ansible.builtin.set_fact:
+        pg_replication_external_ipv4: "{{ pg_replication_external_ipv4_candidate }}"
+        pg_replication_external_subnet: "{{ pg_replication_external_subnet_candidate }}"

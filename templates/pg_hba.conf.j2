@@ -1,6 +1,6 @@
 local all postgres peer
 {% macro render_hba_record(database_name, record) -%}
-{{ record.type | default(pg_hba_default_type | default('host')) }} {{ database_name }} {{ record.name }}{% if (record.type | default(pg_hba_default_type | default('host'))) != 'local' %} {{ record.address }}{% endif %} {{ record.method | default('scram-sha-256') }}{% if record.clientcert is defined %} clientcert={{ record.clientcert }}{% endif %}{% if record.clientname is defined %} clientname={{ record.clientname | upper }}{% endif %}{% if record.map is defined %} map={{ record.map }}{% endif %}
+{{ record.type | default(pg_hba_default_type | default('host')) }} {{ database_name }} {{ record.name }}{% if (record.type | default(pg_hba_default_type | default('host'))) != 'local' %} {{ record.address }}{% endif %} {{ record.method | default('scram-sha-256') }}{% if record.clientcert is defined %} clientcert={{ record.clientcert }}{% endif %}{% if record.clientname is defined %} clientname={{ record.clientname | upper }}{% endif %}{% if record.map is defined %} map={{ record.map }}{% endif %}{% for option_name, option_value in (record.options | default({})).items() %} {{ option_name }}={{ option_value }}{% endfor %}
 {%- endmacro %}
 {% for item in pg_global_access %}
 {{ render_hba_record('all', item) }}
@@ -12,7 +12,7 @@ local all postgres peer
 {% endif %}
 {% if pg_replication_enabled | default(false) and pg_replication_role == 'primary' %}
 {% for address in pg_replication_allowed_standby_addresses %}
-{{ pg_replication_hba_type_effective }} replication {{ pg_replication_user }} {{ address }} {{ pg_replication_hba_method_effective }}
+{{ 'hostssl' }} replication {{ pg_replication_user }} {{ address }} {{ pg_replication_hba_method_effective }}
 {% endfor %}
 {% endif %}
 {% for database in pg_databases %}

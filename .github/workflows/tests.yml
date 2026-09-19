@@ -26,35 +26,129 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Initialize shared task submodule
+        run: |
+          git submodule sync --recursive
+          git submodule update --init --recursive tasks/shared
+          test -f tasks/shared/tasks/fs_present.yml
+
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
+      - name: Select controller Python for guardrails
+        run: |
+          export REPLICATION_PYTHON_COMMAND="${pythonLocation}/bin/python"
+          printf 'REPLICATION_PYTHON_COMMAND=%s\n' "${REPLICATION_PYTHON_COMMAND}" >> "${GITHUB_ENV}"
+
       - name: Install Ansible Lint
         run: python -m pip install -r requirements-ci.txt
+
+      - name: Check guardrail files and run static guardrails
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes acl util-linux
+          command -v getfacl
+          command -v namei
+          command -v setfacl
+          test -x files/pki_registry.sh
+           test -x scripts/pki_guardrails_test.sh
+           test -x scripts/replication_molecule_guardrails_test.sh
+           test -f scripts/replication_runtime.sh
+           test -x scripts/replication_image_guardrails_test.sh
+           test -x scripts/patroni_config_image_guardrails_test.py
+           test -x scripts/etcd_data_directory_lifecycle_test.py
+           test -x scripts/etcd_metadata_guardrails_test.py
+           test -x scripts/controller_preflight_guardrails_test.py
+           test -x scripts/certificate_loop_guardrails_test.py
+           test -x scripts/patroni_config_workflow_guardrails_test.py
+           test -f scripts/replication_image_provenance.py
+           test -f scripts/replication_inspect_shape_guardrails_test.py
+           test -f scripts/vagrant_pki_transaction_guardrails_test.py
+           test -x scripts/endpoint_contract_test.py
+           test -x scripts/etcd_endpoint_index_contract_test.py
+           test -f scripts/endpoint_projection_guardrails_test.py
+           test -f scripts/patroni_check_mode_contract_test.py
+            test -x scripts/replication_metadata_guardrails_test.py
+            test -x scripts/replication_prerequisite_precedence_guardrails_test.py
+            test -x scripts/validation_callback_guardrails_test.py
+           python3 scripts/vagrant_pki_transaction_guardrails_test.py
+           bash scripts/pki_guardrails_test.sh
+           bash scripts/replication_molecule_guardrails_test.sh
+           bash scripts/replication_image_guardrails_test.sh
+           python3 scripts/patroni_config_image_guardrails_test.py
+           python3 scripts/patroni_config_workflow_guardrails_test.py
+             "${REPLICATION_PYTHON_COMMAND}" scripts/replication_external_network_guardrails_test.py
+             "${REPLICATION_PYTHON_COMMAND}" scripts/replication_inspect_shape_guardrails_test.py
+            python3 scripts/endpoint_normalization_guardrails_test.py
+            python3 scripts/etcd_data_directory_lifecycle_test.py
+           python3 scripts/etcd_metadata_guardrails_test.py
+            scripts/controller_preflight_guardrails_test.py
+           python3 scripts/certificate_loop_guardrails_test.py
+           python3 scripts/endpoint_projection_guardrails_test.py
+           python3 scripts/etcd_endpoint_index_contract_test.py
+           python3 scripts/patroni_check_mode_contract_test.py
+            "${REPLICATION_PYTHON_COMMAND}" scripts/replication_metadata_guardrails_test.py
+             python3 scripts/replication_prerequisite_precedence_guardrails_test.py
+             python3 scripts/validation_callback_guardrails_test.py
+            python3 scripts/cluster_collision_paths_test.py
+
+      - name: Install Ansible collections
+        run: ansible-galaxy collection install -r collections.yml
+
+      - name: Run endpoint normalization contract test
+        run: python3 scripts/endpoint_contract_test.py
+
+      - name: Verify replication Podman plugin schema and argv contract
+        run: >-
+          "${REPLICATION_PYTHON_COMMAND}" scripts/replication_podman_plugin_guardrails_test.py
 
       - name: Run production-profile Ansible Lint
         env:
           ANSIBLE_ROLES_PATH: ..
         run: ansible-lint --profile production
 
+      - name: Lint Vagrant Patroni failover scenario files
+        run: |
+          yamllint molecule/vagrant_patroni_failover/prepare.yml \
+            molecule/vagrant_patroni_failover/verify.yml
+          ansible-lint --profile production \
+            molecule/vagrant_patroni_failover/prepare.yml \
+            molecule/vagrant_patroni_failover/verify.yml
+
+      - name: Validate YAML documents
+        run: >-
+          python -c "import pathlib, yaml; files=sorted(pathlib.Path('.').rglob('*.yml'));
+          [yaml.safe_load(path.read_text()) for path in files];
+          print(f'Parsed {len(files)} YAML documents')"
+
       - name: Run Ansible syntax check
         env:
           ANSIBLE_ROLES_PATH: ..
-        run: >-
-          ansible-playbook --syntax-check
-          -i docs/inventory-example.yml
-          docs/playbook-example.yml
+        run: |
+          set -euo pipefail
+          ansible-playbook --syntax-check -i docs/inventory-example.yml docs/playbook-example.yml
+          ansible-playbook --syntax-check -i docs/inventory-example.yml \
+            molecule/vagrant_patroni_failover/prepare.yml
+          ansible-playbook --syntax-check -i docs/inventory-example.yml \
+            molecule/vagrant_patroni_failover/verify.yml
+          while IFS= read -r -d '' playbook; do
+            ansible-playbook --syntax-check -i docs/inventory-example.yml "$playbook"
+          done < <(find molecule -name converge.yml -print0 | sort -z)
 
   molecule-fast:
     name: Molecule fast (${{ matrix.scenario }})
     if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
+    env:
+      REPLICATION_PODMAN_COMMAND: "/usr/bin/podman"
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         scenario:
+          - replication
           - rocky9-full
           - validation
           - all_absent
@@ -72,29 +166,146 @@ jobs:
       - name: Install Podman
         run: |
           sudo apt-get update
-          sudo apt-get install --yes podman
+          sudo apt-get install --yes podman acl util-linux
+          command -v getfacl
+          command -v namei
 
       - name: Configure Podman storage for GitHub runner
         run: |
           mkdir -p "$HOME/.config/containers"
-          printf '%s\n' '[storage]' 'driver = "vfs"' > "$HOME/.config/containers/storage.conf"
+           printf '%s\n' '[storage]' 'driver = "vfs"' > "$HOME/.config/containers/storage.conf"
+
+      - name: Fail closed unless Patroni image runs on native amd64 Podman
+        if: matrix.scenario == 'patroni_config'
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "x86_64"
+          test "$(id -u)" != "0"
+          test "$(podman info --format '{{json .Host.Security.Rootless}}')" = "true"
+          test "$(podman info --format '{{.Host.Arch}}')" = "amd64"
+          podman info >/dev/null
+
+      - name: Preflight the pinned Patroni base image
+        if: matrix.scenario == 'patroni_config'
+        run: |
+          set -euo pipefail
+          base_ref='docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5'
+          podman pull --quiet --platform linux/amd64 "${base_ref}"
+          test "$(podman image inspect "${base_ref}" --format '{{.Architecture}}')" = "amd64"
+          podman image inspect "${base_ref}" --format '{{range .RepoDigests}}{{println .}}{{end}}' |
+            grep -Fx -- "${base_ref}"
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
+      - name: Resolve trusted controller Python
+        if: matrix.scenario == 'replication'
+        run: |
+           set -euo pipefail
+           . scripts/replication_runtime.sh
+           export REPLICATION_PYTHON_COMMAND="${pythonLocation}/bin/python"
+           replication_runtime_activate python
+           printf 'REPLICATION_PYTHON_COMMAND=%s\n' "${REPLICATION_PYTHON_COMMAND}" >> "${GITHUB_ENV}"
+
       - name: Install Molecule and Ansible
-        run: python -m pip install -r requirements-ci.txt
+        run: |
+           if [ "${{ matrix.scenario }}" = replication ]; then
+             "${REPLICATION_PYTHON_COMMAND}" -m pip install -r requirements-ci.txt
+           else
+             python -m pip install -r requirements-ci.txt
+           fi
+
+      - name: Resolve replication runtime commands
+        if: matrix.scenario == 'replication'
+        run: |
+           set -euo pipefail
+           . scripts/replication_runtime.sh
+           export REPLICATION_MOLECULE_COMMAND="${pythonLocation}/bin/molecule"
+            replication_runtime_preflight
+            printf 'REPLICATION_PODMAN_COMMAND=%s\n' "${REPLICATION_PODMAN_COMMAND}" >> "${GITHUB_ENV}"
+            printf 'REPLICATION_MOLECULE_COMMAND=%s\n' "${REPLICATION_MOLECULE_COMMAND}" >> "${GITHUB_ENV}"
+            printf 'REPLICATION_NETAVARK_COMMAND=%s\n' "${REPLICATION_NETAVARK_COMMAND}" >> "${GITHUB_ENV}"
+            printf 'REPLICATION_AARDVARK_COMMAND=%s\n' "${REPLICATION_AARDVARK_COMMAND}" >> "${GITHUB_ENV}"
+            printf 'REPLICATION_PYTHON_COMMAND=%s\n' "${REPLICATION_PYTHON_COMMAND}" >> "${GITHUB_ENV}"
+
+      - name: Require native amd64 replication host and Podman before image build
+        if: matrix.scenario == 'replication'
+        run: |
+           set -euo pipefail
+           . scripts/replication_runtime.sh
+           replication_runtime_preflight
+           test "$(uname -m)" = x86_64 || {
+              printf '%s\n' 'Replication requires a native x86_64 host; QEMU is not supported.' >&2
+              exit 1
+            }
+           test "$("${REPLICATION_PODMAN_COMMAND}" info --format '{{.Host.Arch}}')" = amd64 || {
+              printf '%s\n' 'Replication requires a native amd64 Podman runtime; emulation is not supported.' >&2
+              exit 1
+            }
+
+      - name: Pull and record the exact Rocky base image before build
+        if: matrix.scenario == 'replication'
+        run: |
+           set -euo pipefail
+           . scripts/replication_runtime.sh
+           replication_runtime_preflight
+           base_ref='docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5'
+            replication_base_ref=${base_ref}
+            . scripts/replication_image_normalize.sh
+            replication_expected_digest="$(normalize_replication_sha256 "${base_ref##*@}")"
+           "${REPLICATION_PODMAN_COMMAND}" pull --quiet "${base_ref}"
+           raw_base_id="$("${REPLICATION_PODMAN_COMMAND}" image inspect "${base_ref}" --format '{{.Id}}')"
+            base_id="$(normalize_replication_sha256 "${raw_base_id}")"
+           raw_base_repo_digests="$("${REPLICATION_PODMAN_COMMAND}" image inspect "${base_ref}" --format '{{range .RepoDigests}}{{println .}}{{end}}')"
+            base_repo_digest="$(printf '%s\n' "${raw_base_repo_digests}" | validate_replication_base_repo_digests)"
+           test "${base_id}" = "$(normalize_replication_sha256 "$("${REPLICATION_PODMAN_COMMAND}" image inspect "${base_ref}" --format '{{.Id}}')")"
+            test "${base_repo_digest}" = "${base_ref}"
+            printf 'base_ref=%s\nbase_id=%s\nbase_repo_digest=%s\n' \
+              "${base_ref}" "${base_id}" "${base_repo_digest}" > "${RUNNER_TEMP}/replication-base-image-provenance"
+            printf 'MOLECULE_REPLICATION_BASE_IMAGE_ID=%s\n' "${base_id}" >> "${GITHUB_ENV}"
+            printf 'MOLECULE_REPLICATION_BASE_REPO_DIGEST=%s\n' "${base_repo_digest}" >> "${GITHUB_ENV}"
+
+      - name: Install Ansible collections
+        run: ansible-galaxy collection install -r collections.yml
+
+      - name: Verify replication Podman plugin schema and argv contract
+        run: |
+           if [ "${{ matrix.scenario }}" = replication ]; then
+             "${REPLICATION_PYTHON_COMMAND}" scripts/replication_podman_plugin_guardrails_test.py
+           else
+             python scripts/replication_podman_plugin_guardrails_test.py
+           fi
 
       - name: Run Molecule scenario
         env:
           ANSIBLE_ROLES_PATH: ..
-        run: molecule test -s "${{ matrix.scenario }}"
+        run: |
+           set -euo pipefail
+           . scripts/replication_runtime.sh
+            if [ "${{ matrix.scenario }}" = replication ]; then
+              scripts/replication_molecule.sh
+           else
+             python -m molecule test -s "${{ matrix.scenario }}"
+           fi
+
+      - name: Destroy replication containers without touching the default network
+        if: ${{ always() && matrix.scenario == 'replication' }}
+        run: |
+           set -euo pipefail
+            . scripts/replication_runtime.sh
+            replication_runtime_preflight
+            export MOLECULE_PODMAN_EXECUTABLE="${REPLICATION_PODMAN_COMMAND}"
+            export CONTAINERS_HELPER_BINARY_DIR
+            "${REPLICATION_MOLECULE_COMMAND}" destroy -s replication
+
 
   molecule-daily:
     name: Molecule daily (${{ matrix.scenario }})
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    env:
+      REPLICATION_PODMAN_COMMAND: "/usr/bin/podman"
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -131,22 +342,127 @@ jobs:
       - name: Install Podman
         run: |
           sudo apt-get update
-          sudo apt-get install --yes podman
+          sudo apt-get install --yes podman acl util-linux
+          command -v getfacl
+          command -v namei
 
       - name: Configure Podman storage for GitHub runner
         run: |
-          mkdir -p "$HOME/.config/containers"
-          printf '%s\n' '[storage]' 'driver = "vfs"' > "$HOME/.config/containers/storage.conf"
+            mkdir -p "$HOME/.config/containers"
+            printf '%s\n' '[storage]' 'driver = "vfs"' > "$HOME/.config/containers/storage.conf"
+
+      - name: Fail closed unless Patroni image runs on native amd64 Podman
+        if: matrix.scenario == 'patroni_config'
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "x86_64"
+          test "$(id -u)" != "0"
+          test "$(podman info --format '{{json .Host.Security.Rootless}}')" = "true"
+          test "$(podman info --format '{{.Host.Arch}}')" = "amd64"
+          podman info >/dev/null
+
+      - name: Preflight the pinned Patroni base image
+        if: matrix.scenario == 'patroni_config'
+        run: |
+          set -euo pipefail
+          base_ref='docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5'
+          podman pull --quiet --platform linux/amd64 "${base_ref}"
+          test "$(podman image inspect "${base_ref}" --format '{{.Architecture}}')" = "amd64"
+          podman image inspect "${base_ref}" --format '{{range .RepoDigests}}{{println .}}{{end}}' |
+            grep -Fx -- "${base_ref}"
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
+      - name: Resolve trusted controller Python
+        if: matrix.scenario == 'replication'
+        run: |
+           set -euo pipefail
+           . scripts/replication_runtime.sh
+           export REPLICATION_PYTHON_COMMAND="${pythonLocation}/bin/python"
+           replication_runtime_activate python
+           printf 'REPLICATION_PYTHON_COMMAND=%s\n' "${REPLICATION_PYTHON_COMMAND}" >> "${GITHUB_ENV}"
+
       - name: Install Molecule and Ansible
-        run: python -m pip install -r requirements-ci.txt
+        run: |
+           if [ "${{ matrix.scenario }}" = replication ]; then
+             "${REPLICATION_PYTHON_COMMAND}" -m pip install -r requirements-ci.txt
+           else
+             python -m pip install -r requirements-ci.txt
+           fi
+
+      - name: Resolve replication runtime commands
+        if: matrix.scenario == 'replication'
+        run: |
+           set -euo pipefail
+           . scripts/replication_runtime.sh
+           export REPLICATION_MOLECULE_COMMAND="${pythonLocation}/bin/molecule"
+            replication_runtime_preflight
+            printf 'REPLICATION_PODMAN_COMMAND=%s\n' "${REPLICATION_PODMAN_COMMAND}" >> "${GITHUB_ENV}"
+            printf 'REPLICATION_MOLECULE_COMMAND=%s\n' "${REPLICATION_MOLECULE_COMMAND}" >> "${GITHUB_ENV}"
+           printf 'REPLICATION_NETAVARK_COMMAND=%s\n' "${REPLICATION_NETAVARK_COMMAND}" >> "${GITHUB_ENV}"
+             printf 'REPLICATION_AARDVARK_COMMAND=%s\n' "${REPLICATION_AARDVARK_COMMAND}" >> "${GITHUB_ENV}"
+             printf 'REPLICATION_PYTHON_COMMAND=%s\n' "${REPLICATION_PYTHON_COMMAND}" >> "${GITHUB_ENV}"
+
+      - name: Require native amd64 replication host and Podman before image build
+        if: matrix.scenario == 'replication'
+        run: |
+           set -euo pipefail
+           . scripts/replication_runtime.sh
+           replication_runtime_preflight
+           test "$(uname -m)" = x86_64 || {
+             printf '%s\n' 'Replication requires a native x86_64 host; QEMU is not supported.' >&2
+             exit 1
+           }
+           test "$("${REPLICATION_PODMAN_COMMAND}" info --format '{{.Host.Arch}}')" = amd64 || {
+             printf '%s\n' 'Replication requires a native amd64 Podman runtime; emulation is not supported.' >&2
+             exit 1
+           }
+
+      - name: Pull and record the exact Rocky base image before build
+        if: matrix.scenario == 'replication'
+        run: |
+           set -euo pipefail
+           . scripts/replication_runtime.sh
+           replication_runtime_preflight
+           base_ref='docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5'
+           replication_base_ref=${base_ref}
+           . scripts/replication_image_normalize.sh
+           replication_expected_digest="$(normalize_replication_sha256 "${base_ref##*@}")"
+           "${REPLICATION_PODMAN_COMMAND}" pull --quiet "${base_ref}"
+           raw_base_id="$("${REPLICATION_PODMAN_COMMAND}" image inspect "${base_ref}" --format '{{.Id}}')"
+           base_id="$(normalize_replication_sha256 "${raw_base_id}")"
+           raw_base_repo_digests="$("${REPLICATION_PODMAN_COMMAND}" image inspect "${base_ref}" --format '{{range .RepoDigests}}{{println .}}{{end}}')"
+           base_repo_digest="$(printf '%s\n' "${raw_base_repo_digests}" | validate_replication_base_repo_digests)"
+           test "${base_repo_digest}" = "${base_ref}"
+           printf 'base_ref=%s\nbase_id=%s\nbase_repo_digest=%s\n' \
+             "${base_ref}" "${base_id}" "${base_repo_digest}" > "${RUNNER_TEMP}/replication-base-image-provenance"
+           printf 'MOLECULE_REPLICATION_BASE_IMAGE_ID=%s\n' "${base_id}" >> "${GITHUB_ENV}"
+           printf 'MOLECULE_REPLICATION_BASE_REPO_DIGEST=%s\n' "${base_repo_digest}" >> "${GITHUB_ENV}"
+
+      - name: Install Ansible collections
+        run: ansible-galaxy collection install -r collections.yml
 
       - name: Run Molecule scenario
         env:
           ANSIBLE_ROLES_PATH: ..
-        run: molecule test -s "${{ matrix.scenario }}"
+        run: |
+           set -euo pipefail
+           . scripts/replication_runtime.sh
+            if [ "${{ matrix.scenario }}" = replication ]; then
+              scripts/replication_molecule.sh
+           else
+             python -m molecule test -s "${{ matrix.scenario }}"
+           fi
+
+      - name: Destroy replication containers without touching the default network
+        if: ${{ always() && matrix.scenario == 'replication' }}
+        run: |
+            set -euo pipefail
+            . scripts/replication_runtime.sh
+            replication_runtime_preflight
+            export MOLECULE_PODMAN_EXECUTABLE="${REPLICATION_PODMAN_COMMAND}"
+            export CONTAINERS_HELPER_BINARY_DIR
+            "${REPLICATION_MOLECULE_COMMAND}" destroy -s replication

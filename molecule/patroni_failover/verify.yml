@@ -3,6 +3,17 @@
   hosts: pg01:pg02:pg03
   become: false
   tasks:
+    - name: "Read the Patroni configuration"
+      ansible.builtin.slurp:
+        src: /etc/patroni/17-main.yml
+      register: patroni_config
+
+    - name: "Assert the non-TLS REST API is loopback-only"
+      ansible.builtin.assert:
+        that:
+          - "'listen: \"127.0.0.1:8008\"' in (patroni_config.content | b64decode)"
+          - "'cafile:' not in (patroni_config.content | b64decode)"
+
     - name: "Check the PGDG Patroni etcd package is installed"
       ansible.builtin.command: rpm -q patroni-etcd
       changed_when: false

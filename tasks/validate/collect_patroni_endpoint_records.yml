@@ -1,0 +1,7 @@
+---
+- name: "Collecting Patroni member endpoint records"
+  ansible.builtin.include_tasks: collect_patroni_endpoint_record.yml
+  loop: "{{ pg_validation_cluster_model.record.members | default([]) }}"
+  loop_control:
+    loop_var: pg_validation_patroni_member
+  when: pg_validation_cluster_model.record.provider | default('') == 'patroni'

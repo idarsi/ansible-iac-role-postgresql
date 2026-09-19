@@ -1,24 +1,142 @@
 ---
-- name: "Verify rendered Patroni configuration"
+- name: "Verify Patroni configuration"
   hosts: all
   become: false
+  vars:
+    patroni_config_fact_path: "/etc/ansible/facts.d/patroni_config.fact"
+    patroni_config_fact_key: "python_interpreter"
   tasks:
+    - name: "Inspect the persisted canonical Python interpreter fact"
+      ansible.builtin.stat:
+        path: "{{ patroni_config_fact_path }}"
+        follow: false
+      register: patroni_config_fact_file
+
+    - name: "Read the persisted canonical Python interpreter fact"
+      ansible.builtin.slurp:
+        src: "{{ patroni_config_fact_path }}"
+      register: patroni_config_fact_content
+
+    - name: "Parse the persisted canonical Python interpreter fact"
+      ansible.builtin.set_fact:
+        patroni_config_persisted_fact: "{{ patroni_config_fact_content.content | b64decode | from_json }}"
+        patroni_config_persisted_python_interpreter: >-
+          {{ (patroni_config_fact_content.content | b64decode | from_json)[patroni_config_fact_key] }}
+
+    - name: "Require the secure persisted canonical fact"
+      ansible.builtin.assert:
+        that:
+          - patroni_config_fact_file.stat.exists
+          - patroni_config_fact_file.stat.isreg
+          - not patroni_config_fact_file.stat.islnk
+          - patroni_config_fact_file.stat.pw_name == "root"
+          - patroni_config_fact_file.stat.gr_name == "root"
+          - patroni_config_fact_file.stat.mode == "0644"
+          - patroni_config_persisted_fact[patroni_config_fact_key] is string
+          - patroni_config_persisted_python_interpreter == hostvars[inventory_hostname]['ansible_local']['patroni_config'][patroni_config_fact_key]
+        fail_msg: "The persisted canonical fact must be regular root:root 0644 and match the gathered value"
+
     - name: "Read Patroni configuration"
       ansible.builtin.slurp:
-        src: /tmp/patroni/17-main.yml
+        src: "/tmp/patroni/17-main.yml"
       register: patroni_config
+
+    - name: "Gather prerequisite package facts"
+      ansible.builtin.package_facts:
+        manager: "auto"
+
+    - name: "Require the prepared canonical Python host fact"
+      ansible.builtin.assert:
+        that:
+          - hostvars[inventory_hostname]['ansible_local']['patroni_config']['python_interpreter'] is defined
+          - hostvars[inventory_hostname]['ansible_local']['patroni_config']['python_interpreter'] is string
+          - hostvars[inventory_hostname]['ansible_local']['patroni_config']['python_interpreter'] is match('^/')
+        fail_msg: "The prepare phase did not persist a canonical absolute Python interpreter"
 
     - name: "Read Patroni service"
       ansible.builtin.slurp:
-        src: /tmp/systemd/patroni-17-main.service
+        src: "/tmp/systemd/patroni-17-main.service"
       register: patroni_service
+
+    - name: "Read PostgreSQL HBA fixture"
+      ansible.builtin.slurp:
+        src: "/var/lib/pgsql/17/main/pg_hba.conf"
+      register: postgres_hba
+
+    - name: "Inspect externally managed Patroni key"
+      ansible.builtin.stat:
+        path: "/etc/patroni/pki/server.key"
+      register: patroni_key
+
+    - name: "Verify Patroni certificate chain and connect identity"
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - verify
+          - -verify_ip
+          - "127.0.0.2"
+          - -CAfile
+          - "/etc/patroni/pki/ca.crt"
+          - "/etc/patroni/pki/server.crt"
+      register: patroni_certificate_verification
+      changed_when: false
+    - name: "Verify Patroni certificate chain and listen identity"
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - verify
+          - -verify_ip
+          - "127.0.0.1"
+          - -CAfile
+          - "/etc/patroni/pki/ca.crt"
+          - "/etc/patroni/pki/server.crt"
+      register: patroni_listen_certificate_verification
+      changed_when: false
+
+    - name: "Inspect Patroni certificate subject alternative names"
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - x509
+          - -in
+          - "/etc/patroni/pki/server.crt"
+          - -noout
+          - -ext
+          - subjectAltName
+      register: patroni_certificate_san
+      changed_when: false
+
+    - name: "Probe fallback Patroni address bindability without starting a service"
+      ansible.builtin.command:
+        argv:
+          - "{{ patroni_config_persisted_python_interpreter }}"
+          - "-c"
+          - |
+            import socket
+
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+                listener.bind(("127.0.0.2", 0))
+                listener.listen(1)
+      register: patroni_fallback_bindability
+      changed_when: false
+      failed_when: false
+
+    - name: "Define complete intended raw HBA records"
+      ansible.builtin.set_fact:
+        intended_raw_hba_records:
+          - "hostssl all all :: scram-sha-256"
+        patroni_document: "{{ patroni_config.content | b64decode | from_yaml }}"
+        postgres_hba_records: >-
+          {{ (postgres_hba.content | b64decode).splitlines()
+             | reject('equalto', 'local all postgres peer') | list }}
 
     - name: "Check host-specific Patroni values"
       ansible.builtin.assert:
         that:
+          - "'bash' in ansible_facts.packages"
           - "'scope: molecule-cluster' in (patroni_config.content | b64decode)"
           - "'name: molecule-member' in (patroni_config.content | b64decode)"
-          - "'listen: \"0.0.0.0:18008\"' in (patroni_config.content | b64decode)"
+          - "'listen: \"127.0.0.1:18008\"' in (patroni_config.content | b64decode)"
           - "'authentication:' in (patroni_config.content | b64decode)"
           - "'username: \"patroni\"' in (patroni_config.content | b64decode)"
           - "'allowlist:' in (patroni_config.content | b64decode)"
@@ -27,9 +145,30 @@
           - "'certfile: \"/etc/patroni/pki/server.crt\"' in (patroni_config.content | b64decode)"
           - "'keyfile: \"/etc/patroni/pki/server.key\"' in (patroni_config.content | b64decode)"
           - "'verify_client: \"optional\"' in (patroni_config.content | b64decode)"
-          - "'hosts: etcd01.example.org:2379,etcd02.example.org:2379' in (patroni_config.content | b64decode)"
+          - "'protocol: https' not in (patroni_config.content | b64decode)"
+          - "'hosts: \"etcd01.example.org:2379,etcd02.example.org:2379\"' in (patroni_config.content | b64decode)"
+          - patroni_document.etcd3.proxy == "http://dcs-proxy.example.org:2379"
+          - patroni_document.restapi.connect_address == "https://127.0.0.2:18008"
           - "'hosts: https://' not in (patroni_config.content | b64decode)"
-          - "'connect_address: \"instance-idarsi-patroni:18008\"' in (patroni_config.content | b64decode)"
+          - "'connect_address: \"https://127.0.0.2:18008\"' in (patroni_config.content | b64decode)"
           - "'listen: 0.0.0.0:15432' in (patroni_config.content | b64decode)"
           - "'connect_address: \"instance-idarsi-patroni:15432\"' in (patroni_config.content | b64decode)"
           - "'ExecStart=/usr/bin/patroni /tmp/patroni/17-main.yml' in (patroni_service.content | b64decode)"
+          - patroni_key.stat.pw_name == "root"
+          - patroni_key.stat.gr_name == "root"
+          - patroni_key.stat.mode == "0640"
+          - patroni_certificate_verification.rc == 0
+          - "'OK' in patroni_certificate_verification.stdout"
+          - patroni_listen_certificate_verification.rc == 0
+          - "'OK' in patroni_listen_certificate_verification.stdout"
+          - "'IP Address:127.0.0.2' in patroni_certificate_san.stdout"
+          - "'IP Address:127.0.0.1' in patroni_certificate_san.stdout"
+          - patroni_fallback_bindability.rc == 0
+        fail_msg: "Patroni TLS endpoint or fallback address bindability is incorrect"
+
+    - name: "Check complete raw Patroni HBA lists are identical and ordered"
+      ansible.builtin.assert:
+        that:
+          - patroni_document.bootstrap.pg_hba == intended_raw_hba_records
+          - postgres_hba_records == intended_raw_hba_records
+        fail_msg: "The complete raw Patroni pg_hba list does not exactly match pg_hba.conf"

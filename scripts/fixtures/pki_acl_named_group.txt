@@ -1,0 +1,7 @@
+# file: /fixture
+# owner: root
+# group: root
+user::rwx
+group::---
+group:nobody:--x
+other::---

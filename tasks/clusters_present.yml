@@ -12,15 +12,27 @@
     pg_cluster: >-
       {{
         (
-          pg_instance_record.0.clusters | default([])
-          | selectattr('name', 'equalto', pg_instance_record.1.cluster)
-          | list | first
+          pg_validation_cluster_models | default([])
+          | selectattr('key', 'equalto', (pg_instance_record.0.version | string) ~ ':' ~ pg_instance_record.1.cluster)
+          | map(attribute='record') | list | first
         ) | default({})
       }}
 
 - name: "Setting PostgreSQL cluster provider"
   ansible.builtin.set_fact:
     pg_cluster_provider: "{{ pg_cluster.provider | default('standalone') }}"
+    pg_security: "{{ pg_cluster.security_profile | default(pg_instance_record.1.security_profile | default('off')) }}"
+    pg_security_ssl: "{{ pg_cluster.security_ssl | default(pg_security) }}"
+    pg_hba_default_type: >-
+      {{ 'hostssl' if (pg_cluster.security_profile
+         | default(pg_instance_record.1.security_profile | default('off'))) == 'safe'
+         else 'host' }}
+
+- name: "Applying effective per-cluster security model"
+  ansible.builtin.set_fact:
+    pg_security: "{{ pg_cluster.security_profile | default(pg_security) }}"
+    pg_security_ssl: "{{ pg_cluster.security_ssl | default(pg_security) }}"
+    pg_hba_default_type: "{{ 'hostssl' if (pg_cluster.security_profile | default(pg_security)) == 'safe' else 'host' }}"
 
 - name: "Ensuring Patroni cluster configuration is present"
   ansible.builtin.include_tasks: patroni_present.yml

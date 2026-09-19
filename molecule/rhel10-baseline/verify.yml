@@ -44,7 +44,11 @@
         plpython_package: "postgresql18-plpython3"
   tasks:
     - name: "Checking PostgreSQL operating system user"
-      ansible.builtin.command: "getent passwd postgres"
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_facts['python']['executable'] }}"
+          - "-c"
+          - "import pwd; pwd.getpwnam('postgres')"
       register: pg_os_user_check
       changed_when: false
 

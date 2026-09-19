@@ -1,0 +1,22 @@
+---
+- name: "Reject invalid host and port contract"
+  block:
+    - name: "Invoke host_port with invalid contract"
+      ansible.builtin.include_tasks: ../host_port.yml
+      vars:
+        pg_host_port_host: "{{ pg_host_port_invalid_contract.host }}"
+        pg_host_port_port: "{{ pg_host_port_invalid_contract.port }}"
+        pg_host_port_result_fact: "pg_invalid_host_port_result"
+        pg_host_port_label: "invalid host_port contract"
+
+    - name: "Fail if invalid host_port contract is accepted"
+      ansible.builtin.fail:
+        msg: "Invalid host_port contract was accepted"
+  rescue:
+    - name: "Check invalid host_port contract failure"
+      ansible.builtin.assert:
+        that:
+          - ansible_failed_result is defined
+          - >-
+            "requires a valid host and port" in (ansible_failed_result | to_nice_json)
+        fail_msg: "Invalid host_port contract did not fail with its contract message"

@@ -8,33 +8,86 @@ driver:
 platforms:
   - name: instance-idarsi-rl9-primary
     image: docker.io/rockylinux/rockylinux:9-ubi-init
+    dockerfile: Dockerfile.j2
     command: /sbin/init
     privileged: true
-    pre_build_image: true
-    published_ports:
-      - "15432:5432"
+    pre_build_image: false
     systemd: "true"
     tty: true
+    extra_opts:
+      - "--network=podman"
     volumes:
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
   - name: instance-idarsi-rl9-standby
     image: docker.io/rockylinux/rockylinux:9-ubi-init
+    dockerfile: Dockerfile.j2
     command: /sbin/init
     privileged: true
-    pre_build_image: true
+    pre_build_image: false
     systemd: "true"
     tty: true
+    extra_opts:
+      - "--network=podman"
     volumes:
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
 
 provisioner:
   name: ansible
+  # These are deliberately separate contracts.  REPLICATION_PYTHON_COMMAND is
+  # the controller interpreter (the shared CI/local testing venv); the target
+  # fallback is an interpreter installed in the Rocky image.  Direct Molecule
+  # runs therefore do not require the controller venv to exist in containers.
+  vars:
+    pg_replication_controller_python_executable: >-
+      {{ lookup('env', 'REPLICATION_PYTHON_COMMAND') }}
+    # The launcher resolves REPLICATION_TARGET_PYTHON_COMMAND before Molecule
+    # prepare. Direct scenario execution must use that launcher; its documented
+    # target fallback is kept in scripts/replication_molecule.sh.
+    pg_replication_target_python_configured: >-
+      {{ lookup('env', 'REPLICATION_TARGET_PYTHON_COMMAND') | default('/usr/bin/python3', true) }}
+    # Keep the public scenario contract explicit, but do not use this variable
+    # as the source of ansible_python_interpreter: host vars must resolve the
+    # launcher value directly before fact gathering (avoiding self-reference).
+    pg_replication_target_python_executable: >-
+      {{ lookup('env', 'REPLICATION_TARGET_PYTHON_COMMAND') | default('/usr/bin/python3', true) }}
+  inventory:
+    host_vars:
+      instance-idarsi-rl9-primary:
+        ansible_connection: "containers.podman.podman"
+        ansible_user: "root"
+        ansible_become_method: "su"
+        ansible_python_interpreter: >-
+          {{ lookup('env', 'REPLICATION_TARGET_PYTHON_COMMAND') | default('/usr/bin/python3', true) }}
+      instance-idarsi-rl9-standby:
+        ansible_connection: "containers.podman.podman"
+        ansible_user: "root"
+        ansible_become_method: "su"
+        ansible_python_interpreter: >-
+          {{ lookup('env', 'REPLICATION_TARGET_PYTHON_COMMAND') | default('/usr/bin/python3', true) }}
   env:
-    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
-    ANSIBLE_ASYNC_DIR: "${MOLECULE_PROJECT_DIRECTORY}/.ansible_async"
-    ANSIBLE_LOCAL_TEMP: "/tmp/.ansible/tmp"
+    # These values are also the names used by the wrapper and workflow.  The
+    # direct invocation defaults above are deliberately not PATH lookups.
+    MOLECULE_PODMAN_EXECUTABLE: "${REPLICATION_PODMAN_COMMAND:-/usr/bin/podman}"
+    REPLICATION_MOLECULE_COMMAND: "${REPLICATION_MOLECULE_COMMAND:-/usr/local/bin/molecule}"
+    REPLICATION_PYTHON_COMMAND: "${REPLICATION_PYTHON_COMMAND}"
+    REPLICATION_TARGET_PYTHON_COMMAND: "${REPLICATION_TARGET_PYTHON_COMMAND}"
+    REPLICATION_NETAVARK_COMMAND: "${REPLICATION_NETAVARK_COMMAND:-/usr/libexec/podman/netavark}"
+    REPLICATION_AARDVARK_COMMAND: "${REPLICATION_AARDVARK_COMMAND:-/usr/libexec/podman/aardvark-dns}"
+    CONTAINERS_HELPER_BINARY_DIR: "${CONTAINERS_HELPER_BINARY_DIR:-/usr/libexec/podman}"
     ANSIBLE_REMOTE_TMP: "/tmp"
     ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/.."
+
+scenario:
+  test_sequence:
+    - dependency
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - verify
+    - cleanup
+    - destroy
 
 verifier:
   name: ansible

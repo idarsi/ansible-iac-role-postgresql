@@ -25,8 +25,8 @@
           - etcdctl
           - "--endpoints=https://{{ inventory_hostname }}:2379"
           - --cacert=/etc/etcd/pki/ca.crt
-          - --cert=/etc/etcd/pki/etcd.crt
-          - --key=/etc/etcd/pki/etcd.key
+          - --cert=/etc/etcd/pki/etcd-client.crt
+          - --key=/etc/etcd/pki/etcd-client.key
           - endpoint
           - health
       environment: {ETCDCTL_API: "3"}

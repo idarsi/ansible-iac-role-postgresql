@@ -1,0 +1,13 @@
+---
+- name: "Construct host and port contract"
+  ansible.builtin.include_tasks: ../host_port.yml
+  vars:
+    pg_host_port_host: "{{ pg_host_port_contract.host }}"
+    pg_host_port_port: "{{ pg_host_port_contract.port }}"
+    pg_host_port_result_fact: "pg_host_port_contract_result"
+    pg_host_port_label: "host_port contract"
+
+- name: "Check host and port contract"
+  ansible.builtin.assert:
+    that: pg_host_port_contract_result == pg_host_port_contract.expected
+    fail_msg: "host_port helper did not render the expected endpoint"

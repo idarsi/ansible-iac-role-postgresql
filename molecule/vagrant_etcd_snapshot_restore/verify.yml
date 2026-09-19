@@ -14,8 +14,8 @@
         that: vagrant_selinux.results | map(attribute='stdout') | map('trim') | select('equalto', 'Enforcing') | list | length == 3
     - name: "Create a committed snapshot marker"
       ansible.builtin.command: >-
-        etcdctl --endpoints=https://pg01:2379 --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd.crt
-        --key=/etc/etcd/pki/etcd.key put /molecule/snapshot-marker retained
+        etcdctl --endpoints=https://pg01:2379 --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd-client.crt
+        --key=/etc/etcd/pki/etcd-client.key put /molecule/snapshot-marker retained
       environment: {ETCDCTL_API: "3"}
       changed_when: true
     - name: "Create PostgreSQL continuity marker"
@@ -28,8 +28,8 @@
       block:
         - name: "Save snapshot without stopping or modifying live etcd"
           ansible.builtin.command: >-
-            etcdctl --endpoints=https://pg01:2379 --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd.crt
-            --key=/etc/etcd/pki/etcd.key snapshot save /tmp/molecule-etcd.snap
+            etcdctl --endpoints=https://pg01:2379 --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd-client.crt
+            --key=/etc/etcd/pki/etcd-client.key snapshot save /tmp/molecule-etcd.snap
           environment: {ETCDCTL_API: "3"}
           changed_when: true
         - name: "Create a fresh disposable restore directory"

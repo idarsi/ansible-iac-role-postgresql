@@ -1,0 +1,10 @@
+[
+  {"name": "relative", "sources": ["ca.crt"], "valid": false},
+  {"name": "non-string", "sources": [42], "valid": false},
+  {"name": "traversal", "sources": ["/etc/postgresql/../ca.crt"], "valid": false},
+  {"name": "non-normalized", "sources": ["/etc//postgresql/ca.crt"], "valid": false},
+  {"name": "windows-separator", "sources": ["/etc\\postgresql\\ca.crt"], "valid": false},
+  {"name": "valid-absolute", "sources": ["/etc/postgresql/ca.crt"], "valid": true},
+  {"name": "valid-missing-normalized", "sources": ["/var/lib/postgresql-pki/new/ca.crt"], "valid": true},
+  {"name": "no-source", "sources": [], "valid": true}
+]

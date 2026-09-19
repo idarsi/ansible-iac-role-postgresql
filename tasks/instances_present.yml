@@ -14,25 +14,25 @@
 - name: "Setting what variables are configured"
   ansible.builtin.set_fact:
     pg_autotuning: "{{ pg_instance_record.1.autotuning_profile | default('off') }}"
-    pg_client_certificate_authority_content: "{{ pg_instance_record.1.client_certificate_authority_content | default(omit) }}"
+    pg_client_certificate_authority_content: "{{ pg_instance_record.1.client_certificate_authority_content | default('') }}"
     pg_client_certificate_authority_enabled: false
-    pg_client_certificate_authority_src: "{{ pg_instance_record.1.client_certificate_authority_src | default(omit) }}"
-    pg_configuration: "{{ pg_instance_record.1.configuration | default(omit) }}"
+    pg_client_certificate_authority_src: "{{ pg_instance_record.1.client_certificate_authority_src | default('') }}"
+    pg_configuration: "{{ pg_instance_record.1.configuration | default({}) }}"
     pg_databases: "{{ pg_instance_record.1.databases | default([]) }}"
     pg_global_access: "{{ pg_instance_record.1.global_access | default([]) }}"
     pg_hba_default_type: "{{ 'hostssl' if (pg_instance_record.1.security_profile | default('off')) == 'safe' else 'host' }}"
     pg_instance: "{{ pg_instance_record.1.name }}"
     pg_max_connections: "{{ pg_instance_record.1.configuration.max_connections | default(pg_default_max_connections) }}"
     pg_port: "{{ pg_instance_record.1.configuration.port | default(pg_default_port) }}"
-    pg_profile: "{{ pg_instance_record.1.configuration_profile | default(omit) }}"
+    pg_profile: "{{ pg_instance_record.1.configuration_profile | default('') }}"
     pg_maprole: "{{ pg_instance_record.1.maprole | default([]) }}"
     pg_replication: "{{ pg_instance_record.1.replication | default({}) }}"
     pg_cluster: >-
       {{
         (
-          pg_instance_record.0.clusters | default([])
-          | selectattr('name', 'equalto', pg_instance_record.1.cluster)
-          | list | first
+          pg_validation_cluster_models | default([])
+          | selectattr('key', 'equalto', (pg_instance_record.0.version | string) ~ ':' ~ pg_instance_record.1.cluster)
+          | map(attribute='record') | list | first
         ) | default({})
       }}
     pg_security: "{{ pg_instance_record.1.security_profile | default('off') }}"
@@ -44,6 +44,13 @@
     pg_cluster_provider: "{{ pg_cluster.provider | default('standalone') }}"
   when: pg_instance_record is defined
 
+- name: "Applying effective per-cluster security model"
+  ansible.builtin.set_fact:
+    pg_security: "{{ pg_cluster.security_profile | default(pg_security) }}"
+    pg_security_ssl: "{{ pg_cluster.security_ssl | default(pg_security) }}"
+    pg_hba_default_type: "{{ 'hostssl' if (pg_cluster.security_profile | default(pg_security)) == 'safe' else 'host' }}"
+  when: pg_instance_record is defined
+
 - name: "Setting tuning profile if tuning is defined"
   ansible.builtin.set_fact:
     pg_autotuning_cpu: "{{ pg_instance_record.1.autotuning_cpu | default(pg_autotuning) }}"
@@ -53,7 +60,7 @@
 - name: "Setting security profile if defined"
   ansible.builtin.set_fact:
     pg_security_log: "{{ pg_instance_record.1.security_log | default(pg_security) }}"
-    pg_security_ssl: "{{ pg_instance_record.1.security_ssl | default(pg_security) }}"
+    pg_security_ssl: "{{ pg_cluster.security_ssl | default(pg_security) }}"
     pg_security_syslog: "{{ pg_instance_record.1.security_syslog | default(pg_security) }}"
   when: pg_security is defined
 
@@ -114,6 +121,10 @@
     pg_replication_max_wal_senders_effective: "{{ pg_replication.max_wal_senders | default(pg_replication_max_wal_senders) }}"
     pg_replication_max_replication_slots_effective: "{{ pg_replication.max_replication_slots | default(pg_replication_max_replication_slots) }}"
     pg_replication_wal_keep_size_effective: "{{ pg_replication.wal_keep_size | default(pg_replication_wal_keep_size) }}"
+    pg_replication_sslmode_effective: "{{ pg_replication.sslmode | default(pg_replication_sslmode) }}"
+    pg_replication_sslrootcert_effective: "{{ pg_replication.sslrootcert | default(pg_replication_sslrootcert) }}"
+    pg_replication_sslrootcert_content_effective: "{{ pg_replication.sslrootcert_content | default(pg_replication_sslrootcert_content) }}"
+    pg_replication_sslrootcert_src_effective: "{{ pg_replication.sslrootcert_src | default('') }}"
   when: pg_replication is defined
 
 - name: "Validating replication configuration if defined"
@@ -132,29 +143,35 @@
     pg_client_certificate_authority_fullpath: "{{ pg_default_dir }}/{{ pg_version }}/{{ pg_instance }}/ssl/{{ pg_client_certificate_authority_path }}"
     pg_client_certificate_authority_enabled: >-
       {{
-        (pg_client_certificate_authority_content is defined)
+        (pg_client_certificate_authority_content | length > 0)
         or
-        (pg_client_certificate_authority_src is defined)
+        (pg_client_certificate_authority_src | length > 0)
       }}
   when: pg_security_ssl != 'off'
 
-- name: "Checking whether client certificate authentication is required"
-  ansible.builtin.set_fact:
-    pg_client_certificate_auth_required: |-
-      {% set ns = namespace(required=false) %}
-      {% for item in pg_global_access %}
-      {% if item.method | default('scram-sha-256') == 'cert' or item.clientcert is defined or item.clientname is defined or item.map is defined %}
-      {% set ns.required = true %}
-      {% endif %}
-      {% endfor %}
-      {% for database in pg_databases %}
-      {% for item in database.access | default([]) %}
-      {% if item.method | default('scram-sha-256') == 'cert' or item.clientcert is defined or item.clientname is defined or item.map is defined %}
-      {% set ns.required = true %}
-      {% endif %}
-      {% endfor %}
-      {% endfor %}
-      {{ ns.required | bool }}
+- name: "Canonicalizing PostgreSQL certificate paths before mutation"
+  ansible.builtin.include_tasks: validate/normalize_path.yml
+  loop:
+    - {input: "{{ pg_certificate_private_key_fullpath }}", result: "pg_certificate_private_key_fullpath"}
+    - {input: "{{ pg_certificate_public_key_fullpath }}", result: "pg_certificate_public_key_fullpath"}
+    - {input: "{{ pg_client_certificate_authority_fullpath }}", result: "pg_client_certificate_authority_fullpath"}
+  loop_control:
+    loop_var: pg_instance_certificate_path
+  vars:
+    pg_path_normalize_input: "{{ pg_instance_certificate_path.input }}"
+    pg_path_normalize_result_fact: "{{ pg_instance_certificate_path.result }}"
+    pg_path_normalize_label: "PostgreSQL certificate path"
+  when: pg_security_ssl != 'off'
+
+- name: "Canonicalizing PostgreSQL controller CA source before mutation"
+  ansible.builtin.include_tasks: validate/normalize_path.yml
+  vars:
+    pg_path_normalize_input: "{{ pg_client_certificate_authority_src }}"
+    pg_path_normalize_result_fact: "pg_client_certificate_authority_src"
+    pg_path_normalize_label: "PostgreSQL controller CA source"
+  when:
+    - pg_security_ssl != 'off'
+    - pg_client_certificate_authority_src | default('') | trim | length > 0
 
 - name: "Checking if required variables are defined"
   ansible.builtin.assert:
@@ -169,10 +186,6 @@
       - pg_security is defined
       - pg_systemd_service_dir is defined
       - pg_version is defined
-      - >-
-        not pg_client_certificate_auth_required | bool
-        or
-        pg_client_certificate_authority_enabled | bool
     fail_msg: >-
       PostgreSQL instance configuration is missing required values or certificate-aware
       authentication is enabled without a configured client CA
@@ -187,42 +200,41 @@
   loop: "{{ pg_maprole }}"
   when: pg_maprole | length > 0
 
-- name: "Checking global pg_hba access records"
-  ansible.builtin.include_tasks: validate/validate_hba_access_record.yml
-  loop: "{{ pg_global_access }}"
-  loop_control:
-    loop_var: pg_hba_access_record
-  vars:
-    pg_hba_access_type: "{{ pg_hba_access_record.type | default(pg_hba_default_type | default('host')) }}"
-    pg_hba_access_uses_client_certificate: >-
-      {{
-        (pg_hba_access_record.method | default('scram-sha-256')) == 'cert'
-        or
-        (pg_hba_access_record.clientcert is defined)
-        or
-        (pg_hba_access_record.clientname is defined)
-        or
-        (pg_hba_access_record.map is defined)
-      }}
+- name: "Normalizing effective global pg_hba access records"
+  ansible.builtin.set_fact:
+    pg_global_access: >-
+      {% set ns = namespace(records=[]) %}
+      {% for record in pg_global_access %}
+      {% set normalized = record %}
+      {% if record.address is defined %}
+      {% set address = record.address if record.address in ['samehost', 'samenet'] else (
+        (record.address | ansible.utils.ipaddr('network/prefix'))
+        if '/' in record.address else (record.address | ansible.utils.ipaddr)) %}
+      {% set normalized = record | combine({'address': address}) %}
+      {% endif %}
+      {% set ns.records = ns.records + [normalized] %}
+      {% endfor %}
+      {{ ns.records }}
 
-- name: "Checking database-specific pg_hba access records"
-  ansible.builtin.include_tasks: validate/validate_hba_access_record.yml
-  loop: "{{ pg_databases | subelements('access', skip_missing=True) }}"
-  loop_control:
-    loop_var: pg_hba_database_access_record
-  vars:
-    pg_hba_access_record: "{{ pg_hba_database_access_record.1 }}"
-    pg_hba_access_type: "{{ pg_hba_access_record.type | default(pg_hba_default_type | default('host')) }}"
-    pg_hba_access_uses_client_certificate: >-
-      {{
-        (pg_hba_access_record.method | default('scram-sha-256')) == 'cert'
-        or
-        (pg_hba_access_record.clientcert is defined)
-        or
-        (pg_hba_access_record.clientname is defined)
-        or
-        (pg_hba_access_record.map is defined)
-      }}
+- name: "Normalizing effective database pg_hba access records"
+  ansible.builtin.set_fact:
+    pg_databases: >-
+      {% set dbs = namespace(records=[]) %}
+      {% for database in pg_databases %}
+      {% set accesses = namespace(records=[]) %}
+      {% for record in database.access | default([]) %}
+      {% set normalized = record %}
+      {% if record.address is defined %}
+      {% set address = record.address if record.address in ['samehost', 'samenet'] else (
+        (record.address | ansible.utils.ipaddr('network/prefix'))
+        if '/' in record.address else (record.address | ansible.utils.ipaddr)) %}
+      {% set normalized = record | combine({'address': address}) %}
+      {% endif %}
+      {% set accesses.records = accesses.records + [normalized] %}
+      {% endfor %}
+      {% set dbs.records = dbs.records + [database | combine({'access': accesses.records})] %}
+      {% endfor %}
+      {{ dbs.records }}
 
 ###############################################################################
 # ENSURING INSTANCE IS PRESENT
@@ -347,14 +359,14 @@
     group: "{{ pg_os_group }}"
     mode: "0640"
   when:
-    - pg_profile is defined
+    - pg_profile | length > 0
     - pg_patroni_data_initialized | bool
 
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml
   vars:
     iac_log_write: "Created {{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/conf.d/40-profile.conf"
-  when: pg_profile is defined
+  when: pg_profile | length > 0
 
 ###############################################################################
 # ENSURING SECURITY PROFILE EXISTS IF NEEDED

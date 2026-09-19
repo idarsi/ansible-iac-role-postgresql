@@ -68,7 +68,29 @@
   ansible.builtin.include_tasks: validate_cluster.yml
   loop: "{{ pg_validation_version_record.clusters | default([]) }}"
   loop_control:
-    loop_var: pg_validation_cluster_record
+    loop_var: pg_validation_cluster_input
+  vars:
+    pg_validation_version_instances: "{{ pg_validation_version_record.instances | default([]) }}"
+    pg_validation_cluster_security_profiles: >-
+      {{ pg_validation_version_record.instances | default([])
+         | selectattr('cluster', 'defined')
+          | selectattr('cluster', 'equalto', pg_validation_cluster_input.name)
+         | map(attribute='security_profile', default=pg_patroni_default_security_profile)
+         | list }}
+    pg_validation_security_profile: >-
+      {{ (pg_validation_cluster_security_profiles | first)
+         if (pg_validation_cluster_security_profiles | length > 0)
+         else pg_patroni_default_security_profile }}
+    pg_validation_cluster_security_ssls: >-
+      {{ pg_validation_version_record.instances | default([])
+         | selectattr('cluster', 'defined')
+          | selectattr('cluster', 'equalto', pg_validation_cluster_input.name)
+         | map(attribute='security_ssl', default=pg_validation_security_profile)
+         | list }}
+    pg_validation_security_ssl: >-
+      {{ (pg_validation_cluster_security_ssls | first)
+         if (pg_validation_cluster_security_ssls | length > 0)
+         else pg_validation_security_profile }}
 
 - name: "Checking PostgreSQL instance names are unique"
   ansible.builtin.assert:

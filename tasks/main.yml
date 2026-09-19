@@ -79,9 +79,17 @@
   ansible.builtin.set_fact:
     pg_patroni_enabled: "{{ pg_patroni_enabled | trim | bool }}"
 
-- name: "Initializing Patroni bootstrap state"
-  ansible.builtin.set_fact:
-    pg_patroni_bootstrap_pending: false
+###############################################################################
+# PURE INVENTORY AND PATH/SCHEMA PREFLIGHT
+###############################################################################
+
+- name: "Running pure PostgreSQL inventory and certificate model preflight"
+  ansible.builtin.include_tasks: preflight.yml
+  when: state != 'update'
+
+- name: "Running controller-side CA source validation"
+  ansible.builtin.include_tasks: validate/validate_controller_sources.yml
+  when: state in ['validate', 'present', 'install', 'instances_present', 'replication_present', 'clusters_present']
 
 - name: "Setting Python interpreter for DNF and RPM modules"
   ansible.builtin.set_fact:
@@ -95,6 +103,18 @@
         )
         else ansible_facts["python"]["executable"] | default('/usr/bin/python3')
       }}
+
+- name: "Installing certificate preflight bootstrap packages"
+  ansible.builtin.include_tasks: bootstrap_packages_present.yml
+  when: state in ['present', 'install', 'instances_present', 'clusters_present']
+
+- name: "Running tool-dependent certificate preflight"
+  ansible.builtin.include_tasks: certificate_preflight.yml
+  when: state in ['present', 'install', 'instances_present', 'clusters_present']
+
+- name: "Initializing Patroni bootstrap state"
+  ansible.builtin.set_fact:
+    pg_patroni_bootstrap_pending: false
 
 - name: "Validating destructive cleanup paths"
   ansible.builtin.include_tasks: validate/validate_cleanup.yml

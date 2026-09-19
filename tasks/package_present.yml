@@ -41,6 +41,8 @@
 - name: "Gathering installed package facts before installation"
   ansible.builtin.package_facts:
     manager: "auto"
+  vars:
+    ansible_python_interpreter: "{{ pg_package_module_interpreter }}"
 
 - name: "Recording packages already installed before role management"
   ansible.builtin.set_fact:

@@ -1,0 +1,53 @@
+---
+# Pure model/path preflight.  It deliberately contains no command, stat, or
+# other host-state operation and is safe on a clean host.
+- name: "Checking certificate path models before bootstrap"
+  ansible.builtin.assert:
+    that:
+      - pg_default_dir is defined
+      - pg_certificate_private_key_path is defined
+      - pg_certificate_public_key_path is defined
+      - pg_certificate_private_key_bits is defined
+    fail_msg: "Certificate path and key settings must be defined before bootstrap"
+
+- name: "Publishing certificate preflight models"
+  ansible.builtin.set_fact:
+    pg_certificate_preflight_models: []
+
+- name: "Publishing preflight-owned Patroni and etcd endpoint indexes"
+  ansible.builtin.set_fact:
+    pg_preflight_patroni_endpoint_models: "{{ pg_validation_patroni_endpoint_index | list }}"
+    pg_preflight_patroni_endpoint_models_by_key: >-
+      {{ dict(pg_validation_patroni_endpoint_index | map(attribute='key') |
+              zip(pg_validation_patroni_endpoint_index)) }}
+    pg_preflight_etcd_endpoint_models: "{{ pg_validation_etcd_endpoint_index | default([]) | list }}"
+    pg_preflight_etcd_endpoint_models_by_key: >-
+      {{ dict((pg_validation_etcd_endpoint_index | default([]) | map(attribute='key')) |
+              zip(pg_validation_etcd_endpoint_index | default([]))) }}
+
+- name: "Validating certificate path and SAN models before bootstrap"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (pg_default_dir ~ '/' ~ (pg_preflight_instance.0.version | string) ~ '/' ~
+        pg_preflight_instance.1.name ~ '/ssl/' ~ pg_certificate_private_key_path)
+        is match('^' ~ pg_default_dir ~ '/[0-9]+/[^/]+/ssl/[^/]+$')
+      - >-
+        (pg_default_dir ~ '/' ~ (pg_preflight_instance.0.version | string) ~ '/' ~
+        pg_preflight_instance.1.name ~ '/ssl/' ~ pg_certificate_public_key_path)
+        is match('^' ~ pg_default_dir ~ '/[0-9]+/[^/]+/ssl/[^/]+$')
+      - pg_preflight_instance.1.certificate_subject_alt_names | default([inventory_hostname]) | type_debug == 'list'
+      - pg_preflight_instance.1.certificate_subject_alt_names | default([inventory_hostname]) | length > 0
+    fail_msg: "PostgreSQL certificate paths and SANs must be valid before bootstrap"
+  loop: "{{ pg_instances }}"
+  loop_control:
+    loop_var: pg_preflight_instance
+  when: >-
+    (
+      (pg_validation_cluster_models | selectattr('key', 'equalto',
+       (pg_preflight_instance.0.version | string) ~ ':' ~ (pg_preflight_instance.1.cluster | default('')))
+       | map(attribute='security_ssl') | list | first)
+       | default(pg_preflight_instance.1.security_ssl | default(pg_preflight_instance.1.security_profile | default('off')))
+    ) != 'off'
+    or pg_preflight_instance.1.client_certificate_authority_src is defined
+    or pg_preflight_instance.1.client_certificate_authority_content is defined

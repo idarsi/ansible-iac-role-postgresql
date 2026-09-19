@@ -20,6 +20,8 @@
 - name: "Gathering installed package facts"
   ansible.builtin.package_facts:
     manager: "auto"
+  vars:
+    ansible_python_interpreter: "{{ pg_package_module_interpreter }}"
 
 - name: "Saving package facts before the update transaction"
   ansible.builtin.set_fact:
@@ -82,6 +84,8 @@
 - name: "Gathering package facts after the update transaction"
   ansible.builtin.package_facts:
     manager: "auto"
+  vars:
+    ansible_python_interpreter: "{{ pg_package_module_interpreter }}"
   when: pg_update_packages_for_transaction | length > 0
 
 - name: "Detecting an updated SSH server package"

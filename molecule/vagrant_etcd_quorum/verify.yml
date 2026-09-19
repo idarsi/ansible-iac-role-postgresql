@@ -43,7 +43,7 @@
 
     - name: "Check etcd key metadata on every guest"
       ansible.builtin.stat:
-        path: /etc/etcd/pki/etcd.key
+        path: /etc/etcd/pki/etcd-client.key
       loop: "{{ groups['all'] }}"
       loop_control: {loop_var: vagrant_guest}
       delegate_to: "{{ vagrant_guest }}"
@@ -54,17 +54,53 @@
         that:
           - vagrant_key_stat.stat.exists
           - vagrant_key_stat.stat.mode == "0640"
-          - vagrant_key_stat.stat.pw_name == "etcd"
-          - vagrant_key_stat.stat.gr_name == "postgres"
+          - vagrant_key_stat.stat.pw_name == "root"
+          - vagrant_key_stat.stat.gr_name == "tlsreaders"
       loop: "{{ vagrant_key_stats.results }}"
       loop_control: {loop_var: vagrant_key_stat}
 
     - name: "Check effective PostgreSQL access to the etcd key"
-      ansible.builtin.command: runuser -u postgres -- test -r /etc/etcd/pki/etcd.key
+      ansible.builtin.command: runuser -u postgres -- test -r /etc/etcd/pki/etcd-client.key
       loop: "{{ groups['all'] }}"
       loop_control: {loop_var: vagrant_guest}
       delegate_to: "{{ vagrant_guest }}"
       changed_when: false
+
+    - name: "Check external etcd peer key metadata on every guest"
+      ansible.builtin.stat:
+        path: /etc/etcd/pki/etcd-peer.key
+        follow: false
+      loop: "{{ groups['all'] }}"
+      loop_control: {loop_var: vagrant_guest}
+      delegate_to: "{{ vagrant_guest }}"
+      register: vagrant_peer_key_stats
+
+    - name: "Assert external etcd peer key keeps the shared contract"
+      ansible.builtin.assert:
+        that:
+          - vagrant_peer_key_stat.stat.exists
+          - vagrant_peer_key_stat.stat.isreg
+          - not (vagrant_peer_key_stat.stat.islnk | default(false))
+          - vagrant_peer_key_stat.stat.mode == "0640"
+          - vagrant_peer_key_stat.stat.pw_name == "root"
+          - vagrant_peer_key_stat.stat.gr_name == "tlsreaders"
+      loop: "{{ vagrant_peer_key_stats.results }}"
+      loop_control: {loop_var: vagrant_peer_key_stat}
+
+    - name: "Check Patroni cannot read the generated etcd peer key"
+      ansible.builtin.command: runuser -u postgres -- test -r /etc/etcd/pki/etcd-peer.key
+      loop: "{{ groups['all'] }}"
+      loop_control: {loop_var: vagrant_guest}
+      delegate_to: "{{ vagrant_guest }}"
+      register: vagrant_peer_key_access
+      changed_when: false
+      failed_when: false
+
+    - name: "Assert Patroni cannot read generated etcd peer keys"
+      ansible.builtin.assert:
+        that: vagrant_peer_key_result.rc != 0
+      loop: "{{ vagrant_peer_key_access.results }}"
+      loop_control: {loop_var: vagrant_peer_key_result}
 
     - name: "Write a DCS continuity key through all endpoints"
       ansible.builtin.command:
@@ -72,8 +108,8 @@
           - etcdctl
           - "--endpoints=https://pg01:2379,https://pg02:2379,https://pg03:2379"
           - --cacert=/etc/etcd/pki/ca.crt
-          - --cert=/etc/etcd/pki/etcd.crt
-          - --key=/etc/etcd/pki/etcd.key
+          - --cert=/etc/etcd/pki/etcd-client.crt
+          - --key=/etc/etcd/pki/etcd-client.key
           - put
           - /molecule/quorum-marker
           - before-quorum-loss
@@ -96,8 +132,8 @@
               - etcdctl
               - "--endpoints=https://pg01:2379"
               - --cacert=/etc/etcd/pki/ca.crt
-              - --cert=/etc/etcd/pki/etcd.crt
-              - --key=/etc/etcd/pki/etcd.key
+              - --cert=/etc/etcd/pki/etcd-client.crt
+              - --key=/etc/etcd/pki/etcd-client.key
               - put
               - /molecule/quorum-probe
               - must-not-commit
@@ -124,8 +160,8 @@
           - etcdctl
           - "--endpoints=https://pg01:2379,https://pg02:2379,https://pg03:2379"
           - --cacert=/etc/etcd/pki/ca.crt
-          - --cert=/etc/etcd/pki/etcd.crt
-          - --key=/etc/etcd/pki/etcd.key
+          - --cert=/etc/etcd/pki/etcd-client.crt
+          - --key=/etc/etcd/pki/etcd-client.key
           - endpoint
           - health
           - -w
@@ -149,8 +185,8 @@
           - etcdctl
           - "--endpoints=https://pg01:2379"
           - --cacert=/etc/etcd/pki/ca.crt
-          - --cert=/etc/etcd/pki/etcd.crt
-          - --key=/etc/etcd/pki/etcd.key
+          - --cert=/etc/etcd/pki/etcd-client.crt
+          - --key=/etc/etcd/pki/etcd-client.key
           - member
           - list
           - -w
@@ -177,8 +213,8 @@
           - etcdctl
           - "--endpoints=https://pg01:2379,https://pg02:2379,https://pg03:2379"
           - --cacert=/etc/etcd/pki/ca.crt
-          - --cert=/etc/etcd/pki/etcd.crt
-          - --key=/etc/etcd/pki/etcd.key
+          - --cert=/etc/etcd/pki/etcd-client.crt
+          - --key=/etc/etcd/pki/etcd-client.key
           - get
           - /molecule/quorum-marker
       environment: {ETCDCTL_API: "3"}
@@ -194,8 +230,8 @@
           - etcdctl
           - "--endpoints=https://pg01:2379,https://pg02:2379,https://pg03:2379"
           - --cacert=/etc/etcd/pki/ca.crt
-          - --cert=/etc/etcd/pki/etcd.crt
-          - --key=/etc/etcd/pki/etcd.key
+          - --cert=/etc/etcd/pki/etcd-client.crt
+          - --key=/etc/etcd/pki/etcd-client.key
           - del
           - /molecule/quorum-probe
       environment: {ETCDCTL_API: "3"}
@@ -203,7 +239,8 @@
 
     - name: "Assert Patroni has a leader after etcd quorum recovery"
       ansible.builtin.uri:
-        url: "http://{{ vagrant_patroni_private_addresses[inventory_hostname] }}:8008/cluster"
+        url: "https://{{ vagrant_patroni_private_addresses[inventory_hostname] }}:8008/cluster"
+        ca_path: /etc/patroni/pki/ca.crt
         url_username: "{{ vagrant_patroni_restapi_username }}"
         url_password: "{{ vagrant_patroni_restapi_password }}"
         force_basic_auth: true

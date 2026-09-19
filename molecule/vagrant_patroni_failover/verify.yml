@@ -1,4 +1,17 @@
 ---
+# yamllint disable rule:line-length
+- name: "Gather pg02 facts before delegated listener checks"
+  hosts: pg02
+  become: true
+  gather_facts: false
+  tasks:
+    - name: "Gather the pg02 Python interpreter fact"
+      ansible.builtin.setup:
+        gather_subset:
+          - "min"
+        filter:
+          - "ansible_python*"
+
 - name: "Exercise Patroni primary failure with etcd quorum retained"
   hosts: pg01
   become: true
@@ -9,7 +22,256 @@
       pg03: "192.168.250.203"
     vagrant_patroni_restapi_username: patroni
     vagrant_patroni_restapi_password: patroni_password
+    vagrant_etcd_client_directory: "/etc/etcd/pki/client"
+    vagrant_etcd_client_key: "/etc/etcd/pki/client/etcd-client.key"
+    vagrant_etcd_client_certificate: "/etc/etcd/pki/client/etcd-client.crt"
+    vagrant_etcd_peer_certificate: "/etc/etcd/pki/etcd-peer.crt"
+    vagrant_etcd_peer_key: "/etc/etcd/pki/etcd-peer.key"
+    vagrant_etcd_ca_certificate: "/etc/etcd/pki/ca.crt"
+    vagrant_scenario_nodes: "{{ groups['all'] | select('in', vagrant_patroni_private_addresses.keys() | list) | list }}"
+    vagrant_expected_member_identities: "{{ vagrant_scenario_nodes | map('lower') | list }}"
+    vagrant_firewall_probe_expected_outcome: "TIMEOUT"
+    vagrant_pg02_python_executable: "{{ hostvars['pg02']['ansible_facts']['python']['executable'] }}"
   tasks:
+    - name: "Exercise the private-zone default-deny guardrail"
+      block:
+        - name: "Start a disposable listener on an unlisted private-zone port"
+          ansible.builtin.shell: >-
+            nohup {{ vagrant_pg02_python_executable }} -c
+            'import socket,time;s=socket.socket();s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);s.bind(("192.168.250.202",65432));s.listen(1);time.sleep(120)'
+            >/dev/null 2>&1 & echo $!
+          delegate_to: "pg02"
+          register: vagrant_unlisted_listener
+          changed_when: true
+          no_log: true
+          diff: false
+          # noqa command-instead-of-shell
+
+        - name: "Assert the disposable listener returned a valid PID"
+          ansible.builtin.assert:
+            that:
+              - vagrant_unlisted_listener.stdout | trim is match('^[1-9][0-9]*$')
+              - (vagrant_unlisted_listener.stdout | trim | int) > 0
+            fail_msg: "The disposable listener did not return a valid process ID"
+          no_log: true
+          diff: false
+
+        - name: "Check the disposable listener process and exact socket ownership"
+          ansible.builtin.command:
+            argv:
+              - "bash"
+              - "-c"
+              - >-
+                set -euo pipefail;
+                pid="$1"; endpoint="192.168.250.202:65432";
+                kill -0 "$pid";
+                exe=$(readlink -f "/proc/$pid/exe");
+                case "$exe" in */python|*/python[0-9]*) ;; *) exit 1 ;; esac;
+                cmdline=$(tr '\0' ' ' <"/proc/$pid/cmdline");
+                [[ "$cmdline" == *192.168.250.202* && "$cmdline" == *65432* ]];
+                inode=$(for fd in /proc/"$pid"/fd/*; do
+                  link=$(readlink "$fd") || continue;
+                  case "$link" in socket:\[*\]) printf '%s\n' "${link#socket:[}" | tr -d ']';; esac;
+                done | head -n 1);
+                test -n "$inode";
+                ss_output=$(ss -H -ltnpe);
+                pid_lines=$(printf '%s\n' "$ss_output" | awk -v pid="$pid" '$1 == "LISTEN" && index($0, "pid=" pid ",") { count++ } END { print count + 0 }');
+                endpoint_lines=$(printf '%s\n' "$ss_output" | awk -v endpoint="$endpoint" '$1 == "LISTEN" && $4 == endpoint { count++ } END { print count + 0 }');
+                matching_lines=$(printf '%s\n' "$ss_output" | awk -v endpoint="$endpoint" -v pid="$pid" -v inode="$inode" '$1 == "LISTEN" && $4 == endpoint && index($0, "pid=" pid ",") && index($0, "ino:" inode) { count++ } END { print count + 0 }');
+                test "$pid_lines" -eq 1 && test "$endpoint_lines" -eq 1 && test "$matching_lines" -eq 1
+              - "listener-ownership"
+              - "{{ vagrant_unlisted_listener.stdout | trim }}"
+          delegate_to: "pg02"
+          register: vagrant_unlisted_listener_readiness
+          changed_when: false
+          failed_when: false
+          no_log: true
+          diff: false
+          # noqa command-instead-of-shell
+
+        - name: "Assert the disposable listener PID owns exactly the target socket"
+          ansible.builtin.assert:
+            that: "vagrant_unlisted_listener_readiness.rc == 0"
+            fail_msg: "The disposable listener did not start and listen on 192.168.250.202:65432"
+          no_log: true
+          diff: false
+
+        - name: "Probe the unlisted private-zone port with bounded failure classification"
+          ansible.builtin.command:
+            argv:
+              - "{{ vagrant_pg02_python_executable }}"
+              - "-c"
+              - |
+                import socket
+                import sys
+
+                socket_probe = socket.socket()
+                socket_probe.settimeout(2)
+                try:
+                    socket_probe.connect(("192.168.250.202", 65432))
+                except socket.timeout:
+                    print("TIMEOUT")
+                    sys.exit(0)
+                except ConnectionRefusedError:
+                    print("REFUSED")
+                    sys.exit(0)
+                except socket.gaierror as error:
+                    print("DNS_ERROR:" + str(error))
+                    sys.exit(2)
+                except OSError as error:
+                    print("OS_ERROR:" + str(error))
+                    sys.exit(2)
+                else:
+                    print("REACHABLE")
+                    sys.exit(1)
+          delegate_to: "pg02"
+          register: vagrant_unlisted_port_probe
+          changed_when: false
+          failed_when: false
+          no_log: true
+          diff: false
+
+        - name: "Assert the probe matches the DROP policy, not a tool or network error"
+          ansible.builtin.assert:
+            that:
+              - vagrant_unlisted_port_probe.rc == 0
+              - vagrant_unlisted_port_probe.stdout | trim == vagrant_firewall_probe_expected_outcome
+            fail_msg: "The unlisted-port probe did not match the expected fixed classification"
+          no_log: true
+          diff: false
+
+      always:
+        - name: "Revalidate disposable listener ownership before cleanup"
+          ansible.builtin.command:
+            argv:
+              - "bash"
+              - "-c"
+              - >-
+                set -euo pipefail;
+                pid="$1"; endpoint="192.168.250.202:65432";
+                kill -0 "$pid";
+                exe=$(readlink -f "/proc/$pid/exe");
+                case "$exe" in */python|*/python[0-9]*) ;; *) exit 1 ;; esac;
+                cmdline=$(tr '\0' ' ' <"/proc/$pid/cmdline");
+                [[ "$cmdline" == *192.168.250.202* && "$cmdline" == *65432* ]];
+                inode=$(for fd in /proc/"$pid"/fd/*; do
+                  link=$(readlink "$fd") || continue;
+                  case "$link" in socket:\[*\]) printf '%s\n' "${link#socket:[}" | tr -d ']';; esac;
+                done | head -n 1);
+                test -n "$inode";
+                ss -H -ltnpe | awk -v endpoint="$endpoint" -v pid="$pid" -v inode="$inode" '$1 == "LISTEN" && $4 == endpoint && index($0, "pid=" pid ",") && index($0, "ino:" inode) { count++ } END { exit !(count == 1) }';
+                test -n "$pid"
+              - "listener-cleanup"
+              - "{{ vagrant_unlisted_listener.stdout | default('') | trim }}"
+          delegate_to: "pg02"
+          register: vagrant_unlisted_listener_cleanup_validation
+          changed_when: false
+          failed_when: false
+          when:
+            - vagrant_unlisted_listener is defined
+            - vagrant_unlisted_listener.stdout | default("") | trim is match("^[1-9][0-9]*$")
+            - (vagrant_unlisted_listener.stdout | default("") | trim | int) > 0
+          no_log: true
+          diff: false
+
+        - name: "Assert disposable listener cleanup validation succeeded"
+          ansible.builtin.assert:
+            that: vagrant_unlisted_listener_cleanup_validation.rc == 0
+            fail_msg: >-
+              Refusing to terminate the disposable listener because PID ownership validation failed
+              (rc={{ vagrant_unlisted_listener_cleanup_validation.rc }}).
+          when:
+            - vagrant_unlisted_listener_cleanup_validation is defined
+            - not (vagrant_unlisted_listener_cleanup_validation.skipped | default(false))
+          no_log: true
+          diff: false
+
+        - name: "Terminate the disposable listener after ownership validation"
+          ansible.builtin.command:
+            argv:
+              - "kill"
+              - "{{ vagrant_unlisted_listener.stdout | trim }}"
+          delegate_to: "pg02"
+          register: vagrant_unlisted_listener_cleanup_termination
+          changed_when: false
+          failed_when: false
+          when:
+            - vagrant_unlisted_listener_cleanup_validation is defined
+            - not (vagrant_unlisted_listener_cleanup_validation.skipped | default(false))
+            - vagrant_unlisted_listener_cleanup_validation.rc == 0
+          no_log: true
+          diff: false
+
+        - name: "Assert disposable listener termination succeeded"
+          ansible.builtin.assert:
+            that: vagrant_unlisted_listener_cleanup_termination.rc == 0
+            fail_msg: >-
+              Failed to terminate the disposable listener after ownership validation
+              (rc={{ vagrant_unlisted_listener_cleanup_termination.rc }}).
+          when:
+            - vagrant_unlisted_listener_cleanup_termination is defined
+            - not (vagrant_unlisted_listener_cleanup_termination.skipped | default(false))
+          no_log: true
+          diff: false
+
+        - name: "Verify the disposable listener exits after termination"
+          ansible.builtin.command:
+            argv:
+              - "kill"
+              - "-0"
+              - "{{ vagrant_unlisted_listener.stdout | trim }}"
+          delegate_to: "pg02"
+          register: vagrant_unlisted_listener_exit_check
+          changed_when: false
+          failed_when: false
+          until: vagrant_unlisted_listener_exit_check.rc != 0
+          retries: 10
+          delay: 1
+          when:
+            - vagrant_unlisted_listener_cleanup_termination is defined
+            - not (vagrant_unlisted_listener_cleanup_termination.skipped | default(false))
+            - vagrant_unlisted_listener_cleanup_termination.rc == 0
+          no_log: true
+          diff: false
+
+        - name: "Assert the disposable listener exited after termination"
+          ansible.builtin.assert:
+            that: vagrant_unlisted_listener_exit_check.rc != 0
+            fail_msg: "The disposable listener is still running after cleanup termination"
+          when:
+            - vagrant_unlisted_listener_exit_check is defined
+            - not (vagrant_unlisted_listener_exit_check.skipped | default(false))
+          no_log: true
+          diff: false
+
+    - name: "Verify private-zone target is explicitly DROP"
+      ansible.builtin.command: firewall-cmd --zone=idarsi-private --get-target
+      loop: "{{ groups['all'] }}"
+      loop_control: {loop_var: vagrant_guest}
+      delegate_to: "{{ vagrant_guest }}"
+      changed_when: false
+      register: vagrant_private_zone_targets
+
+    - name: "Verify permanent private-zone target is explicitly DROP"
+      ansible.builtin.command: firewall-cmd --permanent --zone=idarsi-private --get-target
+      loop: "{{ groups['all'] }}"
+      loop_control: {loop_var: vagrant_guest}
+      delegate_to: "{{ vagrant_guest }}"
+      changed_when: false
+      register: vagrant_permanent_private_zone_targets
+
+    - name: "Assert private-zone target is DROP on every guest"
+      ansible.builtin.assert:
+        that: "vagrant_private_zone_target.stdout | trim == 'DROP'"
+      loop: "{{ vagrant_private_zone_targets.results }}"
+      loop_control: {loop_var: vagrant_private_zone_target}
+
+    - name: "Assert permanent private-zone target is DROP on every guest"
+      ansible.builtin.assert:
+        that: "vagrant_permanent_private_zone_target.stdout | trim == 'DROP'"
+      loop: "{{ vagrant_permanent_private_zone_targets.results }}"
+      loop_control: {loop_var: vagrant_permanent_private_zone_target}
+
     - name: "Check SELinux mode on every guest"
       ansible.builtin.command: getenforce
       loop: "{{ groups['all'] }}"
@@ -41,9 +303,20 @@
       loop: "{{ vagrant_listeners.results }}"
       loop_control: {loop_var: vagrant_listener}
 
+    - name: "Assert each guest has a distinct configured cluster identity"
+      ansible.builtin.assert:
+        that:
+          - vagrant_patroni_private_addresses | length == groups['all'] | length
+          - (vagrant_patroni_private_addresses.values() | list | unique | length) == groups['all'] | length
+          - vagrant_patroni_private_addresses[vagrant_guest] is defined
+        fail_msg: "Every guest must map to one distinct private cluster identity"
+      loop: "{{ groups['all'] }}"
+      loop_control: {loop_var: vagrant_guest}
+
     - name: "Check etcd key metadata on every guest"
       ansible.builtin.stat:
-        path: /etc/etcd/pki/etcd.key
+        path: "{{ vagrant_etcd_client_key }}"
+        follow: false
       loop: "{{ groups['all'] }}"
       loop_control: {loop_var: vagrant_guest}
       delegate_to: "{{ vagrant_guest }}"
@@ -53,22 +326,281 @@
       ansible.builtin.assert:
         that:
           - vagrant_key_stat.stat.exists
+          - vagrant_key_stat.stat.isreg
+          - not vagrant_key_stat.stat.islnk
           - vagrant_key_stat.stat.mode == "0640"
-          - vagrant_key_stat.stat.pw_name == "etcd"
-          - vagrant_key_stat.stat.gr_name == "postgres"
+          - vagrant_key_stat.stat.pw_name == "root"
+          - vagrant_key_stat.stat.gr_name == "tlsreaders"
       loop: "{{ vagrant_key_stats.results }}"
       loop_control: {loop_var: vagrant_key_stat}
 
+    - name: "Check etcd certificate metadata on every guest"
+      ansible.builtin.stat:
+        path: "{{ vagrant_etcd_client_certificate }}"
+        follow: false
+      loop: "{{ groups['all'] }}"
+      loop_control: {loop_var: vagrant_guest}
+      delegate_to: "{{ vagrant_guest }}"
+      register: vagrant_certificate_stats
+
+    - name: "Assert etcd certificate metadata"
+      ansible.builtin.assert:
+        that:
+          - vagrant_certificate_stat.stat.exists
+          - vagrant_certificate_stat.stat.isreg
+          - not vagrant_certificate_stat.stat.islnk
+          - vagrant_certificate_stat.stat.mode == "0640"
+          - vagrant_certificate_stat.stat.pw_name == "root"
+          - vagrant_certificate_stat.stat.gr_name == "tlsreaders"
+      loop: "{{ vagrant_certificate_stats.results }}"
+      loop_control: {loop_var: vagrant_certificate_stat}
+
+    - name: "Check the active client pair directory"
+      ansible.builtin.stat:
+        path: "{{ vagrant_etcd_client_directory }}"
+        follow: false
+      loop: "{{ groups['all'] }}"
+      loop_control: {loop_var: vagrant_guest}
+      delegate_to: "{{ vagrant_guest }}"
+      register: vagrant_client_directory_stats
+
+    - name: "Assert active client pair is a private real directory"
+      ansible.builtin.assert:
+        that:
+          - vagrant_client_directory_stat.stat.exists
+          - vagrant_client_directory_stat.stat.isdir
+          - not vagrant_client_directory_stat.stat.islnk
+          - vagrant_client_directory_stat.stat.mode == "0700"
+          - vagrant_client_directory_stat.stat.pw_name == "root"
+          - vagrant_client_directory_stat.stat.gr_name == "root"
+      loop: "{{ vagrant_client_directory_stats.results }}"
+      loop_control: {loop_var: vagrant_client_directory_stat}
+
+    - name: "Verify ACL tooling is available before ACL inspection"
+      ansible.builtin.command:
+        argv: ["getfacl", "--version"]
+      changed_when: false
+
+    - name: "Check active client directory ACL"
+      ansible.builtin.command: "getfacl --absolute-names --omit-header -- {{ vagrant_etcd_client_directory }}"
+      loop: "{{ groups['all'] }}"
+      loop_control: {loop_var: vagrant_guest}
+      delegate_to: "{{ vagrant_guest }}"
+      changed_when: false
+      register: vagrant_active_client_acls
+      no_log: true
+      diff: false
+
+    - name: "Assert active client directory has no named ACL"
+      ansible.builtin.assert:
+        that: (vagrant_active_client_acl_result.stdout_lines | select('match', '^(user|group):[^:]+:') | list | length) == 0
+      loop: "{{ vagrant_active_client_acls.results }}"
+      loop_control: {loop_var: vagrant_active_client_acl_result}
+      no_log: true
+      diff: false
+
+    - name: "Verify the client key and certificate public keys match"
+      ansible.builtin.shell: >-
+         set -o pipefail;
+         test "$(openssl x509 -in {{ vagrant_etcd_client_certificate }} -pubkey -noout |
+         openssl pkey -pubin -outform DER 2>/dev/null | sha256sum)" =
+         "$(openssl pkey -in {{ vagrant_etcd_client_key }} -pubout -outform DER 2>/dev/null |
+         sha256sum)"
+      loop: "{{ groups['all'] }}"
+      loop_control: {loop_var: vagrant_guest}
+      delegate_to: "{{ vagrant_guest }}"
+      changed_when: false
+      no_log: true
+      diff: false
+      # noqa command-instead-of-shell
+
+    - name: "Verify the peer key and certificate public keys match"
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        test "$(openssl x509 -in {{ vagrant_etcd_peer_certificate }} -pubkey -noout |
+        openssl pkey -pubin -outform DER 2>/dev/null | sha256sum)" =
+        "$(openssl pkey -in {{ vagrant_etcd_peer_key }} -pubout -outform DER 2>/dev/null |
+        sha256sum)"
+      loop: "{{ groups['all'] }}"
+      loop_control: {loop_var: vagrant_guest}
+      delegate_to: "{{ vagrant_guest }}"
+      changed_when: false
+      no_log: true
+      diff: false
+      # noqa command-instead-of-shell
+
+    - name: "Read the CA fingerprint and distinct leaf fingerprints"
+      ansible.builtin.shell: >-
+        set -euo pipefail;
+        openssl x509 -in {{ vagrant_etcd_ca_certificate | quote }} -outform DER | sha256sum | cut -d' ' -f1;
+        client=$(openssl x509 -in {{ vagrant_etcd_client_certificate | quote }} -pubkey -noout |
+          openssl pkey -pubin -outform DER | sha256sum | cut -d' ' -f1);
+        peer=$(openssl x509 -in {{ vagrant_etcd_peer_certificate | quote }} -pubkey -noout |
+          openssl pkey -pubin -outform DER | sha256sum | cut -d' ' -f1);
+         printf '%s:%s:%s\n' "$(openssl x509 -in {{ vagrant_etcd_ca_certificate | quote }} -outform DER | sha256sum | cut -d' ' -f1)" "$client" "$peer"
+      loop: "{{ groups['all'] }}"
+      loop_control: {loop_var: vagrant_guest}
+      delegate_to: "{{ vagrant_guest }}"
+      changed_when: false
+      register: vagrant_leaf_fingerprints
+      no_log: true
+      diff: false
+      # noqa command-instead-of-shell
+
+    - name: "Assert one shared CA and distinct per-guest leaf identities"
+      ansible.builtin.assert:
+        that:
+          - (vagrant_leaf_fingerprints.results | map(attribute='stdout_lines') | map('first') | map('split', ':') | map('first') | unique | list | length) == 1
+          - (vagrant_leaf_fingerprints.results | map(attribute='stdout_lines') | map('first') | map('split', ':') | map('nth', 1) | unique | list | length) == groups['all'] | length
+          - (vagrant_leaf_fingerprints.results | map(attribute='stdout_lines') | map('first') | map('split', ':') | map('nth', 2) | unique | list | length) == groups['all'] | length
+          - (vagrant_leaf_fingerprints.results | map(attribute='stdout_lines') | map('first') | map('split', ':') | map('nth', 1) | list | intersect(vagrant_leaf_fingerprints.results | map(attribute='stdout_lines') | map('first') | map('split', ':') | map('nth', 2) | list) | length) == 0
+        fail_msg: "The shared CA, per-guest client identities, or client/peer separation contract is broken"
+      no_log: true
+      diff: false
+
+    - name: "Verify CA chain and X.509 CA constraints structurally"
+      ansible.builtin.shell: >-
+        set -euo pipefail;
+        ca={{ vagrant_etcd_ca_certificate | quote }};
+        openssl verify -CAfile "$ca" -x509_strict "$ca";
+        text=$(openssl x509 -in "$ca" -noout -ext basicConstraints -ext keyUsage);
+        [[ "$text" =~ X509v3\.Basic\ Constraints:[[:space:]]critical ]] && [[ "$text" =~ CA:TRUE ]]
+        && [[ "$text" =~ pathlen:1 ]];
+        [[ "$text" =~ X509v3\.Key\ Usage:[[:space:]]critical ]] && [[ "$text" =~ Certificate[[:space:]]Sign ]]
+        && [[ "$text" =~ CRL[[:space:]]Sign ]];
+        openssl x509 -in "$ca" -noout -checkend 0
+      loop: "{{ groups['all'] }}"
+      loop_control: {loop_var: vagrant_guest}
+      delegate_to: "{{ vagrant_guest }}"
+      changed_when: false
+      no_log: true
+      diff: false
+
+    - name: "Verify client and peer chains, critical extensions, SANs, and purposes"
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        ca={{ vagrant_etcd_ca_certificate | quote }};
+        client={{ vagrant_etcd_client_certificate | quote }};
+        peer={{ vagrant_etcd_peer_certificate | quote }};
+        for cert in "$client" "$peer"; do
+          openssl verify -CAfile "$ca" -x509_strict "$cert";
+          openssl x509 -in "$cert" -noout -checkend 0;
+          text=$(openssl x509 -in "$cert" -noout -ext basicConstraints -ext keyUsage -ext extendedKeyUsage -ext subjectAltName);
+          [[ "$text" =~ X509v3\.Basic\ Constraints:[[:space:]]critical ]] && [[ "$text" =~ CA:FALSE ]];
+          [[ "$text" =~ X509v3\.Key\ Usage:[[:space:]]critical ]] && [[ "$text" =~ Digital[[:space:]]Signature ]];
+          [[ "$text" =~ X509v3\.Extended\ Key\ Usage:[[:space:]]critical ]];
+          openssl verify -CAfile "$ca" -x509_strict -verify_ip "{{ vagrant_patroni_private_addresses[vagrant_guest] }}" "$cert";
+        done
+        openssl verify -CAfile "$ca" -purpose sslclient -x509_strict "$client";
+        openssl verify -CAfile "$ca" -purpose sslserver -x509_strict "$peer";
+        client_text=$(openssl x509 -in "$client" -noout -ext extendedKeyUsage);
+        peer_text=$(openssl x509 -in "$peer" -noout -ext extendedKeyUsage);
+        [[ "$client_text" =~ TLS[[:space:]]Web[[:space:]]Client[[:space:]]Authentication ]];
+        [[ "$peer_text" =~ TLS[[:space:]]Web[[:space:]]Server[[:space:]]Authentication ]];
+      loop: "{{ groups['all'] }}"
+      loop_control: {loop_var: vagrant_guest}
+      delegate_to: "{{ vagrant_guest }}"
+      changed_when: false
+      no_log: true
+      diff: false
+      # noqa command-instead-of-shell
+
+    - name: "Check CA and peer certificate metadata"
+      ansible.builtin.stat:
+        path: "{{ vagrant_cert_metadata.1.path }}"
+        follow: false
+      loop: "{{ groups['all'] | product([
+        {'path': '/etc/etcd/pki/ca.crt', 'group': 'tlsreaders'},
+        {'path': '/etc/etcd/pki/etcd-peer.crt', 'group': 'etcd'},
+        {'path': '/etc/etcd/pki/etcd-peer.key', 'group': 'etcd'}]) | list }}"  # noqa jinja[spacing]
+      loop_control: {loop_var: vagrant_cert_metadata}
+      delegate_to: "{{ vagrant_cert_metadata.0 }}"
+      register: vagrant_cert_metadata_stats
+      changed_when: false
+
+    - name: "Assert CA and peer certificate metadata"
+      ansible.builtin.assert:
+        that:
+          - vagrant_cert_metadata_stat.stat.exists
+          - vagrant_cert_metadata_stat.stat.isreg
+          - not vagrant_cert_metadata_stat.stat.islnk
+          - vagrant_cert_metadata_stat.stat.mode == "0640"
+          - vagrant_cert_metadata_stat.stat.pw_name == "root"
+          - vagrant_cert_metadata_stat.stat.gr_name == vagrant_cert_metadata_stat.vagrant_cert_metadata.1.group
+      loop: "{{ vagrant_cert_metadata_stats.results }}"
+      loop_control: {loop_var: vagrant_cert_metadata_stat}
+
+    - name: "Reject transaction, staging, rollback, and recovery artifacts"
+      ansible.builtin.find:
+        paths:
+          - "/etc/etcd/pki"
+          - "/tmp"
+        patterns:
+          - ".client-*"
+          - "etcd-client-pki-*"
+        file_type: any
+        hidden: true
+        recurse: false
+      loop: "{{ groups['all'] }}"
+      loop_control: {loop_var: vagrant_guest}
+      delegate_to: "{{ vagrant_guest }}"
+      register: vagrant_transaction_artifacts
+
+    - name: "Assert no client transaction artifacts remain"
+      ansible.builtin.assert:
+        that: vagrant_transaction_artifact.files | length == 0
+        fail_msg: "Incomplete or unexpected client transaction artifacts remain"
+      loop: "{{ vagrant_transaction_artifacts.results }}"
+      loop_control: {loop_var: vagrant_transaction_artifact}
+
+    - name: "Check etcd PKI parent metadata on every guest"
+      ansible.builtin.stat:
+        path: /etc/etcd/pki
+        follow: false
+      loop: "{{ groups['all'] }}"
+      loop_control: {loop_var: vagrant_guest}
+      delegate_to: "{{ vagrant_guest }}"
+      register: vagrant_pki_parent_stats
+
+    - name: "Assert etcd PKI parent metadata is secure"
+      ansible.builtin.assert:
+        that:
+          - vagrant_pki_parent_stat.stat.exists
+          - vagrant_pki_parent_stat.stat.isdir
+          - not vagrant_pki_parent_stat.stat.islnk
+          - vagrant_pki_parent_stat.stat.mode == "0750"
+          - vagrant_pki_parent_stat.stat.pw_name == "root"
+          - vagrant_pki_parent_stat.stat.gr_name == "tlsreaders"
+      loop: "{{ vagrant_pki_parent_stats.results }}"
+      loop_control: {loop_var: vagrant_pki_parent_stat}
+
     - name: "Check effective PostgreSQL access to the etcd key"
-      ansible.builtin.command: runuser -u postgres -- test -r /etc/etcd/pki/etcd.key
+      ansible.builtin.command: runuser -u postgres -- test -r /etc/etcd/pki/client/etcd-client.key
       loop: "{{ groups['all'] }}"
       loop_control: {loop_var: vagrant_guest}
       delegate_to: "{{ vagrant_guest }}"
       changed_when: false
 
+    - name: "Check Patroni cannot read the etcd peer private key"
+      ansible.builtin.command: runuser -u postgres -- test -r /etc/etcd/pki/etcd-peer.key
+      loop: "{{ groups['all'] }}"
+      loop_control: {loop_var: vagrant_guest}
+      delegate_to: "{{ vagrant_guest }}"
+      register: vagrant_peer_key_access
+      changed_when: false
+      failed_when: false
+
+    - name: "Assert Patroni cannot read the etcd peer private key"
+      ansible.builtin.assert:
+        that:
+          - vagrant_peer_key_result.rc != 0
+      loop: "{{ vagrant_peer_key_access.results }}"
+      loop_control: {loop_var: vagrant_peer_key_result}
+
     - name: "Read Patroni from every possible observer"
       ansible.builtin.uri:
-        url: "http://{{ vagrant_patroni_private_addresses[item] }}:8008/cluster"
+        url: "https://{{ vagrant_patroni_private_addresses[item] }}:8008/cluster"
+        ca_path: /etc/patroni/pki/ca.crt
         url_username: "{{ vagrant_patroni_restapi_username }}"
         url_password: "{{ vagrant_patroni_restapi_password }}"
         force_basic_auth: true
@@ -77,6 +609,8 @@
       loop: "{{ groups['all'] }}"
       register: vagrant_observations
       failed_when: false
+      no_log: true
+      diff: false
 
     - name: "Select a reachable observer different from the current leader"
       ansible.builtin.set_fact:
@@ -92,6 +626,36 @@
           {{ (vagrant_observations.results | selectattr('status', 'defined') |
           selectattr('status', 'equalto', 200) | rejectattr('item', 'equalto',
           vagrant_failed_leader) | list | first).item }}
+
+    - name: "Assert complete normalized Patroni membership before failover"
+      ansible.builtin.assert:
+        that:
+          - vagrant_before.json.members | map(attribute='host') | map('lower') | list | length == vagrant_expected_member_identities | length
+          - (vagrant_before.json.members | map(attribute='host') | map('lower') | list | unique | length) == vagrant_expected_member_identities | length
+          - (vagrant_before.json.members | map(attribute='host') | map('lower') | list | difference(vagrant_expected_member_identities) | length) == 0
+          - (vagrant_expected_member_identities | difference(vagrant_before.json.members | map(attribute='host') | map('lower') | list) | length) == 0
+        fail_msg: "Patroni membership before failover is not exactly the scenario guest set"
+
+    - name: "Read normalized etcd membership before failover"
+      ansible.builtin.command: >-
+        etcdctl --endpoints=https://pg01:2379,https://pg02:2379,https://pg03:2379
+        --cacert={{ vagrant_etcd_ca_certificate }} --cert={{ vagrant_etcd_client_certificate }}
+        --key={{ vagrant_etcd_client_key }} member list -w json
+      delegate_to: "{{ vagrant_observer }}"
+      environment: {ETCDCTL_API: "3"}
+      register: vagrant_etcd_members_before
+      changed_when: false
+      no_log: true
+      diff: false
+
+    - name: "Assert complete normalized etcd membership before failover"
+      ansible.builtin.assert:
+        that:
+          - (vagrant_etcd_members_before.stdout | from_json).members | map(attribute='name') | map('lower') | list | length == vagrant_expected_member_identities | length
+          - ((vagrant_etcd_members_before.stdout | from_json).members | map(attribute='name') | map('lower') | list | unique | length) == vagrant_expected_member_identities | length
+          - (((vagrant_etcd_members_before.stdout | from_json).members | map(attribute='name') | map('lower') | list) | difference(vagrant_expected_member_identities) | length) == 0
+          - (vagrant_expected_member_identities | difference((vagrant_etcd_members_before.stdout | from_json).members | map(attribute='name') | map('lower') | list) | length) == 0
+        fail_msg: "etcd membership before failover is not exactly the scenario guest set"
 
     - name: "Write continuity data before failure"
       ansible.builtin.command: >-
@@ -111,13 +675,16 @@
 
         - name: "Wait for exactly one leader and two replicas"
           ansible.builtin.uri:
-            url: "http://{{ vagrant_patroni_private_addresses[vagrant_observer] }}:8008/cluster"
+            url: "https://{{ vagrant_patroni_private_addresses[vagrant_observer] }}:8008/cluster"
+            ca_path: /etc/patroni/pki/ca.crt
             url_username: "{{ vagrant_patroni_restapi_username }}"
             url_password: "{{ vagrant_patroni_restapi_password }}"
             force_basic_auth: true
             return_content: true
           delegate_to: "{{ vagrant_observer }}"
           register: vagrant_after
+          no_log: true
+          diff: false
           retries: 60
           delay: 2
           until:
@@ -156,13 +723,16 @@
 
     - name: "Wait for old primary to rejoin as a replica"
       ansible.builtin.uri:
-        url: "http://{{ vagrant_patroni_private_addresses[vagrant_observer] }}:8008/cluster"
+        url: "https://{{ vagrant_patroni_private_addresses[vagrant_observer] }}:8008/cluster"
+        ca_path: /etc/patroni/pki/ca.crt
         url_username: "{{ vagrant_patroni_restapi_username }}"
         url_password: "{{ vagrant_patroni_restapi_password }}"
         force_basic_auth: true
         return_content: true
       delegate_to: "{{ vagrant_observer }}"
       register: vagrant_rejoined
+      no_log: true
+      diff: false
       retries: 90
       delay: 2
       until:
@@ -171,6 +741,36 @@
         - vagrant_rejoined.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
         - vagrant_rejoined.json.members | selectattr('role', 'equalto', 'replica') | list | length == 2
         - vagrant_rejoined.json.members | selectattr('host', 'equalto', vagrant_failed_leader) | selectattr('role', 'equalto', 'replica') | list | length == 1
+
+    - name: "Assert complete normalized Patroni membership after rejoin"
+      ansible.builtin.assert:
+        that:
+          - vagrant_rejoined.json.members | map(attribute='host') | map('lower') | list | length == vagrant_expected_member_identities | length
+          - (vagrant_rejoined.json.members | map(attribute='host') | map('lower') | list | unique | length) == vagrant_expected_member_identities | length
+          - (vagrant_rejoined.json.members | map(attribute='host') | map('lower') | list | difference(vagrant_expected_member_identities) | length) == 0
+          - (vagrant_expected_member_identities | difference(vagrant_rejoined.json.members | map(attribute='host') | map('lower') | list) | length) == 0
+        fail_msg: "Patroni membership after rejoin is not exactly the scenario guest set"
+
+    - name: "Read normalized etcd membership after rejoin"
+      ansible.builtin.command: >-
+        etcdctl --endpoints=https://pg01:2379,https://pg02:2379,https://pg03:2379
+        --cacert={{ vagrant_etcd_ca_certificate }} --cert={{ vagrant_etcd_client_certificate }}
+        --key={{ vagrant_etcd_client_key }} member list -w json
+      delegate_to: "{{ vagrant_observer }}"
+      environment: {ETCDCTL_API: "3"}
+      register: vagrant_etcd_members_after
+      changed_when: false
+      no_log: true
+      diff: false
+
+    - name: "Assert complete normalized etcd membership after rejoin"
+      ansible.builtin.assert:
+        that:
+          - (vagrant_etcd_members_after.stdout | from_json).members | map(attribute='name') | map('lower') | list | length == vagrant_expected_member_identities | length
+          - ((vagrant_etcd_members_after.stdout | from_json).members | map(attribute='name') | map('lower') | list | unique | length) == vagrant_expected_member_identities | length
+          - (((vagrant_etcd_members_after.stdout | from_json).members | map(attribute='name') | map('lower') | list) | difference(vagrant_expected_member_identities) | length) == 0
+          - (vagrant_expected_member_identities | difference((vagrant_etcd_members_after.stdout | from_json).members | map(attribute='name') | map('lower') | list) | length) == 0
+        fail_msg: "etcd membership after rejoin is not exactly the scenario guest set"
 
     - name: "Verify the failover marker on the rejoined old primary"
       ansible.builtin.command: >-

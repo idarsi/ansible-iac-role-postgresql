@@ -5,58 +5,610 @@
 #
 ###############################################################################
 
+- name: "Normalizing PostgreSQL cluster record"
+  ansible.builtin.set_fact:
+    pg_validation_cluster_record: "{{ pg_validation_cluster_input | combine({}, recursive=true) }}"
+
 - name: "Checking PostgreSQL cluster record"
   ansible.builtin.assert:
     that:
       - pg_validation_cluster_record | type_debug == 'dict'
+    fail_msg: >-
+      PostgreSQL cluster record must be a mapping; malformed cluster records
+      cannot be validated
+
+- name: "Checking PostgreSQL cluster record shape"
+  ansible.builtin.assert:
+    that:
       - pg_validation_cluster_record.name is defined
-      - pg_validation_cluster_record.name | string | length > 0
+      - pg_validation_cluster_record.name is string
+      - pg_validation_cluster_record.name is match('^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$')
       - pg_validation_cluster_record.provider is defined
+      - pg_validation_cluster_record.provider is string
       - pg_validation_cluster_record.provider in ['standalone', 'streaming_replication', 'patroni']
       - pg_validation_cluster_record.members is defined
       - pg_validation_cluster_record.members | type_debug == 'list'
       - pg_validation_cluster_record.members | length > 0
     fail_msg: >-
-      PostgreSQL cluster must define a name, a supported provider, and at least
-      one member
+      PostgreSQL cluster name must be a 1-63 character ASCII identifier
+      (letters, digits, underscore, or hyphen; no dots, slashes, traversal, or
+      control characters), and the cluster must define a supported provider and
+      at least one member
 
-- name: "Checking Patroni cluster configuration"
+- name: "Normalizing Patroni TLS field aliases"
+  ansible.builtin.assert:
+    that:
+      - >-
+        pg_validation_cluster_record.patroni.restapi.ca_file is not defined
+        or pg_validation_cluster_record.patroni.restapi.cafile is not defined
+        or pg_validation_cluster_record.patroni.restapi.ca_file == pg_validation_cluster_record.patroni.restapi.cafile
+      - >-
+        pg_validation_cluster_record.patroni.restapi.cert_file is not defined
+        or pg_validation_cluster_record.patroni.restapi.certfile is not defined
+        or pg_validation_cluster_record.patroni.restapi.cert_file == pg_validation_cluster_record.patroni.restapi.certfile
+      - >-
+        pg_validation_cluster_record.patroni.restapi.key_file is not defined
+        or pg_validation_cluster_record.patroni.restapi.keyfile is not defined
+        or pg_validation_cluster_record.patroni.restapi.key_file == pg_validation_cluster_record.patroni.restapi.keyfile
+    fail_msg: "Patroni TLS aliases must not conflict with cafile, certfile, or keyfile"
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.restapi is defined
+
+- name: "Publishing canonical Patroni TLS fields for inventory validation"
+  ansible.builtin.set_fact:
+    pg_validation_cluster_record: >-
+      {{ pg_validation_cluster_record | combine({
+        'patroni': pg_validation_cluster_record.patroni | combine({
+          'restapi': pg_validation_cluster_record.patroni.restapi | combine({
+            'cafile': pg_validation_cluster_record.patroni.restapi.cafile
+              | default(pg_validation_cluster_record.patroni.restapi.ca_file)
+          } if (pg_validation_cluster_record.patroni.restapi.cafile is defined or pg_validation_cluster_record.patroni.restapi.ca_file is defined) else {})
+          | combine({
+            'certfile': pg_validation_cluster_record.patroni.restapi.certfile
+              | default(pg_validation_cluster_record.patroni.restapi.cert_file)
+          } if (pg_validation_cluster_record.patroni.restapi.certfile is defined
+                or pg_validation_cluster_record.patroni.restapi.cert_file is defined) else {})
+          | combine({
+            'keyfile': pg_validation_cluster_record.patroni.restapi.keyfile
+              | default(pg_validation_cluster_record.patroni.restapi.key_file)
+          } if (pg_validation_cluster_record.patroni.restapi.keyfile is defined
+                or pg_validation_cluster_record.patroni.restapi.key_file is defined) else {}, recursive=true)
+        }, recursive=true)
+      }, recursive=true) }}
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.restapi is defined
+
+- name: "Checking Patroni DCS mapping"
   ansible.builtin.assert:
     that:
       - pg_validation_cluster_record.dcs is defined
       - pg_validation_cluster_record.dcs | type_debug == 'dict'
+    fail_msg: >-
+      Patroni cluster {{ pg_validation_cluster_record.name }} requires dcs to
+      be a non-empty mapping containing provider and endpoints
+  when: pg_validation_cluster_record.provider == 'patroni'
+
+- name: "Checking Patroni DCS configuration"
+  ansible.builtin.assert:
+    that:
       - pg_validation_cluster_record.dcs.provider is defined
+      - pg_validation_cluster_record.dcs.provider is string
       - pg_validation_cluster_record.dcs.provider in ['etcd3', 'consul', 'kubernetes']
       - pg_validation_cluster_record.dcs.endpoints is defined
       - pg_validation_cluster_record.dcs.endpoints | type_debug == 'list'
       - pg_validation_cluster_record.dcs.endpoints | length > 0
+    fail_msg: >-
+      Patroni cluster {{ pg_validation_cluster_record.name }} dcs must define
+      a supported string provider and a non-empty endpoints list
+  when: pg_validation_cluster_record.provider == 'patroni'
+
+- name: "Normalizing optional Patroni etcd mapping for safe validation"
+  ansible.builtin.set_fact:
+    pg_validation_cluster_dcs_etcd: >-
+      {{ (pg_validation_cluster_record.dcs | default({})).etcd | default({}) }}
+
+- name: "Resetting managed etcd validation records for this cluster"
+  ansible.builtin.set_fact:
+    pg_validation_etcd_members: >-
+      {{ pg_validation_cluster_dcs_etcd.members | default([])
+         if pg_validation_cluster_dcs_etcd is mapping else [] }}
+    pg_validation_etcd_members_normalized: []
+  when: pg_validation_cluster_record.provider == 'patroni'
+
+- name: "Checking optional Patroni etcd mapping and native types"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_cluster_dcs_etcd is mapping
+      - pg_validation_cluster_dcs_etcd.enabled is not defined or pg_validation_cluster_dcs_etcd.enabled is boolean
+      - pg_validation_cluster_dcs_etcd.members is not defined or pg_validation_cluster_dcs_etcd.members | type_debug == 'list'
+    fail_msg: >-
+      Patroni dcs.etcd, when present, must be a mapping; enabled must be a
+      native YAML boolean and members must be a list
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+
+- name: "Checking enabled managed etcd members are present and non-empty"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_cluster_dcs_etcd.members is defined
+      - pg_validation_cluster_dcs_etcd.members | type_debug == 'list'
+      - pg_validation_cluster_dcs_etcd.members | length > 0
+    fail_msg: >-
+      Enabled managed etcd cluster {{ pg_validation_cluster_record.name }} must
+      define a non-empty dcs.etcd.members list; add at least one member mapping
+      with name, host, peer_url, and client_url
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_dcs_etcd is mapping
+    - pg_validation_cluster_dcs_etcd.enabled | default(false) | bool
+
+- name: "Checking Patroni etcd member record types"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_etcd_member_record | type_debug == 'dict'
+    fail_msg: "Patroni dcs.etcd.members records must be mappings even when disabled"
+  loop: "{{ pg_validation_cluster_dcs_etcd.members | default([]) }}"
+  loop_control:
+    loop_var: pg_validation_etcd_member_record
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_dcs_etcd is mapping
+    - pg_validation_cluster_dcs_etcd.members is defined
+    - pg_validation_cluster_dcs_etcd.members | type_debug == 'list'
+
+- name: "Checking Patroni mapping"
+  ansible.builtin.assert:
+    that:
       - pg_validation_cluster_record.patroni is defined
       - pg_validation_cluster_record.patroni | type_debug == 'dict'
+    fail_msg: >-
+      Patroni cluster {{ pg_validation_cluster_record.name }} requires patroni
+      to be a non-empty mapping
+  when: pg_validation_cluster_record.provider == 'patroni'
+
+- name: "Checking Patroni REST API mapping"
+  ansible.builtin.assert:
+    that:
       - pg_validation_cluster_record.patroni.restapi is defined
       - pg_validation_cluster_record.patroni.restapi | type_debug == 'dict'
+    fail_msg: >-
+      Patroni cluster {{ pg_validation_cluster_record.name }} requires
+      patroni.restapi to be a non-empty mapping
+  when: pg_validation_cluster_record.provider == 'patroni'
+
+- name: "Checking Patroni REST API authentication mapping"
+  ansible.builtin.assert:
+    that:
       - pg_validation_cluster_record.patroni.restapi.authentication is defined
       - pg_validation_cluster_record.patroni.restapi.authentication | type_debug == 'dict'
-      - pg_validation_cluster_record.patroni.restapi.authentication.username is defined
-      - pg_validation_cluster_record.patroni.restapi.authentication.username | string | length > 0
-      - pg_validation_cluster_record.patroni.restapi.authentication.password is defined
-      - pg_validation_cluster_record.patroni.restapi.authentication.password | string | length > 0
     fail_msg: >-
-      Patroni clusters require a DCS provider, a list of DCS endpoints, a
-      Patroni configuration object, and REST API authentication credentials
+      Patroni cluster {{ pg_validation_cluster_record.name }} requires
+      restapi.authentication to be a non-empty mapping
   when: pg_validation_cluster_record.provider == 'patroni'
+
+- name: "Checking Patroni cluster configuration"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_cluster_record.patroni.restapi.authentication.username is defined
+      - pg_validation_cluster_record.patroni.restapi.authentication.username is string
+      - pg_validation_cluster_record.patroni.restapi.authentication.password is defined
+      - pg_validation_cluster_record.patroni.restapi.authentication.password is string
+    fail_msg: >-
+      Patroni REST API authentication username and password must both be
+      native strings
+  when: pg_validation_cluster_record.provider == 'patroni'
+
+- name: "Checking Patroni REST API authentication credential values"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_cluster_record.patroni.restapi.authentication.username | trim | length > 0
+      - pg_validation_cluster_record.patroni.restapi.authentication.username is not search('[\x00-\x1f\x7f]')
+      - pg_validation_cluster_record.patroni.restapi.authentication.password | trim | length > 0
+      - pg_validation_cluster_record.patroni.restapi.authentication.password is not search('[\x00-\x1f\x7f]')
+    fail_msg: >-
+      Patroni REST API authentication username and password must be non-empty
+      strings without control characters
+  when: pg_validation_cluster_record.provider == 'patroni'
+
+- name: "Checking cluster member record types"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_member | type_debug == 'dict'
+    fail_msg: >-
+      Cluster {{ pg_validation_cluster_record.name | default('<unnamed>') }}
+      members must be mappings; malformed member records cannot be validated
+      as inventory identities
+  loop: "{{ pg_validation_cluster_record.members }}"
+  loop_control:
+    loop_var: pg_validation_member
+
+- name: "Checking required PostgreSQL cluster member fields"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_member.host is defined
+      - pg_validation_member.host is string
+      - pg_validation_member.host | length > 0
+      - pg_validation_member.instance is defined
+      - pg_validation_member.instance is string
+      - pg_validation_member.instance | length > 0
+      - pg_validation_member.name is defined
+      - pg_validation_member.name is string
+      - pg_validation_member.name | length > 0
+    fail_msg: >-
+      Cluster {{ pg_validation_cluster_record.name }} members must define
+      non-empty string host, instance, and name fields
+  loop: "{{ pg_validation_cluster_record.members }}"
+  loop_control:
+    loop_var: pg_validation_member
+
+- name: "Checking cluster member host syntax"
+  ansible.builtin.assert:
+    that:
+      - >-
+        pg_validation_member.host is ansible.utils.ip_address
+        or (
+          pg_validation_member.host is match('^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$')
+          and pg_validation_member.host is not match('^[0-9.]+$')
+        )
+    fail_msg: "Cluster member host {{ pg_validation_member.host }} must be a valid inventory host name or IP address"
+  loop: "{{ pg_validation_cluster_record.members }}"
+  loop_control:
+    loop_var: pg_validation_member
+
+- name: "Checking cluster member inventory identities"
+  ansible.builtin.assert:
+    that:
+      - hostvars[pg_validation_member.host] is defined
+    fail_msg: >-
+      Cluster {{ pg_validation_cluster_record.name }} member host
+      {{ pg_validation_member.host | default('<missing>') }} is not an inventory
+      host. Use the inventory name, or define an explicit host mapping; endpoint
+      addresses cannot be used as delegate_to identities.
+  loop: "{{ pg_validation_cluster_record.members }}"
+  loop_control:
+    loop_var: pg_validation_member
+
+- name: "Validating DCS endpoints"
+  ansible.builtin.include_tasks: validate_dcs_endpoints.yml
+  when: pg_validation_cluster_record.provider == 'patroni'
+
+- name: "Checking cluster security profile field types and values"
+  ansible.builtin.assert:
+    that:
+      - >-
+        pg_validation_cluster_security_profile_record.security_profile is not defined
+        or pg_validation_cluster_security_profile_record.security_profile is string
+      - >-
+        pg_validation_cluster_security_profile_record.security_profile is not defined
+        or pg_validation_cluster_security_profile_record.security_profile in ['safe', 'off']
+      - >-
+        pg_validation_cluster_security_profile_record.security_ssl is not defined
+        or pg_validation_cluster_security_profile_record.security_ssl is string
+      - >-
+        pg_validation_cluster_security_profile_record.security_ssl is not defined
+        or pg_validation_cluster_security_profile_record.security_ssl in ['safe', 'off']
+    fail_msg: >-
+      Cluster security_profile and security_ssl must be strings with values
+      safe or off
+  loop: >-
+    {{ pg_validation_version_instances | selectattr('cluster', 'defined')
+       | selectattr('cluster', 'equalto', pg_validation_cluster_record.name)
+       | list }}
+  loop_control:
+    loop_var: pg_validation_cluster_security_profile_record
+
+- name: "Checking Patroni security profile consistency"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_security_profile in ['safe', 'off']
+      - pg_validation_cluster_security_profiles | unique | length <= 1
+    fail_msg: >-
+      Patroni cluster {{ pg_validation_cluster_record.name }} must have one
+      effective security_profile (safe or off); mixed instance profiles are
+      ambiguous, and instance-less clusters use
+      pg_patroni_default_security_profile
+  when: pg_validation_cluster_record.provider == 'patroni'
+
+- name: "Checking cluster security SSL consistency"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_security_ssl in ['safe', 'off']
+      - pg_validation_cluster_security_ssls | unique | length <= 1
+    fail_msg: >-
+      PostgreSQL cluster {{ pg_validation_cluster_record.name }} must have one
+      effective security_ssl value (safe or off); mixed instance SSL settings
+      are ambiguous, and instance-less clusters use the effective security
+      profile
+
+- name: "Rejecting an insecure safe profile and SSL combination"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_security_profile != 'safe' or pg_validation_security_ssl != 'off'
+    fail_msg: >-
+      PostgreSQL cluster {{ pg_validation_cluster_record.name }} has the unsafe
+      combination security_profile: safe with security_ssl: off. Set
+      security_ssl: safe to keep the safe profile's hostssl and certificate
+      requirements, or explicitly use security_profile: off when the less
+      restrictive off profile is intentional and documented.
+
+- name: "Checking Patroni REST API endpoint input types"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_cluster_record.patroni.restapi.listen is not defined or pg_validation_cluster_record.patroni.restapi.listen is string
+      - pg_validation_cluster_record.patroni.restapi.connect_address is not defined or pg_validation_cluster_record.patroni.restapi.connect_address is string
+      - pg_validation_cluster_record.patroni.restapi.port is not defined or pg_validation_cluster_record.patroni.restapi.port is integer
+    fail_msg: >-
+      Patroni REST API listen and connect_address must be strings, and port must
+      be an integer when provided
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.restapi is defined
+
+- name: "Checking Patroni REST API fallback endpoint values"
+  ansible.builtin.assert:
+    that:
+      - pg_patroni_restapi_port is integer
+      - pg_patroni_restapi_port > 0
+      - pg_patroni_restapi_port < 65536
+      - pg_patroni_restapi_endpoint_fallback_address is not defined
+        or pg_patroni_restapi_endpoint_fallback_address is string
+      - pg_patroni_restapi_endpoint_fallback_address is not defined
+        or pg_patroni_restapi_endpoint_fallback_address | trim | length > 0
+      - pg_patroni_restapi_endpoint_fallback_address is not defined
+        or pg_patroni_restapi_endpoint_fallback_address is not search('[\x00-\x1f\x7f]')
+      - >-
+        pg_patroni_restapi_endpoint_fallback_address is not defined
+        or pg_patroni_restapi_endpoint_fallback_address is ansible.utils.ip_address
+        or pg_patroni_restapi_endpoint_fallback_address is match(
+          '^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.'
+          ~ '[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$')
+      - pg_patroni_restapi_listen_address is string
+      - pg_patroni_restapi_listen_address | trim | length > 0
+      - pg_patroni_restapi_listen_address is not search('[\x00-\x1f\x7f]')
+    fail_msg: >-
+      Patroni REST API fallback port must be an integer from 1 through 65535
+      and fallback endpoint address must be a non-empty host string without
+      control characters
+  when: pg_validation_cluster_record.provider == 'patroni'
+
+- name: "Checking Patroni REST API effective port override"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_cluster_record.patroni.restapi.port is not defined
+        or pg_validation_cluster_record.patroni.restapi.port is integer
+      - pg_validation_cluster_record.patroni.restapi.port is not defined
+        or pg_validation_cluster_record.patroni.restapi.port > 0
+      - pg_validation_cluster_record.patroni.restapi.port is not defined
+        or pg_validation_cluster_record.patroni.restapi.port < 65536
+    fail_msg: >-
+      Patroni REST API restapi.port must be an integer from 1 through 65535;
+      invalid overrides are rejected without normalization
+  when: pg_validation_cluster_record.provider == 'patroni'
+
+- name: "Checking Patroni REST API verify_client value"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_cluster_record.patroni.restapi.verify_client is not defined
+        or pg_validation_cluster_record.patroni.restapi.verify_client is string
+      - pg_validation_cluster_record.patroni.restapi.verify_client is not defined
+        or pg_validation_cluster_record.patroni.restapi.verify_client in ['none', 'optional', 'required']
+    fail_msg: >-
+      Patroni REST API verify_client must be a string with value none,
+      optional, or required, regardless of whether REST API TLS is enabled
+  when: pg_validation_cluster_record.provider == 'patroni'
+
+- name: "Constructing Patroni REST API listen fallback"
+  ansible.builtin.include_tasks: ../host_port.yml
+  vars:
+    pg_host_port_host: "{{ pg_patroni_restapi_listen_address }}"
+    pg_host_port_port: "{{ pg_validation_cluster_record.patroni.restapi.port | default(pg_patroni_restapi_port) }}"
+    pg_host_port_result_fact: "pg_patroni_validation_listen_fallback"
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.restapi is defined
+
+- name: "Constructing Patroni REST API connect fallback"
+  ansible.builtin.include_tasks: ../host_port.yml
+  vars:
+    pg_host_port_host: "{{ pg_patroni_restapi_endpoint_fallback_address | default(pg_validation_cluster_record.members[0].host) }}"
+    pg_host_port_port: "{{ pg_validation_cluster_record.patroni.restapi.port | default(pg_patroni_restapi_port) }}"
+    pg_host_port_result_fact: "pg_patroni_validation_connect_fallback"
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.restapi is defined
+
+- name: "Normalizing effective Patroni REST API endpoints"
+  ansible.builtin.set_fact:
+    pg_patroni_restapi_port_value: "{{ pg_validation_cluster_record.patroni.restapi.port | default(pg_patroni_restapi_port) }}"
+    pg_patroni_restapi_listen_value: >-
+      {{ pg_validation_cluster_record.patroni.restapi.listen
+         | default(
+             (
+                pg_patroni_validation_listen_fallback
+             )
+           )
+         | string }}
+    pg_patroni_restapi_connect_value: >-
+      {{ pg_validation_cluster_record.patroni.restapi.connect_address
+         | default(pg_patroni_validation_connect_fallback) | string }}
+    pg_patroni_restapi_tls_enabled: >-
+      {{ pg_validation_cluster_record.patroni.restapi.enabled | default(false) | bool
+         or pg_validation_cluster_record.patroni.restapi.auto_generate | default(false) | bool
+         or pg_validation_cluster_record.patroni.restapi.cafile is defined
+         or pg_validation_cluster_record.patroni.restapi.certfile is defined
+         or pg_validation_cluster_record.patroni.restapi.keyfile is defined }}
+    pg_patroni_explicit_tls_path_count: >-
+      {{ [
+           pg_validation_cluster_record.patroni.restapi.cafile,
+           pg_validation_cluster_record.patroni.restapi.certfile,
+           pg_validation_cluster_record.patroni.restapi.keyfile
+         ] | select('defined') | list | length }}
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.restapi is defined
+
+- name: "Normalizing explicit Patroni REST API fallback endpoint"
+  ansible.builtin.include_tasks: ../endpoint_normalize.yml
+  vars:
+    pg_endpoint_normalize_input: "{{ pg_patroni_validation_connect_fallback }}"
+    pg_endpoint_normalize_result_fact: "pg_patroni_explicit_fallback_model"
+    pg_endpoint_normalize_default_scheme: "{{ 'https' if pg_patroni_restapi_tls_enabled | bool else 'http' }}"
+    pg_endpoint_normalize_label: "Patroni REST API fallback"
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.restapi is defined
+    - pg_patroni_restapi_endpoint_fallback_address is defined
+
+- name: "Normalizing Patroni REST API listen endpoint"
+  ansible.builtin.include_tasks: ../endpoint_normalize.yml
+  vars:
+    pg_endpoint_normalize_input: "{{ pg_patroni_restapi_listen_value }}"
+    pg_endpoint_normalize_result_fact: "pg_patroni_restapi_listen_model"
+    pg_endpoint_normalize_default_scheme: "{{ 'https' if pg_patroni_restapi_tls_enabled | bool else 'http' }}"
+    pg_endpoint_normalize_label: "Patroni REST API listen"
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.restapi is defined
+
+- name: "Normalizing Patroni REST API connect endpoint"
+  ansible.builtin.include_tasks: ../endpoint_normalize.yml
+  vars:
+    pg_endpoint_normalize_input: "{{ pg_patroni_restapi_connect_value }}"
+    pg_endpoint_normalize_result_fact: "pg_patroni_restapi_connect_model"
+    pg_endpoint_normalize_default_scheme: "{{ 'https' if pg_patroni_restapi_tls_enabled | bool else 'http' }}"
+    pg_endpoint_normalize_label: "Patroni REST API connect_address"
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.restapi is defined
+
+- name: "Publishing normalized Patroni REST API endpoint components"
+  ansible.builtin.set_fact:
+    pg_patroni_restapi_listen_host: >-
+      {{ pg_patroni_restapi_listen_model.host
+         | regex_replace('^\\[|\\]$', '') }}
+    pg_patroni_restapi_connect_host: "{{ pg_patroni_restapi_connect_model.host }}"
+    pg_patroni_restapi_connect_port: "{{ pg_patroni_restapi_connect_model.port }}"
+    pg_patroni_restapi_listen_port: "{{ pg_patroni_restapi_listen_model.port }}"
+    pg_patroni_restapi_listen_is_loopback: >-
+      {{ (pg_patroni_restapi_listen_model.host | regex_replace('^\\[|\\]$', ''))
+         in ['127.0.0.1', 'localhost', '::1'] }}
+    pg_patroni_restapi_connect_is_loopback: "{{ pg_patroni_restapi_connect_model.host in ['127.0.0.1', 'localhost', '::1'] }}"
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.restapi is defined
+
+- name: "Normalizing effective Patroni REST API port"
+  ansible.builtin.set_fact:
+    pg_patroni_restapi_effective_port: "{{ pg_patroni_restapi_port_value }}"
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.restapi is defined
+
+- name: "Checking normalized Patroni REST API consumer port types"
+  ansible.builtin.assert:
+    that:
+      - pg_patroni_restapi_listen_model.port is integer
+      - pg_patroni_restapi_connect_model.port is integer
+      - pg_patroni_restapi_listen_port is integer
+      - pg_patroni_restapi_connect_port is integer
+      - pg_patroni_restapi_effective_port is integer
+    fail_msg: "Normalized Patroni REST API endpoint and consumer ports must be integers"
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.restapi is defined
+
+- name: "Checking Patroni REST API endpoint schemes agree with TLS"
+  ansible.builtin.assert:
+    that:
+      - pg_patroni_restapi_connect_model.scheme == ('https' if pg_patroni_restapi_tls_enabled | bool else 'http')
+      - not pg_patroni_restapi_listen_model.has_scheme
+        or pg_patroni_restapi_listen_model.scheme == ('https' if pg_patroni_restapi_tls_enabled | bool else 'http')
+    fail_msg: >-
+      Patroni listen and connect endpoint schemes must match the effective REST
+      API TLS setting: use https with TLS enabled and http with TLS disabled
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.restapi is defined
 
 - name: "Checking Patroni REST API listen address"
   ansible.builtin.assert:
     that:
-      - >-
-         pg_validation_cluster_record.patroni.restapi.listen is not defined
-         or (
-           pg_validation_cluster_record.patroni.restapi.listen | string
-           is not match('^(0\\.0\\.0\\.0|\\*|::)(:[0-9]+)?$')
-           and pg_validation_cluster_record.patroni.restapi.listen | string
-           is not match('^\\[(0\\.0\\.0\\.0|::)\\](:[0-9]+)?$')
-         )
+      - not pg_patroni_restapi_listen_model.is_wildcard
     fail_msg: "Patroni REST API must not listen on a wildcard address"
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.restapi is defined
+
+- name: "Checking Patroni REST API connect and port agreement"
+  ansible.builtin.assert:
+    that:
+      - pg_patroni_restapi_connect_port == pg_patroni_restapi_port_value
+    fail_msg: >-
+      Patroni REST API connect_address port must match restapi.port so the
+      advertised endpoint and readiness probes reach the listener; received
+      connect_address={{ pg_patroni_restapi_connect_value }},
+      restapi.port={{ pg_patroni_restapi_port_value }}
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.restapi is defined
+
+- name: "Checking Patroni REST API listen endpoint syntax"
+  ansible.builtin.assert:
+    that:
+      - >-
+        pg_patroni_restapi_listen_model.port == pg_patroni_restapi_effective_port
+    fail_msg: >-
+      Patroni REST API listen must be a host:port endpoint (IPv6 must be
+      bracketed), and port must be an integer from 1 through 65535; received
+      listen={{ pg_patroni_restapi_listen_value | string }},
+      port={{ pg_patroni_restapi_port_value | string }}
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.restapi is defined
+
+- name: "Checking Patroni REST API listen endpoint semantic host validity"
+  ansible.builtin.assert:
+    that:
+      - >-
+        pg_patroni_restapi_listen_host is ansible.utils.ip_address
+        or pg_patroni_restapi_listen_host is match('^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$')
+      - >-
+        pg_patroni_restapi_listen_host is not match('^[0-9.]+$')
+        or pg_patroni_restapi_listen_host is ansible.utils.ip_address
+      - >-
+        ':' not in pg_patroni_restapi_listen_host
+        or pg_patroni_restapi_listen_value.startswith('[')
+    fail_msg: >-
+      Patroni REST API listen must contain a valid IPv4, IPv6, or DNS host;
+      IPv6 endpoints must be bracketed.
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.restapi is defined
+
+- name: "Checking Patroni REST API listen and port agreement"
+  ansible.builtin.assert:
+    that:
+      - >-
+         pg_patroni_restapi_listen_model.port == pg_patroni_restapi_effective_port
+    fail_msg: >-
+      Patroni REST API listen endpoint port must match restapi.port so the
+      rendered listener and readiness probes use the same port; received
+      listen={{ pg_patroni_restapi_listen_value }}, port={{ pg_patroni_restapi_port_value }}
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.restapi is defined
+
+- name: "Checking Patroni REST API connect endpoint syntax"
+  ansible.builtin.assert:
+    that:
+      - pg_patroni_restapi_connect_model.port == pg_patroni_restapi_port_value
+      - not pg_patroni_restapi_connect_model.is_wildcard
+    fail_msg: >-
+      Patroni REST API connect_address must be a non-wildcard host:port
+      endpoint with a valid DNS name or IP address (IPv6 must be bracketed) and
+      port 1-65535
   when:
     - pg_validation_cluster_record.provider == 'patroni'
     - pg_validation_cluster_record.patroni.restapi is defined
@@ -75,26 +627,41 @@
     - pg_validation_cluster_record.provider == 'patroni'
     - pg_validation_cluster_record.patroni.restapi is defined
 
+- name: "Rejecting unsupported Patroni REST API required client verification"
+  ansible.builtin.assert:
+    that:
+      - >-
+        pg_validation_cluster_record.patroni.restapi.verify_client is not defined
+        or pg_validation_cluster_record.patroni.restapi.verify_client != 'required'
+    fail_msg: >-
+      Patroni REST API verify_client: required is not supported. Use
+      verify_client: optional or none, or provide a future role version that
+      manages dedicated client certificate, key, and CA trust material and
+      configures Patroni tooling to use it.
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.restapi is defined
+
 - name: "Checking Patroni REST API TLS configuration"
   ansible.builtin.assert:
     that:
       - >-
+        pg_validation_cluster_record.patroni.restapi.enabled is not defined
+        or pg_validation_cluster_record.patroni.restapi.enabled | type_debug == 'bool'
+      - >-
         pg_validation_cluster_record.patroni.restapi.auto_generate is not defined
         or pg_validation_cluster_record.patroni.restapi.auto_generate | type_debug == 'bool'
       - >-
-        (
-          pg_validation_cluster_record.patroni.restapi.cafile is not defined
-          and pg_validation_cluster_record.patroni.restapi.certfile is not defined
-          and pg_validation_cluster_record.patroni.restapi.keyfile is not defined
-        )
+        not pg_patroni_restapi_tls_enabled
+        or pg_validation_cluster_record.patroni.restapi.auto_generate | default(false) | bool
         or (
           pg_validation_cluster_record.patroni.restapi.cafile is defined
           and pg_validation_cluster_record.patroni.restapi.certfile is defined
-          and pg_validation_cluster_record.patroni.restapi.keyfile is defined
+           and pg_validation_cluster_record.patroni.restapi.keyfile is defined
         )
-        or pg_validation_cluster_record.patroni.restapi.auto_generate | default(false) | bool
       - >-
-        pg_validation_cluster_record.patroni.restapi.verify_client is not defined
+        not pg_patroni_restapi_tls_enabled
+        or pg_validation_cluster_record.patroni.restapi.verify_client is not defined
         or pg_validation_cluster_record.patroni.restapi.verify_client in ['none', 'optional', 'required']
       - >-
         pg_validation_cluster_record.patroni.restapi.verify_client is not defined
@@ -102,20 +669,253 @@
         or (
           pg_validation_cluster_record.patroni.restapi.cafile is defined
           and pg_validation_cluster_record.patroni.restapi.certfile is defined
-          and pg_validation_cluster_record.patroni.restapi.keyfile is defined
+           and pg_validation_cluster_record.patroni.restapi.keyfile is defined
+         )
+         or pg_validation_cluster_record.patroni.restapi.auto_generate | default(false) | bool
+      - >-
+        not (pg_validation_cluster_record.patroni.restapi.auto_generate | default(false) | bool)
+        or (
+          pg_validation_cluster_record.patroni.restapi.cafile | default('/etc/patroni/pki/ca.crt') is match('^/etc/patroni/pki/')
+          and pg_validation_cluster_record.patroni.restapi.certfile | default('/etc/patroni/pki/server.crt') is match('^/etc/patroni/pki/')
+          and pg_validation_cluster_record.patroni.restapi.keyfile | default('/etc/patroni/pki/server.key') is match('^/etc/patroni/pki/')
         )
     fail_msg: >-
       Patroni REST API TLS requires cafile, certfile, and keyfile together;
-      verify_client must be none, optional, or required
+      verify_client must be none or optional; generated files must remain under
+      /etc/patroni/pki/
   when:
     - pg_validation_cluster_record.provider == 'patroni'
     - pg_validation_cluster_record.patroni.restapi is defined
+
+- name: "Checking explicit Patroni TLS files are supplied together"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_cluster_record.patroni.restapi.cafile is not defined or pg_validation_cluster_record.patroni.restapi.cafile is string
+      - pg_validation_cluster_record.patroni.restapi.certfile is not defined or pg_validation_cluster_record.patroni.restapi.certfile is string
+      - pg_validation_cluster_record.patroni.restapi.keyfile is not defined or pg_validation_cluster_record.patroni.restapi.keyfile is string
+      - pg_patroni_explicit_tls_path_count in [0, 3]
+    fail_msg: >-
+      Patroni REST API explicit TLS files must be supplied all together:
+      cafile, certfile, and keyfile; received {{ pg_patroni_explicit_tls_path_count }}
+      of 3 paths
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.restapi is defined
+
+- name: "Canonicalizing Patroni TLS file paths for collision validation"
+  ansible.builtin.include_tasks: normalize_path.yml
+  loop:
+    - {input: "{{ pg_validation_cluster_record.patroni.restapi.cafile }}", result: "pg_patroni_cafile_canonical"}
+    - {input: "{{ pg_validation_cluster_record.patroni.restapi.certfile }}", result: "pg_patroni_certfile_canonical"}
+    - {input: "{{ pg_validation_cluster_record.patroni.restapi.keyfile }}", result: "pg_patroni_keyfile_canonical"}
+  loop_control:
+    loop_var: pg_patroni_tls_contract_path
+  vars:
+    pg_path_normalize_input: "{{ pg_patroni_tls_contract_path.input }}"
+    pg_path_normalize_result_fact: "{{ pg_patroni_tls_contract_path.result }}"
+    pg_path_normalize_label: "Patroni TLS file"
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.restapi is defined
+    - pg_patroni_explicit_tls_path_count | int == 3
+
+- name: "Rejecting colliding Patroni TLS file paths"
+  ansible.builtin.assert:
+    that:
+      - >-
+        [pg_patroni_cafile_canonical, pg_patroni_certfile_canonical,
+         pg_patroni_keyfile_canonical] | unique | length == 3
+    fail_msg: "Patroni TLS cafile, certfile, and keyfile must be pairwise distinct after canonical normalization"
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.restapi is defined
+    - pg_patroni_explicit_tls_path_count | int == 3
+
+- name: "Checking explicit Patroni TLS path syntax"
+  ansible.builtin.include_tasks: validate_patroni_tls_path.yml
+  vars:
+    pg_patroni_tls_path_records:
+      - {name: "cafile", path: "{{ pg_validation_cluster_record.patroni.restapi.cafile }}"}
+      - {name: "certfile", path: "{{ pg_validation_cluster_record.patroni.restapi.certfile }}"}
+      - {name: "keyfile", path: "{{ pg_validation_cluster_record.patroni.restapi.keyfile }}"}
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.restapi is defined
+    - pg_patroni_explicit_tls_path_count | int == 3
+
+- name: "Rejecting plaintext Patroni REST API exposure"
+  ansible.builtin.assert:
+    that:
+      - >-
+         (pg_patroni_restapi_listen_is_loopback | bool)
+         or pg_patroni_restapi_tls_enabled
+      - >-
+        (pg_patroni_restapi_connect_is_loopback | bool)
+        or pg_patroni_restapi_tls_enabled
+    fail_msg: "Patroni REST API must use TLS unless both its effective listener and advertised address are loopback-only"
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.restapi is defined
+
+- name: "Rejecting an explicit wildcard Patroni REST API fallback"
+  ansible.builtin.assert:
+    that:
+      - not pg_patroni_explicit_fallback_model.is_wildcard
+    fail_msg: >-
+      Explicit pg_patroni_restapi_endpoint_fallback_address must be a routable
+      non-wildcard host; wildcard IPv4 and IPv6 forms are not valid REST API
+      advertised endpoints
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.restapi is defined
+    - pg_patroni_restapi_endpoint_fallback_address is defined
+
+- name: "Checking raw Patroni pg_hba list type"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_cluster_record.patroni.pg_hba | type_debug == 'list'
+    fail_msg: "Patroni pg_hba must be a list of supported, unquoted records"
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.pg_hba is defined
+
+- name: "Checking Patroni allow_broad_hba type"
+  ansible.builtin.assert:
+    that:
+      - >-
+        pg_validation_cluster_record.patroni.allow_broad_hba is not defined
+        or pg_validation_cluster_record.patroni.allow_broad_hba is boolean
+    fail_msg: "Patroni allow_broad_hba must be a YAML boolean when provided"
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni is defined
+
+- name: "Checking raw Patroni pg_hba records"
+  ansible.builtin.assert:
+    that:
+      - pg_raw_patroni_hba_line is string
+      - pg_raw_patroni_hba_line | trim | length > 0
+      - pg_raw_patroni_hba_line | trim is not match('^#')
+      # Raw lines are deliberately not parsed as shell-like input.  Only one
+      # ASCII space may separate tokens; tabs, controls, quotes and comments
+      # are rejected rather than being reinterpreted.
+      - pg_raw_patroni_hba_line is match('^[^#\"\' ]+( +[^#\"\' ]+)*$')
+      - pg_raw_patroni_hba_line is not search('[\x00-\x1f\x7f]')
+      - pg_raw_patroni_hba_tokens | length >= 4
+      - (pg_raw_patroni_hba_tokens[0] | default('')) in ['local', 'host', 'hostssl', 'hostnossl', 'hostgssenc', 'hostnogssenc']
+      - >-
+        (pg_raw_patroni_hba_tokens[0] | default('')) == 'local'
+        or pg_raw_patroni_hba_tokens | length >= 5
+      - >-
+        pg_raw_patroni_hba_method in ['trust', 'reject', 'scram-sha-256', 'md5', 'password', 'peer', 'ident', 'cert', 'pam', 'ldap', 'radius', 'gss', 'sspi']
+      - pg_validation_security_profile != 'safe' or pg_raw_patroni_hba_method != 'trust'
+      - pg_raw_patroni_hba_method != 'cert' or (pg_raw_patroni_hba_tokens[0] | default('')) == 'hostssl'
+      - >-
+        pg_validation_security_profile == 'off'
+        or pg_raw_patroni_hba_method not in ['password', 'md5', 'scram-sha-256', 'pam', 'ldap', 'radius']
+        or ((pg_raw_patroni_hba_tokens[0] | default('')) == 'hostssl'
+        and pg_validation_security_ssl != 'off')
+      - (pg_raw_patroni_hba_tokens[0] | default('')) != 'local' or pg_raw_patroni_hba_method not in ['cert', 'gss', 'sspi', 'ident']
+      - pg_raw_patroni_hba_method != 'peer' or (pg_raw_patroni_hba_tokens[0] | default('')) == 'local'
+      - >-
+         (pg_validation_cluster_record.patroni.allow_broad_hba | default(false)
+         or pg_raw_patroni_hba_address not in ['0.0.0.0/0', '::/0'])
+         and pg_raw_patroni_hba_address not in ['0.0.0.0', '::']
+      - pg_raw_patroni_hba_method not in ['gss', 'sspi'] or (pg_raw_patroni_hba_tokens[0] | default('')) in ['host', 'hostssl', 'hostgssenc']
+      - pg_validation_security_profile != 'safe' or (pg_raw_patroni_hba_tokens[0] | default('')) != 'hostnossl'
+      - (pg_raw_patroni_hba_tokens[1] | default('')) is match('^[A-Za-z0-9_,.$-]+$')
+      - (pg_raw_patroni_hba_tokens[2] | default('')) is match('^[A-Za-z0-9_,.$-]+$')
+      - >-
+        (pg_raw_patroni_hba_tokens[3 if (pg_raw_patroni_hba_tokens[0] | default('')) == 'local' else 4]
+        | default('')) is match('^[A-Za-z][A-Za-z0-9_-]*(=[A-Za-z0-9_-]+)?$')
+      - pg_raw_patroni_hba_option_names | unique | length == pg_raw_patroni_hba_option_names | length
+      - >-
+        pg_raw_patroni_hba_options | select('match',
+        pg_raw_patroni_hba_option_pattern) | list | length
+        == pg_raw_patroni_hba_options | length
+      - >-
+        pg_raw_patroni_hba_options | select('match',
+        '^(ldapport|radiusport)=([0-9]+)$') | map('regex_replace', '^[^=]+=')
+        | map('int') | select('gt', 0) | select('lt', 65536) | list | length
+        == (pg_raw_patroni_hba_options | select('match', '^(ldapport|radiusport)=') | list | length)
+      - >-
+        pg_raw_patroni_hba_options | select('match', '^clientcert=') | list | length == 0
+         or (pg_raw_patroni_hba_tokens[0] | default('')) == 'hostssl'
+      - >-
+        pg_raw_patroni_hba_options | select('match', '^(clientname|map)=') | list | length == 0
+         or (pg_raw_patroni_hba_tokens[0] | default('')) == 'hostssl'
+      - >-
+        pg_raw_patroni_hba_options | select('match', '^map=') | list | length == 0
+        or pg_raw_patroni_hba_method == 'cert'
+      - >-
+        (pg_raw_patroni_hba_tokens[0] | default('')) == 'local'
+        or (
+          pg_raw_patroni_hba_address in ['samehost', 'samenet']
+          or (
+            pg_raw_patroni_hba_address is match(pg_raw_patroni_hba_ipv4_pattern)
+            and (pg_raw_patroni_hba_address | ansible.utils.ipaddr) is not false
+          )
+          or (
+            pg_raw_patroni_hba_address is match('^[0-9A-Fa-f:]+(?:/[0-9]{1,3})?$')
+            and pg_raw_patroni_hba_address is search(':')
+            and (pg_raw_patroni_hba_address | ansible.utils.ipaddr) is not false
+          )
+        )
+    fail_msg: >-
+      Raw Patroni pg_hba records must use the supported unquoted grammar and
+      methods (trust, reject, scram-sha-256, md5, password, peer, ident, cert,
+      pam, ldap, radius, gss, sspi); PostgreSQL 17 oauth and advanced forms are
+      rejected; trust is forbidden in the safe profile
+  loop: "{{ pg_validation_cluster_record.patroni.pg_hba | default([]) }}"
+  loop_control:
+    loop_var: pg_raw_patroni_hba_line
+    label: "{{ pg_raw_patroni_hba_line }}"
+  vars:
+    pg_raw_patroni_hba_tokens: >-
+      {{ pg_raw_patroni_hba_line.split()
+         if pg_raw_patroni_hba_line is string else [] }}
+    pg_raw_patroni_hba_address: >-
+      {{ pg_raw_patroni_hba_tokens[3]
+         if (pg_raw_patroni_hba_tokens | length > 3)
+         and (pg_raw_patroni_hba_tokens[0] | default('')) != 'local'
+         and pg_raw_patroni_hba_tokens | length > 3 else '' }}
+    pg_raw_patroni_hba_method: >-
+      {{ pg_raw_patroni_hba_tokens[3] if (pg_raw_patroni_hba_tokens[0] | default('')) == 'local'
+         else (pg_raw_patroni_hba_tokens[4]
+         if pg_raw_patroni_hba_tokens | length > 4 else '') }}
+    pg_raw_patroni_hba_ipv4_pattern: >-
+      ^[0-9.]+(?:/[0-9]{1,2})?$
+    pg_raw_patroni_hba_options: >-
+      {{ pg_raw_patroni_hba_tokens[4:] if (pg_raw_patroni_hba_tokens[0] | default('')) == 'local'
+         else pg_raw_patroni_hba_tokens[5:] }}
+    pg_raw_patroni_hba_option_names: "{{ pg_raw_patroni_hba_options | map('regex_replace', '=.*$', '') | list }}"
+    pg_raw_patroni_hba_option_pattern: >-
+      {{ '^(clientcert=(verify-ca|verify-full)|clientname=(CN|DN)|map=[A-Za-z0-9_-]+|'
+         ~ 'pamservice=[A-Za-z0-9_.-]+|ldap(server|url|basedn|binddn|bindpasswd|'
+         ~ 'searchattribute|searchfilter)=[^[:space:]]+|ldapport=[0-9]+|ldapscheme=(ldap|ldaps)|'
+         ~ 'ldapwhitespace=(yes|no)|radius(server|secret|identifier)=[^[:space:]]+|'
+         ~ 'radiusport=[0-9]+|include_realm=(yes|no)|krb_realm=[A-Za-z0-9_.-]+|'
+         ~ 'gss_accept_delegation=(yes|no)|account=[A-Za-z0-9_.@-]+)$' }}
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_cluster_record.patroni.pg_hba is defined
+    - pg_validation_cluster_record.patroni.pg_hba | type_debug == 'list'
+
+
+- name: "Validating managed etcd member definitions"
+  ansible.builtin.include_tasks: validate_etcd_members.yml
+  when:
+    - pg_validation_cluster_record.provider == 'patroni'
+    - pg_validation_etcd_members is defined
 
 - name: "Validating managed etcd configuration"
   ansible.builtin.include_tasks: validate_etcd.yml
   when:
     - pg_validation_cluster_record.provider == 'patroni'
-    - (pg_validation_cluster_record.dcs.etcd | default({})).enabled | default(false) | bool
+    - pg_validation_cluster_dcs_etcd is mapping
+    - pg_validation_cluster_dcs_etcd.enabled is defined
+    - pg_validation_cluster_dcs_etcd.enabled is boolean
+    - pg_validation_cluster_dcs_etcd.enabled
 
 - name: "Checking Patroni timeout relationship"
   ansible.builtin.assert:
@@ -135,6 +935,12 @@
       - pg_validation_member_record | type_debug == 'dict'
       - pg_validation_member_record.host is defined
       - pg_validation_member_record.host | string | length > 0
+      - >-
+        pg_validation_member_record.host is ansible.utils.ip_address
+        or (
+          pg_validation_member_record.host is match('^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$')
+          and pg_validation_member_record.host is not match('^[0-9.]+$')
+        )
       - pg_validation_member_record.instance is defined
       - pg_validation_member_record.instance | string | length > 0
       - pg_validation_member_record.name is defined
@@ -152,3 +958,70 @@
           pg_validation_cluster_record.members | map(attribute='name') | list | unique | length
         ) == (pg_validation_cluster_record.members | length)
     fail_msg: "PostgreSQL cluster member names must be unique"
+
+- name: "Rejecting duplicate PostgreSQL cluster inventory members and aliases"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (pg_validation_cluster_record.members | map(attribute='host') | list | unique | length)
+        == (pg_validation_cluster_record.members | length)
+    fail_msg: >-
+      PostgreSQL cluster member inventory hosts must be unique; duplicate hosts
+      or aliases are ambiguous and are rejected
+
+- name: "Publishing normalized PostgreSQL cluster model"
+  ansible.builtin.set_fact:
+    pg_validation_cluster_models: >-
+      {{ (pg_validation_cluster_models | default([])) + [
+        {
+          'key': (pg_validation_version_record.version | string) ~ ':' ~ pg_validation_cluster_record.name,
+           'version': pg_validation_version_record.version | string,
+           'security_profile': pg_validation_security_profile,
+           'security_ssl': pg_validation_security_ssl,
+           'record': pg_validation_cluster_record | combine({
+             'security_profile': pg_validation_security_profile,
+             'security_ssl': pg_validation_security_ssl,
+             'members': (pg_validation_cluster_record.members | map('combine', {}) | list),
+            'dcs': pg_validation_cluster_record.dcs | default({}) | combine({
+              'etcd': pg_validation_cluster_dcs_etcd | combine({
+                'members': pg_validation_cluster_etcd_members_model
+              }, recursive=true)
+            }, recursive=true)
+          }, recursive=true)
+        }
+      ] }}
+  vars:
+    pg_validation_cluster_etcd_members_model: >-
+      {{ pg_validation_etcd_members_normalized
+         if pg_validation_cluster_dcs_etcd.enabled | default(false) | bool
+          else (pg_validation_cluster_dcs_etcd.members | default([])) }}
+
+- name: "Checking normalized PostgreSQL cluster model retains members"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_cluster_record.members is defined
+      - pg_validation_cluster_record.members | type_debug == 'list'
+      - pg_validation_cluster_record.members | length > 0
+      - pg_validation_published_cluster_models | length == 1
+      - pg_validation_published_cluster_members | type_debug == 'list'
+      - >-
+        pg_validation_published_cluster_members
+        == pg_validation_cluster_record.members
+    fail_msg: >-
+      Normalized cluster model {{ pg_validation_cluster_record.name }} changed
+      or lost member records or ordering
+  vars:
+    pg_validation_published_cluster_models: >-
+      {{ pg_validation_cluster_models
+         | selectattr(
+             'key', 'equalto',
+             (pg_validation_version_record.version | string) ~ ':'
+             ~ pg_validation_cluster_record.name
+           )
+         | list }}
+    pg_validation_published_cluster_members: >-
+      {{ pg_validation_published_cluster_models
+         | map(attribute='record')
+         | map(attribute='members')
+         | list
+         | first }}

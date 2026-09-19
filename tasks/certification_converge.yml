@@ -1,0 +1,279 @@
+---
+# PostgreSQL server certificate.  Issuance is deliberately performed as one
+# transaction: the key and certificate are never independently converged.
+
+- name: "Ensuring standalone certificate serial registry is restrictive"
+  ansible.builtin.file:
+    path: "{{ pg_certificate_serial_registry_directory }}"
+    state: "directory"
+    owner: "root"
+    group: "root"
+    mode: "0700"
+  become: true
+  become_user: "root"
+
+- name: "Ensuring dedicated standalone PKI lock directory is root-controlled"
+  ansible.builtin.file:
+    path: "{{ pg_certificate_pki_lock_directory }}"
+    state: "directory"
+    owner: "root"
+    group: "root"
+    mode: "0700"
+  become: true
+  become_user: "root"
+
+- name: "Ensuring standalone certificate serial registry and lock exist"
+  ansible.builtin.file:
+    path: "{{ pg_certificate_registry_path }}"
+    state: "touch"
+    modification_time: "preserve"
+    access_time: "preserve"
+    owner: "root"
+    group: "root"
+    mode: "0600"
+  loop:
+    - "{{ pg_certificate_serial_registry }}"
+    - "{{ pg_certificate_serial_lock }}"
+  loop_control:
+    loop_var: pg_certificate_registry_path
+  become: true
+  become_user: "root"
+
+- name: "Installing shared PKI registry parser"
+  ansible.builtin.copy:
+    src: "pki_registry.sh"
+    dest: "/usr/local/libexec/postgresql-pki-registry.sh"
+    owner: "root"
+    group: "root"
+    mode: "0755"
+  become: true
+  become_user: "root"
+
+# Validate the complete generated trust root before file(state=directory) is
+# allowed to create or chown the SSL directory.  External source paths above
+# remain inspect-only; they are never passed to a mutating module.
+- name: "Ensuring PostgreSQL SSL directory is present"
+  ansible.builtin.file:
+    path: "{{ pg_certificate_ssl_directory }}"
+    state: "directory"
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0700"
+  become: true
+  become_user: "root"
+
+- name: "Normalizing PostgreSQL certificate SAN extension"
+  ansible.builtin.set_fact:
+    pg_certificate_subject_alt_names_option: |-
+      {% set ns = namespace(names=[]) %}
+      {% for name in pg_certificate_subject_alt_names %}
+      {% set ns.names = ns.names + [('IP:' if name is ansible.utils.ip_address else 'DNS:') ~ (name | string)] %}
+      {% endfor %}{{ ns.names | join(',') }}
+
+- name: "Reconciling PostgreSQL key and certificate as one rollback transaction"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    key={{ pg_certificate_private_key_fullpath | quote }}
+    crt={{ pg_certificate_public_key_fullpath | quote }}
+    dir=$(dirname -- "$key")
+    expected={{ pg_certificate_subject_alt_names_option | quote }}
+     source /usr/local/libexec/postgresql-pki-registry.sh
+     lock={{ (pg_certificate_pki_lock_directory ~ '/postgresql-' ~ pg_version ~ '-' ~ pg_instance ~ '.transaction.lock') | quote }}
+     validate_pki_directory_path {{ pg_certificate_pki_lock_directory | quote }}
+     validate_pki_serial_paths "$lock" "$lock"
+     exec 9>"$lock"; flock -x 9
+     for orphan in "$dir"/.postgresql-pki.stage.*; do
+       [[ -d "$orphan" ]] || continue
+       printf 'Unfinished PostgreSQL PKI transaction requires operator recovery: %s; inspect manifest/journal before cleanup\n' "$orphan" >&2
+       exit 1
+      done
+     # Scan before creating our own stage; FD 9 stays held through cleanup.
+     stage=$(mktemp -d "$dir/.postgresql-pki.stage.XXXXXXXX")
+    manifest="$stage/manifest"; journal="$stage/journal"
+    : >"$manifest"; : >"$journal"
+    chmod 0600 "$manifest" "$journal"
+     sync_file() { sync -f "$1" || { printf 'Unable to persist transaction record: %s\n' "$1" >&2; exit 1; }; }
+     sync_dir() { sync -f "$1" || { printf 'Unable to persist transaction directory: %s\n' "$1" >&2; exit 1; }; }
+    record() { printf '%s\n' "$1" >>"$manifest" && sync_file "$manifest"; }
+    key_exists=no; crt_exists=no; [[ -e "$key" ]] && key_exists=yes; [[ -e "$crt" ]] && crt_exists=yes
+    record "destination key $key existed=$key_exists backup=$stage/backup.key replacement=no moved=no"
+    record "destination crt $crt existed=$crt_exists backup=$stage/backup.crt replacement=no moved=no"
+    rollback() {
+      status=$1; failed=0
+      for pair in "key:$key" "crt:$crt"; do
+        name=${pair%%:*}; dest=${pair#*:}
+        if grep -q "destination $name .*replacement=yes" "$manifest"; then
+           expected_inode=$(sed -n "s/.*destination $name .* inode=\([^ ]*\) hash=\([^ ]*\).*/\1/p" "$manifest" | tail -n 1)
+           expected_hash=$(sed -n "s/.*destination $name .* inode=\([^ ]*\) hash=\([^ ]*\).*/\2/p" "$manifest" | tail -n 1)
+            if [[ ! -e "$dest" || "$(stat -c %i "$dest")" != "$expected_inode" || "$(sha256sum "$dest" | cut -d' ' -f1)" != "$expected_hash" ]]; then
+              printf 'Refusing rollback: destination changed outside this transaction: %s\n' "$dest" >&2
+              failed=1
+              continue
+            fi
+           rm -f -- "$dest" || failed=1
+           [[ ! -e "$dest" ]] || failed=1
+        fi
+        if [[ -e "$stage/backup.$name" ]]; then
+           mv -- "$stage/backup.$name" "$dest" || failed=1
+          [[ -e "$dest" ]] || failed=1
+        fi
+      done
+      if [[ "$failed" != 0 ]]; then
+        printf 'PKI rollback failed; preserving staging path: %s\n' "$stage" >&2
+        exit 1
+      fi
+       rm -rf -- "$stage" || { printf 'PKI cleanup failed; preserving staging path: %s\n' "$stage" >&2; exit 1; }; sync_dir "$dir"
+      exit "$status"
+    }
+    trap 'rc=$?; [[ "$rc" == 0 ]] && exit 0; rollback "$rc"' EXIT
+
+     # Tool availability and destination safety are established by the staged
+     # certificate preflight.  This transaction only performs the convergence
+     # operation and reports operational failures without regenerating on them.
+     for path in "$key" "$crt"; do
+       [[ ! -e "$path" || -r "$path" ]] || {
+         printf 'Cannot read PKI destination: %s\n' "$path" >&2; exit 1;
+       }
+     done
+      invalid=0
+      registry={{ pg_certificate_serial_registry | quote }}
+       serial_lock={{ pg_certificate_serial_lock | quote }}
+        validate_pki_serial_paths "$registry" "$serial_lock"
+       exec 8>"$serial_lock"; flock -x 8
+       validate_pki_serial_registry "$registry"
+      declare -A seen_serials=() serial_files=()
+     shopt -s nullglob
+      for existing in "$dir"/*.crt; do
+        value=$(openssl x509 -in "$existing" -noout -serial 2>/dev/null | sed 's/^serial=//') || {
+          printf 'Unable to inspect existing certificate: %s\n' "$existing" >&2; exit 1;
+        }
+        [[ "$value" =~ ^[0-9A-Fa-f]+$ && ! "$value" =~ ^0+$ ]] || {
+          printf 'Existing certificate has an invalid or zero serial: %s\n' "$existing" >&2; exit 1;
+        }
+       key_serial="${value,,}"
+       [[ -z "${serial_files[$key_serial]+x}" ]] || {
+          printf 'Duplicate existing certificate serial\n' >&2; exit 1
+       }
+       serial_files[$key_serial]="$existing"
+       if [[ -z "${seen_serials[$key_serial]+x}" ]]; then
+          printf '%s\n' "$value" >>"$registry"; sync -f "$registry"; seen_serials[$key_serial]=1
+       fi
+     done
+     if [[ -e "$key" && -e "$crt" ]]; then
+      openssl pkey -in "$key" -pubout -out "$stage/key.pub" >/dev/null 2>&1 || invalid=1
+      openssl x509 -in "$crt" -pubkey -noout -out "$stage/crt.pub" >/dev/null 2>&1 || invalid=1
+      [[ "$invalid" == 1 ]] || cmp -s "$stage/key.pub" "$stage/crt.pub" || invalid=1
+      openssl x509 -in "$crt" -checkend 0 -noout >/dev/null 2>&1 || invalid=1
+       actual=$(openssl x509 -in "$crt" -noout -ext subjectAltName 2>/dev/null \
+         | sed -n '/Subject Alternative Name:/,$p' | tail -n +2 \
+         | tr -d '[:space:]' | sed 's/IP Address:/IP:/g;s/DNS Name:/DNS:/g') || invalid=1
+      [[ "$actual" == "$expected" ]] || invalid=1
+      issuer=$(openssl x509 -in "$crt" -noout -issuer -subject 2>/dev/null) || invalid=1
+      [[ "$(printf '%s\n' "$issuer" | sed -n 's/^issuer=//p')" == "$(printf '%s\n' "$issuer" | sed -n 's/^subject=//p')" ]] || invalid=1
+    elif [[ -e "$key" || -e "$crt" ]]; then invalid=1
+    else invalid=1
+    fi
+     if [[ "$invalid" == 0 ]]; then
+       rm -rf -- "$stage" || {
+         printf 'PKI staging cleanup failed; preserving path: %s\n' "$stage" >&2; exit 1;
+       }
+       exit 0
+     fi
+
+    openssl genrsa -out "$stage/key" {{ pg_certificate_private_key_bits }}
+     collision=1
+     for attempt in {1..32}; do
+       serial=$(openssl rand -hex 16) || { printf 'Unable to obtain random certificate serial\n' >&2; exit 1; }
+       [[ "$serial" =~ ^[0-9a-fA-F]{32}$ && ! "$serial" =~ ^0+$ ]] || continue
+       collision=0
+        while IFS= read -r used || [[ -n "$used" ]]; do [[ "${used,,}" != "${serial,,}" ]] || collision=1; done <"$registry"
+       for existing in "$dir"/*.crt; do
+         [[ -f "$existing" && "$existing" != "$crt" ]] || continue
+         existing_serial=$(openssl x509 -in "$existing" -noout -serial 2>/dev/null | sed 's/^serial=//') || continue
+         [[ "${existing_serial,,}" != "${serial,,}" ]] || collision=1
+       done
+       [[ "$collision" == 0 ]] && break
+     done
+     [[ "$collision" == 0 ]] || { printf 'Unable to allocate a unique certificate serial\n' >&2; exit 1; }
+     printf '%s\n' "$serial" >>"$registry"; sync -f "$registry"
+    openssl req -new -x509 -nodes -key "$stage/key" -out "$stage/crt" -set_serial "0x$serial" -days {{ pg_certificate_public_key_days }} \
+      -subj {{ ('/CN=' ~ (pg_certificate_subject_alt_names[0] | string)) | quote }} \
+      -addext {{ ('subjectAltName=' ~ expected) | quote }} \
+      -addext basicConstraints=critical,CA:FALSE \
+      -addext keyUsage=critical,digitalSignature,keyEncipherment \
+      -addext extendedKeyUsage=serverAuth,clientAuth
+     openssl pkey -in "$stage/key" -pubout -out "$stage/keypub"
+     openssl x509 -in "$stage/crt" -pubkey -noout -out "$stage/crtpub"
+     cmp -s "$stage/keypub" "$stage/crtpub"
+     openssl x509 -in "$stage/crt" -checkend 0 -noout
+     openssl x509 -in "$stage/crt" -noout -text | grep -q 'CA:FALSE'
+     openssl x509 -in "$stage/crt" -noout -text | grep -q 'serverAuth'
+     install -m 0600 "$stage/key" "$stage/key.new"
+     install -m 0644 "$stage/crt" "$stage/crt.new"
+     sync -f "$stage/key.new"; sync -f "$stage/crt.new"; sync -f "$stage"
+    for pair in "key:$key" "crt:$crt"; do
+      name=${pair%%:*}; dest=${pair#*:}
+      if [[ -e "$dest" ]]; then
+        mv -- "$dest" "$stage/backup.$name"
+        [[ -e "$stage/backup.$name" && ! -e "$dest" ]] || { printf 'PKI backup failed at %s\n' "$dest" >&2; exit 1; }
+        record "destination $name existed=yes backup=$stage/backup.$name replacement=no moved=yes"
+      fi
+      mv -- "$stage/$name.new" "$dest"
+      [[ -e "$dest" ]] || { printf 'PKI commit failed at %s\n' "$dest" >&2; exit 1; }
+      backup_present=$([[ -e "$stage/backup.$name" ]] && printf yes || printf no)
+       replacement_inode=$(stat -c %i "$dest"); replacement_hash=$(sha256sum "$dest" | cut -d' ' -f1)
+         replacement_record="destination $name existed=$backup_present"
+         replacement_record+=" backup=$stage/backup.$name replacement=yes moved=$backup_present"
+         replacement_record+=" inode=$replacement_inode hash=$replacement_hash"
+        record "$replacement_record"
+       sync_dir "$dir"
+    done
+    printf 'committed key=%s crt=%s\n' "$key" "$crt" >>"$journal"; sync_file "$journal"
+     rm -rf -- "$stage" || { printf 'PKI journal cleanup failed; preserving path: %s\n' "$stage" >&2; exit 1; }; sync_dir "$dir"
+    printf '%s\n' 'created'
+  args:
+    executable: "/bin/bash"
+  register: pg_certificate_pair_result
+  changed_when: "'created' in pg_certificate_pair_result.stdout"
+  failed_when: pg_certificate_pair_result.rc != 0
+  no_log: true
+  become: true
+  become_user: "root"
+
+- name: "Restricting PostgreSQL certificate pair"
+  ansible.builtin.file:
+    path: "{{ pg_certificate_pair.path }}"
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "{{ pg_certificate_pair.mode }}"
+  loop:
+    - {path: "{{ pg_certificate_private_key_fullpath }}", mode: "0600"}
+    - {path: "{{ pg_certificate_public_key_fullpath }}", mode: "0644"}
+  loop_control:
+    loop_var: pg_certificate_pair
+  become: true
+  become_user: "root"
+
+- name: "Installing trusted client CA certificate"
+  ansible.builtin.copy:
+    content: "{{ pg_client_certificate_authority_content }}"
+    dest: "{{ pg_client_certificate_authority_fullpath }}"
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0600"
+  when: pg_client_certificate_authority_content | length > 0
+  no_log: true
+  become: true
+  become_user: "root"
+
+- name: "Installing trusted client CA certificate from source"
+  ansible.builtin.copy:
+    src: "{{ pg_client_certificate_authority_src }}"
+    dest: "{{ pg_client_certificate_authority_fullpath }}"
+    owner: "{{ pg_os_user }}"
+    group: "{{ pg_os_group }}"
+    mode: "0600"
+  when: pg_client_certificate_authority_src | length > 0
+  no_log: true
+  become: true
+  become_user: "root"

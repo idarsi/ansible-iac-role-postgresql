@@ -1,0 +1,111 @@
+# Molecule managed
+
+# This digest is the locally resolved Rocky Linux 9.8 UBI init image.  Keep
+# the test image and the package repositories on the same minor release.  The
+# Rocky mirror metadata remains a mutable URL (Rocky does not publish a
+# content-addressed 9.8 repository snapshot), so this is not full build
+# reproducibility. The key fingerprint below is authoritative because the
+# repository does not publish a checksum for this key; a fingerprint mismatch
+# fails the build closed. HTTPS, certificate validation, repository/package
+# signatures, and the exact NEVRA below are the remaining checks.
+FROM --platform=linux/amd64 docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5
+
+# Immutable provenance consumed by replication/prepare.yml.
+LABEL io.idarsi.replication.base-image="docker.io/rockylinux/rockylinux:9-ubi-init" \
+      io.idarsi.replication.base-digest="sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5" \
+      io.idarsi.replication.base-identity="rocky-9-ubi" \
+      io.idarsi.replication.build-contract="rocky-9.8-iproute-0:6.17.0-2.el9.x86_64-v2"
+
+# Keep this test-only layer minimal.  Download and authenticate the signing
+# key before using DNF or any repository.  The base image supplies
+# curl-minimal (and gpg); failing closed here is preferable to replacing either
+# tool from an untrusted repository.
+RUN set -eu; \
+    command -v curl >/dev/null; command -v gpg >/dev/null; \
+    curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+      --output /tmp/RPM-GPG-KEY-Rocky-9 \
+      https://dl.rockylinux.org/pub/rocky/RPM-GPG-KEY-Rocky-9; \
+    primary_fingerprints="$(gpg --batch --with-colons --show-keys /tmp/RPM-GPG-KEY-Rocky-9 | \
+      awk -F: '$1 == "pub" { primary=1; next } primary && $1 == "fpr" { print $10; primary=0 }')"; \
+    test "${primary_fingerprints}" = "21CB256AE16FC54C6E652949702D426D350D275D" || { \
+      echo 'unexpected Rocky signing-key primary fingerprint' >&2; exit 1; }; \
+    rpm --import /tmp/RPM-GPG-KEY-Rocky-9; \
+    mkdir -p /etc/yum.repos.d.disabled; \
+    for repo in /etc/yum.repos.d/*.repo; do \
+      [ -e "${repo}" ] || continue; mv -- "${repo}" /etc/yum.repos.d.disabled/; \
+    done; \
+    printf '%s\n' \
+      '[rocky-9.8-baseos]' \
+      'name=Rocky Linux 9.8 - BaseOS' \
+      'baseurl=https://dl.rockylinux.org/pub/rocky/9.8/BaseOS/$basearch/os/' \
+      'enabled=1' 'sslverify=1' 'gpgcheck=1' 'repo_gpgcheck=1' \
+      'gpgkey=https://dl.rockylinux.org/pub/rocky/RPM-GPG-KEY-Rocky-9' \
+      '[rocky-9.8-appstream]' \
+      'name=Rocky Linux 9.8 - AppStream' \
+      'baseurl=https://dl.rockylinux.org/pub/rocky/9.8/AppStream/$basearch/os/' \
+      'enabled=1' 'sslverify=1' 'gpgcheck=1' 'repo_gpgcheck=1' \
+      'gpgkey=https://dl.rockylinux.org/pub/rocky/RPM-GPG-KEY-Rocky-9' \
+      '[rocky-9.8-extras]' \
+      'name=Rocky Linux 9.8 - Extras' \
+      'baseurl=https://dl.rockylinux.org/pub/rocky/9.8/extras/$basearch/os/' \
+      'enabled=1' 'sslverify=1' 'gpgcheck=1' 'repo_gpgcheck=1' \
+      'gpgkey=https://dl.rockylinux.org/pub/rocky/RPM-GPG-KEY-Rocky-9' \
+      > /etc/yum.repos.d/rocky-9.8-snapshot.repo && \
+     test "$(uname -m)" = "x86_64" || { echo 'replication image requires x86_64/amd64; refusing emulation' >&2; exit 1; }; \
+      test -x "$(command -v curl)" && \
+      test "$(rpm -q --qf '%{NAME}\n' --whatprovides /usr/bin/curl | sort -u)" = "curl-minimal" && \
+      ! rpm -q curl >/dev/null 2>&1 || { echo 'curl package would conflict with the base curl-minimal provider' >&2; exit 1; }; \
+     dnf --assumeyes --disablerepo='*' --enablerepo='rocky-9.8-baseos,rocky-9.8-appstream,rocky-9.8-extras' --setopt=install_weak_deps=False install \
+         ca-certificates gnupg2 python3 && \
+      extract_enabled_repositories() { \
+        awk '$1 == "repo" { header=1; next } header && $1 != "repolist:" && NF { print $1 }' | sort; \
+      }; \
+      enabled_repos="$(dnf repolist enabled | extract_enabled_repositories)" && \
+     expected_repos="$(printf '%s\n' rocky-9.8-appstream rocky-9.8-baseos rocky-9.8-extras)" && \
+     test "${enabled_repos}" = "${expected_repos}" || { echo 'unexpected effective Rocky repository set' >&2; exit 1; } && \
+      dnf --assumeyes --disablerepo='*' --enablerepo='rocky-9.8-baseos,rocky-9.8-appstream,rocky-9.8-extras' --setopt=install_weak_deps=False install \
+        iproute-0:6.17.0-2.el9.x86_64
+
+# Keep this build self-contained while using the same normalizer contract as
+# molecule/replication/prepare.yml. The guardrail compares this block exactly
+# with scripts/replication_package_normalize.sh.
+RUN <<'REPLICATION_PACKAGE_VERIFY'
+set -eu
+
+normalize_replication_iproute_nevra() {
+  replication_expected_nevra=$1
+  replication_actual_nevra=$2
+  # rpm query formats normally terminate each record with a newline.  Accept
+  # exactly one record terminator, but never discard a second record.
+  replication_newline='
+'
+  case "$replication_actual_nevra" in
+    *"$replication_newline") replication_actual_nevra=${replication_actual_nevra%"$replication_newline"} ;;
+  esac
+  case "$replication_actual_nevra" in
+    *"$replication_newline"*) return 1 ;;
+  esac
+  replication_without_epoch=$(printf '%s\n' "$replication_expected_nevra" | \
+    sed 's/-0:/-/')
+  replication_with_none_epoch=$(printf '%s\n' "$replication_expected_nevra" | \
+    sed 's/-0:/-(none):/')
+  case "$replication_actual_nevra" in
+    "$replication_expected_nevra"|"$replication_without_epoch"|"$replication_with_none_epoch")
+      printf '%s\n' "$replication_expected_nevra"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# Avoid requesting a record terminator: across runtime shell/exec boundaries,
+# rpm's escaped \n can otherwise arrive as literal data. The shared normalizer
+# still accepts real single-record newlines and rejects extra records.
+iproute_nevra="$(rpm -q --qf '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}' iproute)"
+test "$(normalize_replication_iproute_nevra 'iproute-0:6.17.0-2.el9.x86_64' "${iproute_nevra}")" = \
+  "iproute-0:6.17.0-2.el9.x86_64" || {
+  echo 'replication image has an unexpected iproute NEVRA or architecture' >&2
+  exit 1
+}
+dnf clean all
+rm -rf /var/cache/dnf /tmp/RPM-GPG-KEY-Rocky-9
+REPLICATION_PACKAGE_VERIFY

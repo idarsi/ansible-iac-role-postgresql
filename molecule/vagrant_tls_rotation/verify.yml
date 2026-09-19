@@ -19,7 +19,8 @@
 
     - name: "Discover the current Patroni leader for the PostgreSQL marker"
       ansible.builtin.uri:
-        url: "http://{{ vagrant_patroni_private_addresses[item] }}:8008/cluster"
+        url: "https://{{ vagrant_patroni_private_addresses[item] }}:8008/cluster"
+        ca_path: /etc/patroni/pki/ca.crt
         url_username: "patroni"
         url_password: "patroni_password"
         force_basic_auth: true
@@ -59,7 +60,7 @@
     - name: "Write the DCS continuity marker"
       ansible.builtin.command: >-
         etcdctl --endpoints=https://pg01:2379 --cacert=/etc/etcd/pki/ca.crt
-        --cert=/etc/etcd/pki/etcd.crt --key=/etc/etcd/pki/etcd.key put
+         --cert=/etc/etcd/pki/etcd-client.crt --key=/etc/etcd/pki/etcd-client.key put
         /molecule/tls-rotation before-tls-rotation
       environment:
         ETCDCTL_API: "3"
@@ -198,8 +199,8 @@
     - name: "Wait for etcd trust activation and quorum"
       ansible.builtin.command: >-
         etcdctl --endpoints=https://pg01:2379,https://pg02:2379,https://pg03:2379
-        --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd.crt
-        --key=/etc/etcd/pki/etcd.key endpoint health
+         --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd-client.crt
+         --key=/etc/etcd/pki/etcd-client.key endpoint health
       environment:
         ETCDCTL_API: "3"
       register: vagrant_trusted_etcd_health
@@ -222,24 +223,26 @@
       ansible.builtin.shell: >-
         set -o pipefail; timeout 10s openssl s_client -connect
         {{ inventory_hostname }}:2379 -servername {{ inventory_hostname }} -CAfile
-        /etc/etcd/pki/ca.crt -cert /etc/etcd/pki/etcd.crt -key
-        /etc/etcd/pki/etcd.key </dev/null | openssl x509 -noout
+         /etc/etcd/pki/ca.crt -cert /etc/etcd/pki/etcd-client.crt -key
+         /etc/etcd/pki/etcd-client.key </dev/null | openssl x509 -noout
         -fingerprint -sha256 -serial
       args: {executable: "/bin/bash"}
       register: vagrant_original_endpoint_certificate
       changed_when: false
       no_log: true
-    - name: "Install the new leaf and key on the current member"
+    - name: "Install the new client and peer leaves and keys on the current member"
       ansible.builtin.copy:
         content: >-
           {{ vagrant_rotation_material[vagrant_rotation_file.1] | b64decode }}
         dest: "/etc/etcd/pki/{{ vagrant_rotation_file.0 }}"
-        owner: "{{ 'etcd' if vagrant_rotation_file.0 == 'etcd.key' else 'root' }}"
-        group: "{{ 'postgres' if vagrant_rotation_file.0 == 'etcd.key' else 'etcd' }}"
+        owner: "root"
+        group: "etcd"
         mode: "{{ vagrant_rotation_file.2 }}"
       loop:
-        - ["etcd.crt", "cert", "0644"]
-        - ["etcd.key", "private", "0640"]
+        - ["etcd-client.crt", "cert", "0640"]
+        - ["etcd-client.key", "private", "0640"]
+        - ["etcd-peer.crt", "cert", "0640"]
+        - ["etcd-peer.key", "private", "0640"]
       loop_control:
         loop_var: vagrant_rotation_file
       no_log: true
@@ -247,8 +250,10 @@
     - name: "Restore SELinux labels on the rotated leaf files"
       ansible.builtin.command: restorecon -v /etc/etcd/pki/{{ item }}
       loop:
-        - "etcd.crt"
-        - "etcd.key"
+        - "etcd-client.crt"
+        - "etcd-client.key"
+        - "etcd-peer.crt"
+        - "etcd-peer.key"
       changed_when: false
 
     - name: "Restart the rotated etcd member"
@@ -263,8 +268,8 @@
     - name: "Wait for the rotated etcd member and cluster quorum"
       ansible.builtin.command: >-
         etcdctl --endpoints=https://pg01:2379,https://pg02:2379,https://pg03:2379
-        --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd.crt
-        --key=/etc/etcd/pki/etcd.key endpoint health
+         --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd-client.crt
+         --key=/etc/etcd/pki/etcd-client.key endpoint health
       environment:
         ETCDCTL_API: "3"
       register: vagrant_rotated_etcd_health
@@ -277,8 +282,10 @@
       ansible.builtin.stat:
         path: "{{ item }}"
       loop:
-        - "/etc/etcd/pki/etcd.crt"
-        - "/etc/etcd/pki/etcd.key"
+         - "/etc/etcd/pki/etcd-client.crt"
+         - "/etc/etcd/pki/etcd-client.key"
+         - "/etc/etcd/pki/etcd-peer.crt"
+         - "/etc/etcd/pki/etcd-peer.key"
       register: vagrant_rotated_tls_stats
 
     - name: "Require secure rotated etcd certificate ownership and modes"
@@ -287,24 +294,32 @@
           - vagrant_rotated_tls_stats.results[0].stat.exists
           - vagrant_rotated_tls_stats.results[0].stat.pw_name == "root"
           - vagrant_rotated_tls_stats.results[0].stat.gr_name == "etcd"
-          - vagrant_rotated_tls_stats.results[0].stat.mode == "0644"
+          - vagrant_rotated_tls_stats.results[0].stat.mode == "0640"
           - vagrant_rotated_tls_stats.results[1].stat.exists
-          - vagrant_rotated_tls_stats.results[1].stat.pw_name == "etcd"
-          - vagrant_rotated_tls_stats.results[1].stat.gr_name == "postgres"
+          - vagrant_rotated_tls_stats.results[1].stat.pw_name == "root"
+          - vagrant_rotated_tls_stats.results[1].stat.gr_name == "etcd"
           - vagrant_rotated_tls_stats.results[1].stat.mode == "0640"
+          - vagrant_rotated_tls_stats.results[2].stat.exists
+          - vagrant_rotated_tls_stats.results[2].stat.pw_name == "root"
+          - vagrant_rotated_tls_stats.results[2].stat.gr_name == "etcd"
+          - vagrant_rotated_tls_stats.results[2].stat.mode == "0640"
+          - vagrant_rotated_tls_stats.results[3].stat.exists
+          - vagrant_rotated_tls_stats.results[3].stat.pw_name == "root"
+          - vagrant_rotated_tls_stats.results[3].stat.gr_name == "etcd"
+          - vagrant_rotated_tls_stats.results[3].stat.mode == "0640"
 
     - name: "Require postgres effective read access to rotated etcd TLS files"
       ansible.builtin.command:
         argv: [runuser, -u, postgres, --, test, -r, "{{ item }}"]
       loop:
         - "/etc/etcd/pki/ca.crt"
-        - "/etc/etcd/pki/etcd.crt"
-        - "/etc/etcd/pki/etcd.key"
+        - "/etc/etcd/pki/etcd-client.crt"
+        - "/etc/etcd/pki/etcd-client.key"
       changed_when: false
 
     - name: "Verify the rotated member certificate has only its intended DNS and IP SAN"
       ansible.builtin.command:
-        argv: [openssl, x509, -in, /etc/etcd/pki/etcd.crt, -noout, -ext, subjectAltName]
+        argv: [openssl, x509, -in, /etc/etcd/pki/etcd-client.crt, -noout, -ext, subjectAltName]
       register: vagrant_rotated_san
       changed_when: false
 
@@ -324,8 +339,8 @@
     - name: "Verify the DCS continuity marker after rotation"
       ansible.builtin.command: >-
         etcdctl --endpoints=https://pg01:2379,https://pg02:2379,https://pg03:2379
-        --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd.crt
-        --key=/etc/etcd/pki/etcd.key get /molecule/tls-rotation
+         --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd-client.crt
+         --key=/etc/etcd/pki/etcd-client.key get /molecule/tls-rotation
       environment:
         ETCDCTL_API: "3"
       register: vagrant_dcs_marker
@@ -334,8 +349,8 @@
     - name: "Verify all TLS endpoints and quorum after rotation"
       ansible.builtin.command: >-
         etcdctl --endpoints=https://pg01:2379,https://pg02:2379,https://pg03:2379
-        --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd.crt
-        --key=/etc/etcd/pki/etcd.key endpoint health
+         --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd-client.crt
+         --key=/etc/etcd/pki/etcd-client.key endpoint health
       environment:
         ETCDCTL_API: "3"
       changed_when: false
@@ -344,8 +359,8 @@
     - name: "Verify the rotated client certificate status"
       ansible.builtin.command: >-
         etcdctl --endpoints=https://pg01:2379,https://pg02:2379,https://pg03:2379
-        --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd.crt
-        --key=/etc/etcd/pki/etcd.key endpoint status
+         --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd-client.crt
+         --key=/etc/etcd/pki/etcd-client.key endpoint status
       environment:
         ETCDCTL_API: "3"
       changed_when: false
@@ -354,8 +369,8 @@
       ansible.builtin.shell: >-
         set -o pipefail; timeout 10s openssl s_client -connect
         {{ inventory_hostname }}:2379 -servername {{ inventory_hostname }} -CAfile
-        /etc/etcd/pki/ca.crt -cert /etc/etcd/pki/etcd.crt -key
-        /etc/etcd/pki/etcd.key </dev/null | openssl x509 -noout
+         /etc/etcd/pki/ca.crt -cert /etc/etcd/pki/etcd-client.crt -key
+         /etc/etcd/pki/etcd-client.key </dev/null | openssl x509 -noout
         -fingerprint -sha256 -serial
       args: {executable: "/bin/bash"}
       register: vagrant_rotated_endpoint_certificate
@@ -375,7 +390,8 @@
 
     - name: "Verify Patroni DCS and API continuity after rotation"
       ansible.builtin.uri:
-        url: "http://pg01:8008/cluster"
+        url: "https://pg01:8008/cluster"
+        ca_path: /etc/patroni/pki/ca.crt
         url_username: "patroni"
         url_password: "patroni_password"
         force_basic_auth: true

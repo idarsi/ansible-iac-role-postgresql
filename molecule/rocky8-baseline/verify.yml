@@ -10,7 +10,11 @@
       - { version: "18", port: 5418, database: appdb18, directory: /tmp/pgsql18, file: /tmp/pgsql18/example.txt, cron_file: /etc/cron.d/pg18_heartbeat, config_file: /var/lib/pgsql/18/main/conf.d/42-inventory.conf }
   tasks:
     - name: "Checking PostgreSQL operating system user"
-      ansible.builtin.command: "getent passwd postgres"
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_facts['python']['executable'] }}"
+          - "-c"
+          - "import pwd; pwd.getpwnam('postgres')"
       register: pg_os_user_check
       changed_when: false
 

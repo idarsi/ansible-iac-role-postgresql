@@ -1,0 +1,16 @@
+{
+  "primary": {
+    "explicit_null": {"podman": {"IPAddress": null}},
+    "wrong_type": {"podman": {"IPAddress": 123}},
+    "empty": {"podman": {"IPAddress": ""}},
+    "non_unicast": {"podman": {"IPAddress": "224.0.0.1"}},
+    "valid_ipv4": {"podman": {"IPAddress": "10.88.0.2"}}
+  },
+  "standby": {
+    "explicit_null": {"podman": {"IPAddress": null}},
+    "wrong_type": {"podman": {"IPAddress": 123}},
+    "empty": {"podman": {"IPAddress": ""}},
+    "non_unicast": {"podman": {"IPAddress": "224.0.0.1"}},
+    "valid_ipv4": {"podman": {"IPAddress": "10.88.0.3"}}
+  }
+}

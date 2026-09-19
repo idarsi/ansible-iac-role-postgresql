@@ -1,0 +1,158 @@
+---
+# Controller-safe portion of cluster_certificates_preflight.yml.  Keep this
+# path separate so validation contracts can exercise the production
+# normalization and collision model without inspecting or mutating host paths.
+- name: "Normalize cluster certificate paths before collision checks"
+  ansible.builtin.include_tasks: cluster_certificates_normalize.yml
+
+- name: "Deriving cluster certificate preflight model"
+  ansible.builtin.set_fact:
+    pg_cluster_pki_generation_enabled: >-
+      {{ (((pg_cluster.dcs | default({})).etcd | default({})).tls | default({})).auto_generate | default(false) | bool
+         or ((pg_cluster.patroni | default({})).restapi | default({})).auto_generate | default(false) | bool }}
+    pg_cluster_preflight_paths: >-
+      {{ [pg_cluster_certificate_seed_directory, pg_cluster_registry_directory,
+          pg_cluster_lock_directory, pg_cluster_metadata_directory]
+         + (pg_cluster_seed_pki_artifacts | default([]) | list)
+         + (pg_cluster_generated_pki_destinations | default([]) | list)
+         + (pg_cluster_patroni_external_pki_destinations | default([]) | list)
+         + (pg_cluster_etcd_pki_destinations | default([]) | list) }}
+
+- name: "Rejecting cluster paths that cannot be derived safely"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_preflight_paths | length > 0
+      - pg_cluster_seed_pki_artifacts | default([]) | length >= 2
+    fail_msg: "Cluster certificate destinations and member/CA artifacts must be absolute and derivable"
+
+- name: "Build canonical cluster PKI collision model"
+  ansible.builtin.set_fact:
+    pg_cluster_collision_generated_paths: "{{ pg_cluster_generated_pki_destinations | default([]) | list }}"
+    pg_cluster_collision_ca_paths: "{{ pg_cluster_seed_pki_artifacts | default([]) | list }}"
+    pg_cluster_collision_registry_paths:
+      - "{{ pg_cluster_registry_directory }}"
+      - "{{ pg_cluster_registry_path }}"
+    pg_cluster_collision_lock_paths:
+      - "{{ pg_cluster_lock_directory }}"
+      - "{{ pg_cluster_lock_path }}"
+    pg_cluster_collision_metadata_paths:
+      - "{{ pg_cluster_metadata_directory }}"
+      - "{{ pg_cluster_metadata_directory }}/{{ pg_version | string }}-{{ pg_cluster.name | string }}"
+    pg_cluster_collision_managed_paths:
+      - "{{ pg_cluster_certificate_seed_directory }}"
+
+- name: "Preserve cluster PKI collision evidence before deduplication"
+  ansible.builtin.set_fact:
+    pg_cluster_collision_shared_ca_paths: >-
+      {{ ([pg_cluster_etcd_tls_effective.get('ca_file'),
+           pg_cluster_etcd_tls_effective.get('client', {}).get('ca_file'),
+           pg_cluster_etcd_tls_effective.get('peer', {}).get('ca_file')]
+          if (pg_cluster_etcd_tls.enabled | default(false) | bool or
+              pg_cluster_etcd_tls.auto_generate | default(false) | bool) else [])
+         + ([pg_cluster_patroni_restapi_effective.get('cafile')]
+            if pg_cluster_patroni_restapi_tls_enabled | bool else [])
+         | select('defined') | map('trim') | list | unique }}
+    pg_cluster_collision_generated_occurrences: >-
+      {% set ns = namespace(records=[]) %}
+      {% for path in pg_cluster_etcd_pki_destinations | default([]) %}
+      {% if path is defined and path is string and path | trim | length > 0 %}
+      {% set record = {'path': path, 'role': 'generated-etcd',
+                       'shared_ca': (path | trim) in
+                       (pg_cluster_collision_shared_ca_paths | default([]))} %}
+      {% set ns.records = ns.records + [record] %}
+      {% endif %}{% endfor %}
+      {% for path in pg_cluster_patroni_pki_destinations | default([]) %}
+      {% if path is defined and path is string and path | trim | length > 0 %}
+      {% set record = {'path': path, 'role': 'generated-patroni',
+                       'shared_ca': (path | trim) in
+                       (pg_cluster_collision_shared_ca_paths | default([]))} %}
+      {% set ns.records = ns.records + [record] %}
+      {% endif %}{% endfor %}{{ ns.records }}
+
+- name: "Publish raw cluster PKI collision paths"
+  ansible.builtin.set_fact:
+    pg_cluster_collision_shared_ca_paths: "{{ pg_cluster_collision_shared_ca_paths | map('trim') | list }}"
+    pg_cluster_collision_generated_occurrences: "{{ pg_cluster_collision_generated_occurrences | from_yaml }}"
+
+- name: "Select non-generated certificate collision occurrences"
+  ansible.builtin.set_fact:
+    pg_cluster_collision_certificate_paths: >-
+      {% set generated = pg_cluster_generated_pki_destinations | default([]) | list %}
+      {% set shared_ca = pg_cluster_collision_shared_ca_paths | default([]) | list %}
+      {% set candidates =
+        ([pg_cluster_etcd_tls_effective.get('client', {}).get('cert_file'),
+          pg_cluster_etcd_tls_effective.get('client', {}).get('key_file'),
+          pg_cluster_etcd_tls_effective.get('peer', {}).get('cert_file'),
+          pg_cluster_etcd_tls_effective.get('peer', {}).get('key_file')]
+         if (pg_cluster_etcd_tls.enabled | default(false) | bool or
+             pg_cluster_etcd_tls.auto_generate | default(false) | bool) else [])
+        + ([pg_cluster_patroni_restapi_effective.get('certfile'),
+            pg_cluster_patroni_restapi_effective.get('keyfile')]
+           if pg_cluster_patroni_restapi_tls_enabled | bool else []) %}
+      {% set ns = namespace(paths=[]) %}
+      {% for path in candidates %}
+      {% if path is defined and path is string and path | trim | length > 0
+            and (path not in generated or path in shared_ca) %}
+      {% set ns.paths = ns.paths + [path] %}{% endif %}
+      {% endfor %}{{ ns.paths | unique | list }}
+
+- name: "Convert certificate collision occurrences to a native list"
+  ansible.builtin.set_fact:
+    pg_cluster_collision_certificate_paths: "{{ pg_cluster_collision_certificate_paths | from_yaml }}"
+
+- name: "Build complete cluster PKI collision occurrence model"
+  ansible.builtin.set_fact:
+    pg_cluster_collision_occurrences: >-
+      {% set ns = namespace(records=[]) %}
+      {% for path in pg_cluster_collision_shared_ca_paths %}
+      {% set ns.records = ns.records + [{'path': path, 'role': 'shared-ca', 'shared_ca': true}] %}
+      {% endfor %}
+      {% for record in pg_cluster_collision_generated_occurrences %}
+      {% set ns.records = ns.records + [record] %}{% endfor %}
+      {% for path in pg_cluster_collision_certificate_paths %}
+      {% set ns.records = ns.records + [{'path': path, 'role': 'certificate', 'shared_ca': false}] %}
+      {% endfor %}
+      {% for path in pg_cluster_collision_ca_paths %}
+      {% set ns.records = ns.records + [{'path': path, 'role': 'seed-artifact', 'shared_ca': false}] %}
+      {% endfor %}
+      {% for path in pg_cluster_collision_registry_paths %}
+      {% set ns.records = ns.records + [{'path': path, 'role': 'registry', 'shared_ca': false}] %}
+      {% endfor %}
+      {% for path in pg_cluster_collision_lock_paths %}
+      {% set ns.records = ns.records + [{'path': path, 'role': 'lock', 'shared_ca': false}] %}
+      {% endfor %}
+      {% for path in pg_cluster_collision_metadata_paths %}
+      {% set ns.records = ns.records + [{'path': path, 'role': 'metadata', 'shared_ca': false}] %}
+      {% endfor %}
+      {% for path in pg_cluster_collision_managed_paths %}
+      {% set ns.records = ns.records + [{'path': path, 'role': 'managed', 'shared_ca': false}] %}
+      {% endfor %}{{ ns.records }}
+
+- name: "Convert complete cluster PKI collision occurrence model"
+  ansible.builtin.set_fact:
+    pg_cluster_collision_occurrences: "{{ pg_cluster_collision_occurrences | from_yaml }}"
+
+- name: "Derive unintended cluster PKI collision evidence"
+  ansible.builtin.set_fact:
+    pg_cluster_collision_unintended_duplicates: >-
+      {% set ns = namespace(paths=[]) %}
+      {% for path in pg_cluster_collision_occurrences | map(attribute='path') | unique %}
+      {% set occurrences = pg_cluster_collision_occurrences | selectattr('path', 'equalto', path) | list %}
+      {% if occurrences | length > 1 and
+            (path not in pg_cluster_collision_shared_ca_paths or
+             occurrences | selectattr('role', 'equalto', 'certificate') | list | length > 0) %}
+      {% set ns.paths = ns.paths + [path] %}{% endif %}
+      {% endfor %}{{ ns.paths }}
+
+- name: "Convert unintended cluster PKI collision evidence to a native list"
+  ansible.builtin.set_fact:
+    pg_cluster_collision_unintended_duplicates: "{{ pg_cluster_collision_unintended_duplicates | from_yaml }}"
+
+- name: "Rejecting pairwise cluster PKI path collisions"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_collision_unintended_duplicates | length == 0
+    fail_msg: >-
+      Cluster generated, CA, registry, lock, metadata, managed, and seed paths
+      must be pairwise distinct after canonical normalization; only explicitly
+      shared CA destinations may occur more than once

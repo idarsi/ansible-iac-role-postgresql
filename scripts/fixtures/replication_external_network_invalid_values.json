@@ -1,0 +1,55 @@
+{
+  "malformed_ipv4": {
+    "ipv4": "not-an-ipv4-address",
+    "subnets": [{"subnet": "10.88.0.0/16"}],
+    "expected_message": "valid unicast IPv4 address",
+    "published_facts": {}
+  },
+  "null_ipv4": {
+    "ipv4": null,
+    "subnets": [{"subnet": "10.88.0.0/16"}],
+    "expected_message": "non-empty string values",
+    "published_facts": {}
+  },
+  "empty_ipv4": {
+    "ipv4": "",
+    "subnets": [{"subnet": "10.88.0.0/16"}],
+    "expected_message": "non-empty string values",
+    "published_facts": {}
+  },
+  "missing_ipv4": {
+    "subnets": [{"subnet": "10.88.0.0/16"}],
+    "expected_message": "non-empty string values",
+    "published_facts": {}
+  },
+  "missing_subnet": {
+    "ipv4": "10.88.0.2",
+    "subnets": [{}],
+    "expected_message": "exactly one subnet mapping",
+    "published_facts": {}
+  },
+  "null_subnet": {
+    "ipv4": "10.88.0.2",
+    "subnets": [{"subnet": null}],
+    "expected_message": "non-empty string values",
+    "published_facts": {}
+  },
+  "empty_subnet": {
+    "ipv4": "10.88.0.2",
+    "subnets": [{"subnet": ""}],
+    "expected_message": "non-empty string values",
+    "published_facts": {}
+  },
+  "non_unicast_ipv4": {
+    "ipv4": "127.0.0.1",
+    "subnets": [{"subnet": "10.88.0.0/16"}],
+    "expected_message": "valid unicast IPv4 address",
+    "published_facts": {}
+  },
+  "invalid_subnet": {
+    "ipv4": "10.88.0.2",
+    "subnets": [{"subnet": "10.88.0.2/16"}],
+    "expected_message": "canonical IPv4 CIDR",
+    "published_facts": {}
+  }
+}

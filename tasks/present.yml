@@ -44,11 +44,6 @@
   vars:
     pg_package: "sudo"
 
-- name: "Ensuring acl is installed"
-  ansible.builtin.include_tasks: package_present.yml
-  vars:
-    pg_package: "acl"
-
 - name: "Ensuring epel-release is installed"
   ansible.builtin.include_tasks: package_present.yml
   vars:
@@ -56,11 +51,6 @@
   when:
     - ansible_facts["distribution"] in ['Rocky']
     - ansible_facts["distribution_major_version"] in ['8', '9', '10']
-
-- name: "Ensuring openssl is installed"
-  ansible.builtin.include_tasks: package_present.yml
-  vars:
-    pg_package: "openssl"
 
 - name: "Ensuring sed is installed"
   ansible.builtin.include_tasks: package_present.yml

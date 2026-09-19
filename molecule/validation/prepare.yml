@@ -1,0 +1,1080 @@
+---
+- name: "Require validation containers before connecting through Molecule inventory"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    iac_validation_podman_executable: >-
+      {{ lookup('ansible.builtin.env', 'MOLECULE_PODMAN_EXECUTABLE') | default('podman', true) }}
+    iac_validation_container_names:
+      - "instance-idarsi-validation"
+      - "instance-idarsi-etcd"
+    # Keep this contract synchronized with molecule/validation/molecule.yml.
+    # The guard must reject a stopped or replaced container before any target
+    # connection is attempted.
+    iac_validation_expected_image: "docker.io/rockylinux/rockylinux:9-ubi-init"
+    iac_validation_expected_command: "/sbin/init"
+  tasks:
+    - name: "Run validation container guard"
+      ansible.builtin.include_tasks: "container_guard.yml"
+
+- name: "Create validation fixtures and record baseline host state"
+  hosts: "instance-idarsi-validation:instance-idarsi-etcd"
+  become: true
+  vars:
+    ansible_become_method: "su"
+    iac_validation_scenario_id: "{{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_NAME') | default('validation', true) }}"
+    iac_validation_run_id: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') | basename }}"
+    # Fixture state only; this is deliberately not an Ansible temporary path.
+    iac_validation_remote_parent: "/run/ansible-validation"
+    iac_validation_remote_artifact_root: >-
+      {{ iac_validation_remote_parent }}/{{ iac_validation_scenario_id }}-{{ inventory_hostname }}-{{ iac_validation_run_id }}
+    iac_validation_marker_content: "ansible-iac-role-postgresql validation artifacts {{ iac_validation_run_id }}\n"
+    iac_validation_artifact_manifest:
+      - ".role-marker"
+      - "validation-sentinel"
+      - "validation-sentinel/config.conf"
+      - "packages.json"
+      - "services.json"
+      - "files.json"
+      - ".artifact-manifest.json"
+  tasks:
+    - name: "Provision ACL and path inspection tools on validation targets"
+      ansible.builtin.package:
+        name:
+          - "acl"
+          - "util-linux"
+        state: "present"
+      become: true
+      become_user: "root"
+
+    - name: "Reject unsafe validation path components"
+      ansible.builtin.assert:
+        that:
+          - iac_validation_run_id is match('^[A-Za-z0-9][A-Za-z0-9_.-]+$')
+          - iac_validation_run_id not in ['', '.', '..']
+          - iac_validation_scenario_id is match('^[A-Za-z0-9][A-Za-z0-9_.-]+$')
+          - inventory_hostname is match('^[A-Za-z0-9][A-Za-z0-9_.-]+$')
+          - >-
+            iac_validation_remote_artifact_root == '/run/ansible-validation/' ~
+            iac_validation_scenario_id ~ '-' ~ inventory_hostname ~ '-' ~ iac_validation_run_id
+        fail_msg: "Validation artifact path components must be non-empty and safe"
+
+    - name: "Checking private validation parent"
+      ansible.builtin.stat:
+        path: "{{ iac_validation_remote_parent }}"
+        follow: false
+      register: iac_validation_remote_parent_stat
+
+    - name: "Checking validation artifact parent ACL"
+      ansible.builtin.command:
+        argv: ["getfacl", "--absolute-names", "--", "{{ iac_validation_remote_parent }}"]
+      changed_when: false
+      failed_when: false
+      when: iac_validation_remote_parent_stat.stat.exists | default(false)
+      register: iac_validation_remote_parent_acl
+
+    - name: "Checking private validation parent ancestors"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+      loop:
+        - "/"
+        - "/run"
+        - "{{ iac_validation_remote_parent }}"
+      register: iac_validation_remote_parent_ancestors
+
+    - name: "Checking validation system ancestor ACLs"
+      ansible.builtin.command:
+        argv: ["getfacl", "--absolute-names", "--", "{{ item }}"]
+      changed_when: false
+      failed_when: false
+      loop:
+        - "/"
+        - "/run"
+      register: iac_validation_system_ancestor_acls
+
+    - name: "Rejecting unsafe validation system ancestor ACLs"
+      ansible.builtin.assert:
+        that:
+          - item.get('rc', -1) == 0
+          - item.get('stdout', '') is not search('^default:', multiline=true)
+          - item.get('stdout', '') is not search('^user:[^:]+:', multiline=true)
+          - item.get('stdout', '') is not search('^group:[^:]+:', multiline=true)
+        fail_msg: "Validation system ancestors must not grant access through named or default ACLs"
+      loop: "{{ iac_validation_system_ancestor_acls.results }}"
+
+    - name: "Rejecting unsafe root validation ancestor"
+      ansible.builtin.assert:
+        that:
+          - item.stat.isdir
+          - not (item.stat.islnk | default(false))
+          - item.stat.pw_name == "root"
+          - item.stat.gr_name == "root"
+          - item.stat.mode is match('^0[0-7][0145][0145]$')
+        fail_msg: "Validation artifact parent ancestors must be safe root-owned directories without group/other write"
+      loop: "{{ iac_validation_remote_parent_ancestors.results }}"
+      when:
+        - item.item == "/"
+
+    - name: "Rejecting unsafe /run validation ancestor"
+      ansible.builtin.assert:
+        that:
+          - item.stat.isdir
+          - not (item.stat.islnk | default(false))
+          - item.stat.pw_name == "root"
+          - item.stat.gr_name == "root"
+          - item.stat.mode is match('^0[0-7][0145][0145]$')
+        fail_msg: "Validation artifact parent ancestors must be safe root-owned directories without group/other write"
+      loop: "{{ iac_validation_remote_parent_ancestors.results }}"
+      when:
+        - item.item == "/run"
+
+    - name: "Rejecting unsafe private validation parent"
+      ansible.builtin.assert:
+        that:
+          - not item.stat.exists | default(false) or item.stat.isdir
+          - not item.stat.exists | default(false) or not (item.stat.islnk | default(false))
+          - not item.stat.exists | default(false) or item.stat.pw_name == "root"
+          - not item.stat.exists | default(false) or item.stat.gr_name == "root"
+          - not item.stat.exists | default(false) or item.stat.mode == "0700"
+        fail_msg: "Validation artifact parent must be absent or a private root-owned directory"
+      loop: "{{ iac_validation_remote_parent_ancestors.results }}"
+      when: item.item == iac_validation_remote_parent
+
+    - name: "Rejecting unsafe validation artifact parent ACL"
+      ansible.builtin.assert:
+        that:
+          - iac_validation_remote_parent_acl.get('rc', -1) == 0
+          - iac_validation_remote_parent_acl.get('stdout', '') is not search('^default:', multiline=true)
+          - iac_validation_remote_parent_acl.get('stdout', '') is not search('^user:[^:]+:', multiline=true)
+          - iac_validation_remote_parent_acl.get('stdout', '') is not search('^group:[^:]+:', multiline=true)
+        fail_msg: "Validation artifact parent must not grant access through extended ACLs"
+      when: iac_validation_remote_parent_stat.stat.exists | default(false)
+
+    - name: "Creating private validation parent"
+      ansible.builtin.file:
+        path: "{{ iac_validation_remote_parent }}"
+        state: "directory"
+        owner: "root"
+        group: "root"
+        mode: "0700"
+
+    - name: "Rechecking validation artifact parent"
+      ansible.builtin.stat:
+        path: "{{ iac_validation_remote_parent }}"
+        follow: false
+      register: iac_validation_remote_parent_final_stat
+
+    - name: "Checking validation artifact parent ACL after creation"
+      ansible.builtin.command:
+        argv: ["getfacl", "--absolute-names", "--", "{{ iac_validation_remote_parent }}"]
+      changed_when: false
+      register: iac_validation_remote_parent_final_acl
+
+    - name: "Ensuring validation artifact parent is safe"
+      ansible.builtin.assert:
+        that:
+          - iac_validation_remote_parent is match('^/[^/]')
+          - iac_validation_remote_parent == "/run/ansible-validation"
+          - iac_validation_remote_parent_final_stat.stat.isdir
+          - not (iac_validation_remote_parent_final_stat.stat.islnk | default(false))
+          - iac_validation_remote_parent_final_stat.stat.pw_name == "root"
+          - iac_validation_remote_parent_final_stat.stat.mode == "0700"
+          - iac_validation_remote_parent_final_acl.get('rc', -1) == 0
+          - iac_validation_remote_parent_final_acl.get('stdout', '') is not search('^default:', multiline=true)
+          - iac_validation_remote_parent_final_acl.get('stdout', '') is not search('^user:[^:]+:', multiline=true)
+          - iac_validation_remote_parent_final_acl.get('stdout', '') is not search('^group:[^:]+:', multiline=true)
+        fail_msg: "Validation artifact base must be an absolute, private, root-owned directory without unsafe ACLs"
+
+    - name: "Checking a pre-existing validation artifact root"
+      ansible.builtin.stat:
+        path: "{{ iac_validation_remote_artifact_root }}"
+        follow: false
+      register: iac_validation_remote_root_stat
+
+    - name: "Checking pre-existing validation artifact root ACL"
+      ansible.builtin.command:
+        argv: ["getfacl", "--absolute-names", "--", "{{ iac_validation_remote_artifact_root }}"]
+      changed_when: false
+      failed_when: false
+      when: iac_validation_remote_root_stat.stat.exists | default(false)
+      register: iac_validation_remote_root_acl
+
+    - name: "Checking pre-existing validation marker"
+      ansible.builtin.stat:
+        path: "{{ iac_validation_remote_artifact_root }}/.role-marker"
+        follow: false
+      when: iac_validation_remote_root_stat.stat.exists | default(false)
+      register: iac_validation_remote_marker_stat
+
+    - name: "Reading pre-existing validation marker"
+      ansible.builtin.slurp:
+        src: "{{ iac_validation_remote_artifact_root }}/.role-marker"
+      when: iac_validation_remote_marker_stat.stat.isreg | default(false)
+      register: iac_validation_remote_marker
+
+    - name: "Checking pre-existing validation marker ACL"
+      ansible.builtin.command:
+        argv: ["getfacl", "--absolute-names", "--", "{{ iac_validation_remote_artifact_root }}/.role-marker"]
+      changed_when: false
+      failed_when: false
+      when: iac_validation_remote_marker_stat.stat.exists | default(false)
+      register: iac_validation_remote_marker_acl
+
+    - name: "Stat every expected remote artifact component before cleanup"
+      ansible.builtin.stat:
+        path: "{{ iac_validation_remote_artifact_root }}/{{ item }}"
+        follow: false
+      loop: "{{ iac_validation_artifact_manifest }}"
+      register: iac_validation_remote_expected_components
+      when: iac_validation_remote_root_stat.stat.isdir | default(false)
+
+    - name: "Rejecting unsafe remote artifact component types before cleanup"
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists | default(false)
+          - not (item.stat.islnk | default(false))
+          - >-
+            ((item.item == "validation-sentinel" and item.stat.isdir) or
+             (item.item != "validation-sentinel" and item.stat.isreg))
+        fail_msg: "A remote artifact manifest component is missing or has an unexpected type; preserving it for recovery"
+      loop: "{{ iac_validation_remote_expected_components.results | default([]) }}"
+      when: iac_validation_remote_root_stat.stat.isdir | default(false)
+
+    - name: "Checking every stale remote manifest component ACL"
+      ansible.builtin.command:
+        argv: ["getfacl", "-P", "--absolute-names", "--", "{{ iac_validation_remote_artifact_root }}/{{ item.item }}"]
+      changed_when: false
+      failed_when: false
+      loop: "{{ iac_validation_remote_expected_components.results | default([]) }}"
+      when: iac_validation_remote_root_stat.stat.isdir | default(false)
+      register: iac_validation_remote_component_acls
+
+    - name: "Rejecting unsafe stale remote manifest component ACLs"
+      ansible.builtin.assert:
+        that:
+          - item.get('rc', -1) == 0
+          - item.get('stdout', '') is not search('^default:', multiline=true)
+          - item.get('stdout', '') is not search('^user:[^:]+:', multiline=true)
+          - item.get('stdout', '') is not search('^group:[^:]+:', multiline=true)
+        fail_msg: "A stale remote manifest component has an unsafe or unreadable ACL"
+      loop: "{{ iac_validation_remote_component_acls.results | default([]) | rejectattr('skipped', 'defined') | list }}"
+
+    - name: "Validating pre-existing validation artifact root before cleanup"
+      ansible.builtin.assert:
+        that:
+          - not iac_validation_remote_root_stat.stat.exists | default(false) or
+            (iac_validation_remote_root_stat.stat.isdir and
+             not (iac_validation_remote_root_stat.stat.islnk | default(false)) and
+             iac_validation_remote_root_stat.stat.pw_name == "root" and
+             iac_validation_remote_root_stat.stat.gr_name == "root" and
+             iac_validation_remote_root_stat.stat.mode == "0700" and
+             iac_validation_remote_root_acl.get('rc', -1) == 0 and
+             iac_validation_remote_root_acl.get('stdout', '') is not search('^default:', multiline=true) and
+             iac_validation_remote_root_acl.get('stdout', '') is not search('^user:[^:]+:', multiline=true) and
+             iac_validation_remote_root_acl.get('stdout', '') is not search('^group:[^:]+:', multiline=true) and
+             iac_validation_remote_marker_acl.get('rc', -1) == 0 and
+             iac_validation_remote_marker_acl.get('stdout', '') is not search('^default:', multiline=true) and
+             iac_validation_remote_marker_acl.get('stdout', '') is not search('^user:[^:]+:', multiline=true) and
+             iac_validation_remote_marker_acl.get('stdout', '') is not search('^group:[^:]+:', multiline=true) and
+             iac_validation_remote_marker_stat.stat.isreg and
+             not (iac_validation_remote_marker_stat.stat.islnk | default(false)) and
+             iac_validation_remote_marker_stat.stat.pw_name == "root" and
+             iac_validation_remote_marker_stat.stat.gr_name == "root" and
+             iac_validation_remote_marker_stat.stat.mode == "0600" and
+             (iac_validation_remote_marker.content | b64decode) == iac_validation_marker_content)
+        fail_msg: "Existing validation artifact root is partial, unsafe, or tampered; refusing deletion"
+
+    - name: "Inspecting all pre-existing validation artifact entries"
+      ansible.builtin.find:
+        paths: "{{ iac_validation_remote_artifact_root }}"
+        recurse: true
+        file_type: "any"
+        hidden: true
+        follow: false
+      register: iac_validation_remote_existing_entries
+      when: iac_validation_remote_root_stat.stat.isdir | default(false)
+
+    - name: "Reading pre-existing validation artifact manifest"
+      ansible.builtin.slurp:
+        src: "{{ iac_validation_remote_artifact_root }}/.artifact-manifest.json"
+      register: iac_validation_remote_existing_manifest
+      when: iac_validation_remote_root_stat.stat.isdir | default(false)
+
+    - name: "Rejecting unexpected validation artifact entries"
+      ansible.builtin.assert:
+        that:
+          - (iac_validation_remote_existing_manifest.content | b64decode | from_json).files == iac_validation_artifact_manifest
+          - >-
+            (iac_validation_remote_existing_entries.files | map(attribute='path')
+            | map('regex_replace', '^' ~ iac_validation_remote_artifact_root ~ '/', '')
+            | sort | list) == (iac_validation_artifact_manifest | sort)
+        fail_msg: "Validation artifact root contains unexpected content or an invalid manifest; preserving it for recovery"
+      when: iac_validation_remote_root_stat.stat.isdir | default(false)
+
+    - name: "Removing a previously validated validation artifact root"
+      ansible.builtin.include_tasks: ../../tasks/validation_cleanup_artifact.yml
+      vars:
+        iac_validation_cleanup_root: "{{ iac_validation_remote_artifact_root }}"
+        iac_validation_cleanup_root_stat: "{{ iac_validation_remote_root_stat }}"
+        iac_validation_cleanup_owner: "root"
+        iac_validation_cleanup_root_mode: "0700"
+        iac_validation_cleanup_marker: "{{ iac_validation_remote_marker }}"
+        iac_validation_cleanup_marker_content: "{{ iac_validation_marker_content }}"
+        iac_validation_cleanup_manifest_name: ".artifact-manifest.json"
+        iac_validation_cleanup_allowlist: "{{ iac_validation_artifact_manifest }}"
+        iac_validation_cleanup_directories: ["validation-sentinel"]
+        iac_validation_cleanup_symlinks: []
+      when: iac_validation_remote_root_stat.stat.exists | default(false)
+
+    - name: "Check stale validation artifact cleanup postcondition"
+      ansible.builtin.stat:
+        path: "{{ iac_validation_remote_artifact_root }}"
+        follow: false
+      register: iac_validation_remote_root_after_cleanup
+
+    - name: "Assert stale validation artifact cleanup postcondition"
+      ansible.builtin.assert:
+        that:
+          - not iac_validation_remote_root_after_cleanup.stat.exists | default(false)
+        fail_msg: "Stale validation artifact cleanup did not remove the validated root"
+      when: iac_validation_remote_root_stat.stat.exists | default(false)
+
+    - name: "Creating private validation artifact directory"
+      ansible.builtin.file:
+        path: "{{ iac_validation_remote_artifact_root }}"
+        state: "directory"
+        owner: "root"
+        group: "root"
+        mode: "0700"
+
+    - name: "Marking validation artifact directory"
+      ansible.builtin.copy:
+        content: "{{ iac_validation_marker_content }}"
+        dest: "{{ iac_validation_remote_artifact_root }}/.role-marker"
+        owner: "root"
+        group: "root"
+        mode: "0600"
+      no_log: true
+
+    - name: "Validating new artifact root and marker"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+      loop:
+        - "{{ iac_validation_remote_artifact_root }}"
+        - "{{ iac_validation_remote_artifact_root }}/.role-marker"
+      register: iac_validation_new_artifact_metadata
+
+    - name: "Reading new artifact marker"
+      ansible.builtin.slurp:
+        src: "{{ iac_validation_remote_artifact_root }}/.role-marker"
+      register: iac_validation_new_marker_content
+
+    - name: "Checking new artifact root and marker ACL"
+      ansible.builtin.command:
+        argv: ["getfacl", "--absolute-names", "--", "{{ item }}"]
+      changed_when: false
+      loop:
+        - "{{ iac_validation_remote_artifact_root }}"
+        - "{{ iac_validation_remote_artifact_root }}/.role-marker"
+      register: iac_validation_new_artifact_acls
+
+    - name: "Checking new artifact root and exact marker"
+      ansible.builtin.assert:
+        that:
+          - iac_validation_new_artifact_metadata.results[0].stat.isdir
+          - not (iac_validation_new_artifact_metadata.results[0].stat.islnk | default(false))
+          - iac_validation_new_artifact_metadata.results[0].stat.pw_name == "root"
+          - iac_validation_new_artifact_metadata.results[0].stat.gr_name == "root"
+          - iac_validation_new_artifact_metadata.results[0].stat.mode == "0700"
+          - iac_validation_new_artifact_metadata.results[1].stat.isreg
+          - not (iac_validation_new_artifact_metadata.results[1].stat.islnk | default(false))
+          - iac_validation_new_artifact_metadata.results[1].stat.pw_name == "root"
+          - iac_validation_new_artifact_metadata.results[1].stat.gr_name == "root"
+          - iac_validation_new_artifact_metadata.results[1].stat.mode == "0600"
+          - (iac_validation_new_marker_content.content | b64decode) == iac_validation_marker_content
+          - iac_validation_new_artifact_acls.results | selectattr('rc', 'equalto', 0) | list | length == 2
+          - iac_validation_new_artifact_acls.results | map(attribute='stdout') | select('search', '^default:', multiline=true) | list | length == 0
+          - iac_validation_new_artifact_acls.results | map(attribute='stdout') | select('search', '^user:[^:]+:', multiline=true) | list | length == 0
+          - iac_validation_new_artifact_acls.results | map(attribute='stdout') | select('search', '^group:[^:]+:', multiline=true) | list | length == 0
+        fail_msg: "New validation artifact root or marker failed safety validation"
+
+    - name: "Creating a pre-existing Patroni configuration sentinel directory"
+      ansible.builtin.file:
+        path: "{{ iac_validation_remote_artifact_root }}/validation-sentinel"
+        state: "directory"
+        owner: "root"
+        group: "root"
+        mode: "0750"
+        access_time: "203001020304.05"
+        modification_time: "203001020304.05"
+
+    - name: "Creating a pre-existing Patroni configuration sentinel"
+      ansible.builtin.copy:
+        content: "pre-existing validation configuration\n"
+        dest: "{{ iac_validation_remote_artifact_root }}/validation-sentinel/config.conf"
+        owner: "root"
+        group: "root"
+        mode: "0640"
+      no_log: true
+
+    - name: "Setting pre-existing Patroni configuration sentinel timestamps"
+      ansible.builtin.file:
+        path: "{{ iac_validation_remote_artifact_root }}/validation-sentinel/config.conf"
+        state: "file"
+        access_time: "203001020304.05"
+        modification_time: "203001020304.05"
+
+    - name: "Gathering package state before validation"
+      ansible.builtin.package_facts:
+        manager: "rpm"
+
+    - name: "Gathering service state before validation"
+      ansible.builtin.service_facts:
+
+    - name: "Recording sentinel metadata before validation"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+      loop:
+        - "{{ iac_validation_remote_artifact_root }}/validation-sentinel"
+        - "{{ iac_validation_remote_artifact_root }}/validation-sentinel/config.conf"
+      register: pg_validation_sentinel_metadata
+
+    - name: "Writing package baseline snapshot"
+      ansible.builtin.copy:
+        content: "{{ ansible_facts.packages | to_nice_json }}\n"
+        dest: "{{ iac_validation_remote_artifact_root }}/packages.json"
+        mode: "0600"
+      no_log: true
+
+    - name: "Writing service baseline snapshot"
+      ansible.builtin.copy:
+        content: "{{ ansible_facts.services | to_nice_json }}\n"
+        dest: "{{ iac_validation_remote_artifact_root }}/services.json"
+        mode: "0600"
+      no_log: true
+
+    - name: "Writing file baseline snapshot"
+      ansible.builtin.copy:
+        content: >-
+          {{ {
+            'directory': pg_validation_sentinel_metadata.results[0].stat,
+            'config': pg_validation_sentinel_metadata.results[1].stat
+          } | to_nice_json }}
+        dest: "{{ iac_validation_remote_artifact_root }}/files.json"
+        mode: "0600"
+      no_log: true
+
+    - name: "Writing validation artifact manifest"
+      ansible.builtin.copy:
+        content: "{{ {'files': iac_validation_artifact_manifest} | to_nice_json }}\n"
+        dest: "{{ iac_validation_remote_artifact_root }}/.artifact-manifest.json"
+        owner: "root"
+        group: "root"
+        mode: "0600"
+      no_log: true
+
+- name: "Create controller-side CA source fixtures"
+  hosts: localhost
+  gather_facts: false
+  vars:
+    iac_validation_scenario_directory: "{{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_DIRECTORY') }}"
+    iac_validation_callback_root: "{{ lookup('ansible.builtin.env', 'IDARSI_VALIDATION_CALLBACK_ROOT') }}"
+    iac_validation_callback_path: "{{ lookup('ansible.builtin.env', 'IDARSI_VALIDATION_CALLBACK_PATH') }}"
+    iac_validation_scenario_id: "{{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_NAME') | default('validation', true) }}"
+    iac_validation_run_id: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') | basename }}"
+    iac_validation_fixture_parent: "{{ iac_validation_scenario_directory }}/.artifacts/validation-ca"
+    iac_validation_fixture_root: >-
+      {{ iac_validation_fixture_parent }}/{{ iac_validation_scenario_id }}-controller-{{ iac_validation_run_id }}
+    iac_validation_current_fixture_root: >-
+      {{ iac_validation_fixture_parent }}/{{ iac_validation_scenario_id }}-controller-{{ iac_validation_run_id }}
+    iac_validation_stale_fixture_root: >-
+      {{ iac_validation_fixture_parent }}/{{ iac_validation_scenario_id }}-controller-stale
+    iac_validation_marker_content: "ansible-iac-role-postgresql validation fixture\n"
+    iac_validation_controller_owner: "{{ lookup('ansible.builtin.env', 'USER') }}"
+    iac_validation_controller_uid: "{{ lookup('ansible.builtin.pipe', 'id -u') | int }}"
+    iac_validation_fixture_manifest:
+      - ".role-marker"
+      - "ca-target"
+      - "ca-target/ca.crt"
+      - "ca-link"
+      - "unreadable-ca.crt"
+      - ".artifact-manifest.json"
+  tasks:
+    - name: "Require an explicit private validation callback artifact path"
+      ansible.builtin.assert:
+        that:
+          - iac_validation_callback_root is match('^/')
+          - iac_validation_callback_path is match('^/')
+          - iac_validation_callback_root == lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY')
+          - iac_validation_callback_path == iac_validation_callback_root ~ '/validation-callback.log'
+          - iac_validation_callback_path != '/tmp/validation-callback.log'
+        fail_msg: "Validation callback path must be explicitly configured below the run-scoped Molecule directory"
+
+    - name: "Inspect validation callback run root"
+      ansible.builtin.stat:
+        path: "{{ iac_validation_callback_root }}"
+        follow: false
+      register: iac_validation_callback_root_stat
+
+    - name: "Require a safe validation callback run root"
+      ansible.builtin.assert:
+        that:
+          - iac_validation_callback_root_stat.stat.isdir | default(false)
+          - not (iac_validation_callback_root_stat.stat.islnk | default(false))
+          - iac_validation_callback_root_stat.stat.uid == iac_validation_controller_uid
+          - iac_validation_callback_root_stat.stat.mode is match('^0[0-7][0145][0145]$')
+        fail_msg: "Molecule's callback run root must be an existing private non-symlink directory"
+
+    - name: "Checking portable controller fixture inspection tools"
+      ansible.builtin.command:
+        argv: ["{{ item }}", "--version"]
+      changed_when: false
+      failed_when: false
+      loop:
+        - "getfacl"
+        - "namei"
+      register: iac_validation_controller_tools
+
+    - name: "Require portable controller fixture inspection tools"
+      ansible.builtin.assert:
+        that:
+          - item.get('rc', -1) == 0
+        fail_msg: >-
+          Controller fixture prerequisite '{{ item.item }}' is missing;
+          install it on the controller before running Molecule (prepare does not
+          mutate the controller)
+      loop: "{{ iac_validation_controller_tools.results }}"
+
+    - name: "Validate controller scenario directory and environment components"
+      ansible.builtin.assert:
+        that:
+          - iac_validation_scenario_directory is match('^/')
+          - iac_validation_scenario_directory is not match('/$')
+          - iac_validation_run_id is match('^[A-Za-z0-9][A-Za-z0-9_.-]+$')
+          - iac_validation_scenario_id is match('^[A-Za-z0-9][A-Za-z0-9_.-]+$')
+          - iac_validation_controller_owner is match('^[A-Za-z0-9][A-Za-z0-9_.-]*$')
+          - iac_validation_scenario_directory | basename is match('^[A-Za-z0-9][A-Za-z0-9_.-]+$')
+          - iac_validation_fixture_parent == iac_validation_scenario_directory ~ "/.artifacts/validation-ca"
+        fail_msg: "MOLECULE_SCENARIO_DIRECTORY and environment basename components must be absolute and safe"
+
+    - name: "Reject unsafe controller fixture path components"
+      ansible.builtin.assert:
+        that:
+          - iac_validation_run_id is match('^[A-Za-z0-9][A-Za-z0-9_.-]+$')
+          - iac_validation_run_id not in ['', '.', '..']
+          - iac_validation_scenario_id is match('^[A-Za-z0-9][A-Za-z0-9_.-]+$')
+        fail_msg: "Controller fixture path components must be non-empty and safe"
+
+    - name: "Checking controller fixture root ownership before cleanup"
+      ansible.builtin.stat:
+        path: "{{ iac_validation_fixture_root }}"
+        follow: false
+      register: iac_validation_fixture_root_stat
+
+    - name: "Checking controller fixture marker before cleanup"
+      ansible.builtin.stat:
+        path: "{{ iac_validation_fixture_root }}/.role-marker"
+        follow: false
+      register: iac_validation_fixture_marker
+
+    - name: "Reading existing controller fixture marker"
+      ansible.builtin.slurp:
+        src: "{{ iac_validation_fixture_root }}/.role-marker"
+      register: iac_validation_existing_marker_content
+      when: iac_validation_fixture_marker.stat.isreg | default(false)
+
+    - name: "Checking controller fixture root ancestors"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+      loop:
+        - "{{ iac_validation_scenario_directory }}"
+        - "{{ iac_validation_scenario_directory }}/.artifacts"
+        - "{{ iac_validation_fixture_parent }}"
+      register: iac_validation_fixture_ancestors
+
+    - name: "Require a pre-existing safe controller scenario directory"
+      ansible.builtin.assert:
+        that:
+          - iac_validation_scenario_directory is match('^/')
+          - iac_validation_scenario_directory is not match('/$')
+          - iac_validation_fixture_ancestors.results[0].stat.exists | default(false)
+          - iac_validation_fixture_ancestors.results[0].stat.isdir | default(false)
+          - not (iac_validation_fixture_ancestors.results[0].stat.islnk | default(false))
+          - iac_validation_fixture_ancestors.results[0].stat.pw_name in ["root", iac_validation_controller_owner]
+          - iac_validation_fixture_ancestors.results[0].stat.gr_name in ["root", iac_validation_controller_owner]
+          - iac_validation_fixture_ancestors.results[0].stat.mode is match('^0[0-7][0145][0145]$')
+        fail_msg: "MOLECULE_SCENARIO_DIRECTORY must pre-exist as a safe, owned, non-symlink directory"
+
+    - name: "Checking controller .artifacts ACL before inheritance"
+      ansible.builtin.command:
+        argv: ["getfacl", "--absolute-names", "--", "{{ iac_validation_scenario_directory }}/.artifacts"]
+      changed_when: false
+      failed_when: false
+      when: iac_validation_fixture_ancestors.results[1].stat.exists | default(false)
+      register: iac_validation_artifacts_acl
+
+    - name: "Checking controller scenario directory ACL before inheritance"
+      ansible.builtin.command:
+        argv: ["getfacl", "--absolute-names", "--", "{{ iac_validation_scenario_directory }}"]
+      changed_when: false
+      failed_when: false
+      when: iac_validation_fixture_ancestors.results[0].stat.exists | default(false)
+      register: iac_validation_scenario_acl
+
+    - name: "Rejecting unsafe controller scenario directory ACL"
+      ansible.builtin.assert:
+        that:
+          - iac_validation_scenario_acl.get('rc', -1) == 0
+          - iac_validation_scenario_acl.get('stdout', '') is not search('^default:', multiline=true)
+          - iac_validation_scenario_acl.get('stdout', '') is not search('^user:[^:]+:', multiline=true)
+          - iac_validation_scenario_acl.get('stdout', '') is not search('^group:[^:]+:', multiline=true)
+        fail_msg: "Controller scenario directory must have no extended or default ACL before inheritance"
+      when: iac_validation_fixture_ancestors.results[0].stat.exists | default(false)
+
+    - name: "Rejecting unsafe controller fixture ancestors"
+      ansible.builtin.assert:
+        that:
+          - >-
+            not item.stat.exists | default(false) or
+            (item.stat.isdir and not (item.stat.islnk | default(false))
+                and ((item.item == iac_validation_scenario_directory
+                      and item.stat.pw_name in ["root", iac_validation_controller_owner]
+                      and item.stat.mode is match('^0[0-7][0145][0145]$'))
+                      or (item.item != iac_validation_scenario_directory
+                          and item.stat.mode == "0700"
+                          and item.stat.pw_name == iac_validation_controller_owner
+                          and item.stat.gr_name == iac_validation_controller_owner)))
+        fail_msg: "Controller fixture ancestors must be private, owned, non-symlink directories"
+      loop: "{{ iac_validation_fixture_ancestors.results }}"
+
+    - name: "Rejecting unsafe existing controller .artifacts ACL"
+      ansible.builtin.assert:
+        that:
+          - iac_validation_artifacts_acl.get('rc', -1) == 0
+          - iac_validation_artifacts_acl.get('stdout', '') is not search('^default:', multiline=true)
+          - iac_validation_artifacts_acl.get('stdout', '') is not search('^user:[^:]+:', multiline=true)
+          - iac_validation_artifacts_acl.get('stdout', '') is not search('^group:[^:]+:', multiline=true)
+        fail_msg: "Controller .artifacts must have no extended or default ACL before inheritance"
+      when: iac_validation_fixture_ancestors.results[1].stat.exists | default(false)
+
+    - name: "Checking controller validation-ca ACL before inheritance"
+      ansible.builtin.command:
+        argv: ["getfacl", "--absolute-names", "--", "{{ iac_validation_fixture_parent }}"]
+      changed_when: false
+      failed_when: false
+      when: iac_validation_fixture_ancestors.results[2].stat.exists | default(false)
+      register: iac_validation_fixture_parent_acl
+
+    - name: "Rejecting unsafe existing controller validation-ca ACL"
+      ansible.builtin.assert:
+        that:
+          - iac_validation_fixture_parent_acl.get('rc', -1) == 0
+          - iac_validation_fixture_parent_acl.get('stdout', '') is not search('^default:', multiline=true)
+          - iac_validation_fixture_parent_acl.get('stdout', '') is not search('^user:[^:]+:', multiline=true)
+          - iac_validation_fixture_parent_acl.get('stdout', '') is not search('^group:[^:]+:', multiline=true)
+        fail_msg: "Controller validation-ca must have no extended or default ACL before inheritance"
+      when: iac_validation_fixture_ancestors.results[2].stat.exists | default(false)
+
+    - name: "Creating private controller fixture artifact base"
+      ansible.builtin.file:
+        path: "{{ iac_validation_scenario_directory }}/.artifacts"
+        state: "directory"
+        owner: "{{ iac_validation_controller_owner }}"
+        group: "{{ iac_validation_controller_owner }}"
+        mode: "0700"
+
+    - name: "Creating private controller fixture parent"
+      ansible.builtin.file:
+        path: "{{ iac_validation_fixture_parent }}"
+        state: "directory"
+        owner: "{{ iac_validation_controller_owner }}"
+        group: "{{ iac_validation_controller_owner }}"
+        mode: "0700"
+
+    - name: "Seed valid stale controller fixture root"
+      ansible.builtin.file:
+        path: "{{ iac_validation_stale_fixture_root }}"
+        state: "directory"
+        owner: "{{ iac_validation_controller_owner }}"
+        group: "{{ iac_validation_controller_owner }}"
+        mode: "0700"
+      no_log: true
+
+    - name: "Seed stale controller fixture marker"
+      ansible.builtin.copy:
+        content: "{{ iac_validation_marker_content }}"
+        dest: "{{ iac_validation_stale_fixture_root }}/.role-marker"
+        owner: "{{ iac_validation_controller_owner }}"
+        group: "{{ iac_validation_controller_owner }}"
+        mode: "0600"
+      no_log: true
+
+    - name: "Seed stale controller CA target directory"
+      ansible.builtin.file:
+        path: "{{ iac_validation_stale_fixture_root }}/ca-target"
+        state: "directory"
+        mode: "0700"
+      no_log: true
+
+    - name: "Seed stale controller CA source"
+      ansible.builtin.copy:
+        content: |-
+          -----BEGIN CERTIFICATE-----
+          VALIDATION-FAKE-PEM-SENTINEL
+          -----END CERTIFICATE-----
+        dest: "{{ iac_validation_stale_fixture_root }}/ca-target/ca.crt"
+        mode: "0600"
+      no_log: true
+
+    - name: "Seed stale controller CA symlink"
+      ansible.builtin.file:
+        src: "{{ iac_validation_stale_fixture_root }}/ca-target"
+        dest: "{{ iac_validation_stale_fixture_root }}/ca-link"
+        state: "link"
+      no_log: true
+
+    - name: "Seed stale owner-unreadable CA source"
+      ansible.builtin.copy:
+        content: |-
+          -----BEGIN CERTIFICATE-----
+          VALIDATION-FAKE-PEM-SENTINEL
+          -----END CERTIFICATE-----
+        dest: "{{ iac_validation_stale_fixture_root }}/unreadable-ca.crt"
+        mode: "0000"
+      no_log: true
+
+    - name: "Seed stale controller fixture manifest"
+      ansible.builtin.copy:
+        content: "{{ {'files': iac_validation_fixture_manifest} | to_nice_json }}\n"
+        dest: "{{ iac_validation_stale_fixture_root }}/.artifact-manifest.json"
+        owner: "{{ iac_validation_controller_owner }}"
+        group: "{{ iac_validation_controller_owner }}"
+        mode: "0600"
+      no_log: true
+
+    - name: "Use seeded stale fixture for reusable cleanup validation"
+      ansible.builtin.set_fact:
+        iac_validation_fixture_root: "{{ iac_validation_stale_fixture_root }}"
+      no_log: true
+
+    - name: "Inspect seeded stale controller fixture root"
+      ansible.builtin.stat:
+        path: "{{ iac_validation_fixture_root }}"
+        follow: false
+      register: iac_validation_fixture_root_stat
+      no_log: true
+
+    - name: "Inspect seeded stale controller fixture marker"
+      ansible.builtin.stat:
+        path: "{{ iac_validation_fixture_root }}/.role-marker"
+        follow: false
+      register: iac_validation_fixture_marker
+      no_log: true
+
+    - name: "Read seeded stale controller fixture marker"
+      ansible.builtin.slurp:
+        src: "{{ iac_validation_fixture_root }}/.role-marker"
+      register: iac_validation_existing_marker_content
+      no_log: true
+
+    - name: "Rejecting unmanaged stale controller fixture directory"
+      ansible.builtin.assert:
+        that:
+          - not (iac_validation_fixture_root_stat.stat.exists | default(false))
+            or (iac_validation_fixture_root_stat.stat.isdir
+                and not (iac_validation_fixture_root_stat.stat.islnk | default(false))
+                and iac_validation_fixture_root_stat.stat.pw_name == iac_validation_controller_owner
+                and iac_validation_fixture_root_stat.stat.gr_name == iac_validation_controller_owner
+                and iac_validation_fixture_root_stat.stat.mode == '0700'
+                and iac_validation_fixture_marker.stat.exists | default(false)
+                and iac_validation_fixture_marker.stat.isreg
+                and not (iac_validation_fixture_marker.stat.islnk | default(false))
+                and iac_validation_fixture_marker.stat.pw_name == iac_validation_controller_owner
+                and iac_validation_fixture_marker.stat.gr_name == iac_validation_controller_owner
+                and iac_validation_fixture_marker.stat.mode == '0600'
+                and (iac_validation_existing_marker_content.content | b64decode) == iac_validation_marker_content)
+        fail_msg: "Existing controller fixture directory is not owned by this operator"
+
+    - name: "Checking stale controller fixture ACLs"
+      ansible.builtin.command:
+        argv: ["getfacl", "--absolute-names", "--", "{{ item }}"]
+      changed_when: false
+      failed_when: false
+      loop:
+        - "{{ iac_validation_fixture_parent }}"
+        - "{{ iac_validation_fixture_root }}"
+      when: >-
+        (item == iac_validation_fixture_parent and
+         iac_validation_fixture_ancestors.results[2].stat.exists | default(false)) or
+        (item == iac_validation_fixture_root and
+         iac_validation_fixture_root_stat.stat.exists | default(false))
+      register: iac_validation_stale_fixture_acls
+
+    - name: "Rejecting unsafe stale controller fixture ACLs"
+      ansible.builtin.assert:
+        that:
+          - item.get('rc', -1) == 0
+          - item.get('stdout', '') is not search('^default:', multiline=true)
+          - item.get('stdout', '') is not search('^user:[^:]+:', multiline=true)
+          - item.get('stdout', '') is not search('^group:[^:]+:', multiline=true)
+        fail_msg: "Stale controller fixture parent or root ACL inspection is unsafe"
+      loop: "{{ iac_validation_stale_fixture_acls.results | default([]) | rejectattr('skipped', 'defined') | list }}"
+
+    - name: "Asserting exact stale controller fixture marker"
+      ansible.builtin.assert:
+        that:
+          - (iac_validation_existing_marker_content.content | b64decode) == iac_validation_marker_content
+        fail_msg: "Stale controller fixture marker does not exactly match; refusing recursive cleanup"
+      when: iac_validation_fixture_root_stat.stat.exists | default(false)
+
+    - name: "Inspecting all stale controller fixture entries"
+      ansible.builtin.find:
+        paths: "{{ iac_validation_fixture_root }}"
+        recurse: true
+        file_type: "any"
+        hidden: true
+        follow: false
+      register: iac_validation_stale_fixture_entries
+      when: iac_validation_fixture_root_stat.stat.isdir | default(false)
+
+    - name: "Stat every expected controller fixture component before cleanup"
+      ansible.builtin.stat:
+        path: "{{ iac_validation_fixture_root }}/{{ item }}"
+        follow: false
+      loop: "{{ iac_validation_fixture_manifest }}"
+      register: iac_validation_stale_fixture_components
+      when: iac_validation_fixture_root_stat.stat.isdir | default(false)
+
+    - name: "Rejecting unsafe controller fixture component types before cleanup"
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists | default(false)
+          - >-
+            ((item.item == "ca-target" and item.stat.isdir | default(false) and
+              not (item.stat.islnk | default(false))) or
+            (item.item == "ca-link" and item.stat.islnk | default(false)) or
+            (item.item not in ["ca-target", "ca-link"] and item.stat.isreg | default(false) and
+              not (item.stat.islnk | default(false))))
+        fail_msg: "A controller fixture manifest component is missing, tampered, or has an unexpected type; preserving it for recovery"
+      loop: "{{ iac_validation_stale_fixture_components.results | default([]) }}"
+      when: iac_validation_fixture_root_stat.stat.isdir | default(false)
+
+    - name: "Validating expected controller fixture symlink"
+      ansible.builtin.assert:
+        that:
+          - item.item == "ca-link"
+          - item.stat.islnk | default(false)
+          - item.stat.lnk_source == iac_validation_fixture_root ~ "/ca-target"
+        fail_msg: "The controller fixture CA symlink is missing or points to an unexpected source"
+      loop: "{{ iac_validation_stale_fixture_components.results | default([]) }}"
+      when:
+        - iac_validation_fixture_root_stat.stat.isdir | default(false)
+        - item.item == "ca-link"
+
+    - name: "Checking every stale controller manifest component ACL"
+      ansible.builtin.command:
+        argv: ["getfacl", "-P", "--absolute-names", "--", "{{ iac_validation_fixture_root }}/{{ item.item }}"]
+      changed_when: false
+      failed_when: false
+      loop: "{{ iac_validation_stale_fixture_components.results | default([]) }}"
+      when:
+        - iac_validation_fixture_root_stat.stat.isdir | default(false)
+        - not (item.stat.islnk | default(false))
+      register: iac_validation_stale_fixture_component_acls
+
+    - name: "Rejecting unsafe stale controller manifest component ACLs"
+      ansible.builtin.assert:
+        that:
+          - item.get('rc', -1) == 0
+          - item.get('stdout', '') is not search('^default:', multiline=true)
+          - item.get('stdout', '') is not search('^user:[^:]+:', multiline=true)
+          - item.get('stdout', '') is not search('^group:[^:]+:', multiline=true)
+        fail_msg: "A stale controller manifest component has an unsafe or unreadable ACL"
+      loop: "{{ iac_validation_stale_fixture_component_acls.results | default([]) | rejectattr('skipped', 'defined') | list }}"
+
+    - name: "Reading stale controller fixture manifest"
+      ansible.builtin.slurp:
+        src: "{{ iac_validation_fixture_root }}/.artifact-manifest.json"
+      register: iac_validation_stale_fixture_manifest
+      when: iac_validation_fixture_root_stat.stat.isdir | default(false)
+
+    - name: "Rejecting unexpected stale controller fixture entries"
+      ansible.builtin.assert:
+        that:
+          - (iac_validation_stale_fixture_manifest.content | b64decode | from_json).files == iac_validation_fixture_manifest
+          - >-
+            (iac_validation_stale_fixture_entries.files | map(attribute='path')
+            | map('regex_replace', '^' ~ iac_validation_fixture_root ~ '/', '')
+            | sort | list) == (iac_validation_fixture_manifest | sort)
+        fail_msg: "Controller fixture root contains unexpected content or an invalid manifest; preserving it for recovery"
+      when: iac_validation_fixture_root_stat.stat.isdir | default(false)
+
+    - name: "Removing stale controller-side validation fixtures"
+      ansible.builtin.include_tasks:
+        file: ../../tasks/validation_cleanup_artifact.yml
+        apply:
+          delegate_to: localhost
+          become: false
+      vars:
+        iac_validation_cleanup_root: "{{ iac_validation_fixture_root }}"
+        iac_validation_cleanup_root_stat: "{{ iac_validation_fixture_root_stat }}"
+        iac_validation_cleanup_owner: "{{ iac_validation_controller_owner }}"
+        iac_validation_cleanup_root_mode: "0700"
+        iac_validation_cleanup_marker: "{{ iac_validation_existing_marker_content }}"
+        iac_validation_cleanup_marker_content: "{{ iac_validation_marker_content }}"
+        iac_validation_cleanup_manifest_name: ".artifact-manifest.json"
+        iac_validation_cleanup_allowlist: "{{ iac_validation_fixture_manifest }}"
+        iac_validation_cleanup_directories: ["ca-target"]
+        iac_validation_cleanup_symlinks: ["ca-link"]
+      when: iac_validation_fixture_root_stat.stat.exists | default(false)
+
+    - name: "Check stale controller fixture cleanup postcondition"
+      ansible.builtin.stat:
+        path: "{{ iac_validation_fixture_root }}"
+        follow: false
+      register: iac_validation_stale_fixture_after
+      delegate_to: localhost
+      become: false
+
+    - name: "Assert valid stale controller fixture was removed"
+      ansible.builtin.assert:
+        that:
+          - not iac_validation_stale_fixture_after.stat.exists | default(false)
+        fail_msg: "Valid stale controller fixture was not removed by the prepare cleanup path"
+      delegate_to: localhost
+      become: false
+
+    - name: "Creating private controller fixture root"
+      ansible.builtin.set_fact:
+        iac_validation_fixture_root: "{{ iac_validation_current_fixture_root }}"
+      no_log: true
+
+    - name: "Creating private controller fixture root"
+      ansible.builtin.file:
+        path: "{{ iac_validation_fixture_parent }}"
+        state: "directory"
+        owner: "{{ iac_validation_controller_owner }}"
+        group: "{{ iac_validation_controller_owner }}"
+        mode: "0700"
+
+    - name: "Creating unique private controller fixture root"
+      ansible.builtin.file:
+        path: "{{ iac_validation_fixture_root }}"
+        state: "directory"
+        owner: "{{ iac_validation_controller_owner }}"
+        group: "{{ iac_validation_controller_owner }}"
+        mode: "0700"
+
+    - name: "Marking controller fixture root"
+      ansible.builtin.copy:
+        content: "{{ iac_validation_marker_content }}"
+        dest: "{{ iac_validation_fixture_root }}/.role-marker"
+        owner: "{{ iac_validation_controller_owner }}"
+        group: "{{ iac_validation_controller_owner }}"
+        mode: "0600"
+
+    - name: "Verifying controller fixture root, marker, and ACL"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+      loop:
+        - "{{ iac_validation_fixture_root }}"
+        - "{{ iac_validation_fixture_root }}/.role-marker"
+      register: iac_validation_controller_final_metadata
+
+    - name: "Verifying controller artifact bases"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+      loop:
+        - "{{ iac_validation_scenario_directory }}/.artifacts"
+        - "{{ iac_validation_fixture_parent }}"
+      register: iac_validation_controller_final_bases
+
+    - name: "Checking controller fixture root and marker ACL"
+      ansible.builtin.command:
+        argv: ["getfacl", "--absolute-names", "--", "{{ item }}"]
+      changed_when: false
+      loop:
+        - "{{ iac_validation_scenario_directory }}/.artifacts"
+        - "{{ iac_validation_fixture_parent }}"
+        - "{{ iac_validation_fixture_root }}"
+      register: iac_validation_controller_final_acls
+
+    - name: "Ensuring controller fixture metadata and ACL are exact"
+      ansible.builtin.assert:
+        that:
+          - iac_validation_controller_final_bases.results[0].stat.isdir
+          - not (iac_validation_controller_final_bases.results[0].stat.islnk | default(false))
+          - iac_validation_controller_final_bases.results[0].stat.pw_name == iac_validation_controller_owner
+          - iac_validation_controller_final_bases.results[0].stat.gr_name == iac_validation_controller_owner
+          - iac_validation_controller_final_bases.results[0].stat.mode == "0700"
+          - iac_validation_controller_final_bases.results[1].stat.isdir
+          - not (iac_validation_controller_final_bases.results[1].stat.islnk | default(false))
+          - iac_validation_controller_final_bases.results[1].stat.pw_name == iac_validation_controller_owner
+          - iac_validation_controller_final_bases.results[1].stat.gr_name == iac_validation_controller_owner
+          - iac_validation_controller_final_bases.results[1].stat.mode == "0700"
+          - iac_validation_controller_final_metadata.results[0].stat.isdir
+          - not (iac_validation_controller_final_metadata.results[0].stat.islnk | default(false))
+          - iac_validation_controller_final_metadata.results[0].stat.pw_name == iac_validation_controller_owner
+          - iac_validation_controller_final_metadata.results[0].stat.gr_name == iac_validation_controller_owner
+          - iac_validation_controller_final_metadata.results[0].stat.mode == "0700"
+          - iac_validation_controller_final_metadata.results[1].stat.isreg
+          - not (iac_validation_controller_final_metadata.results[1].stat.islnk | default(false))
+          - iac_validation_controller_final_metadata.results[1].stat.pw_name == iac_validation_controller_owner
+          - iac_validation_controller_final_metadata.results[1].stat.gr_name == iac_validation_controller_owner
+          - iac_validation_controller_final_metadata.results[1].stat.mode == "0600"
+          - item.get('rc', -1) == 0
+          - item.get('stdout', '') is not search('^default:', multiline=true)
+          - item.get('stdout', '') is not search('^user:[^:]+:', multiline=true)
+          - item.get('stdout', '') is not search('^group:[^:]+:', multiline=true)
+        fail_msg: "Controller fixture metadata or ACL is unsafe"
+      loop: "{{ iac_validation_controller_final_acls.results }}"
+
+    - name: "Creating controller-side CA source symlink-parent fixture"
+      ansible.builtin.file:
+        path: "{{ iac_validation_fixture_root }}/ca-target"
+        state: "directory"
+        mode: "0755"
+
+    - name: "Creating controller-side CA source behind symlink parent"
+      ansible.builtin.copy:
+        content: |-
+          -----BEGIN CERTIFICATE-----
+          VALIDATION-FAKE-PEM-SENTINEL
+          -----END CERTIFICATE-----
+        dest: "{{ iac_validation_fixture_root }}/ca-target/ca.crt"
+        mode: "0644"
+      no_log: true
+
+    - name: "Linking the controller-side CA source parent"
+      ansible.builtin.file:
+        src: "{{ iac_validation_fixture_root }}/ca-target"
+        dest: "{{ iac_validation_fixture_root }}/ca-link"
+        state: "link"
+      delegate_to: localhost
+      run_once: true
+
+    - name: "Creating owner-unreadable controller-side CA source fixture"
+      ansible.builtin.copy:
+        content: |-
+          -----BEGIN CERTIFICATE-----
+          VALIDATION-FAKE-PEM-SENTINEL
+          -----END CERTIFICATE-----
+        dest: "{{ iac_validation_fixture_root }}/unreadable-ca.crt"
+        mode: "0000"
+      no_log: true
+
+    - name: "Writing controller fixture manifest"
+      ansible.builtin.copy:
+        content: "{{ {'files': iac_validation_fixture_manifest} | to_nice_json }}\n"
+        dest: "{{ iac_validation_fixture_root }}/.artifact-manifest.json"
+        owner: "{{ iac_validation_controller_owner }}"
+        group: "{{ iac_validation_controller_owner }}"
+        mode: "0600"
+      no_log: true
