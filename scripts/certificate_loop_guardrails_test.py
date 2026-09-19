@@ -186,7 +186,7 @@ assert certification_tasks.index(collision_guard) < next(
     if task.get("name") == "Inspecting PostgreSQL SSL, serial, registry, and destination paths"
 )
 assert "| trim | length) == 0" in certification
-assert "item.stat.gr_name | default('') == pg_external_path_service_group" in external_ancestors
+assert "pg_external_path_ancestor_result.stat.gr_name | default('') == pg_external_path_service_group" in external_ancestors
 assert "^0[0-7][145][0145]$" in external_ancestors
 # Other certificate result mappings retain their explicit contracts.
 expected_result_record_selectors = (

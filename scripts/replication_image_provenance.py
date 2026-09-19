@@ -134,7 +134,6 @@ def main() -> int:
             raise ValueError(
                 "recorded base repo digest is not the expected pinned digest"
             )
-        recorded_repo_digest = EXPECTED_REPO_DIGEST
         if normalize_digest(base.get("Id")) != recorded_base_id:
             raise ValueError("inspected base ID differs from recorded base ID")
         base_repo_digests = normalize_repo_digests(base.get("RepoDigests"), "base")

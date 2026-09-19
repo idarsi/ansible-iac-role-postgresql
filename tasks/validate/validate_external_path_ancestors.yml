@@ -102,30 +102,28 @@
 - name: "Rejecting symlinked or inaccessible external TLS path components"
   ansible.builtin.assert:
     that:
-      - item.failed | default(false) | bool is false
+      - pg_external_path_component_result.failed | default(false) | bool is false
       - >-
-        item.rc | default(-1) == 0 or
-        (item.rc | default(-1) == 1 and
+        pg_external_path_component_result.rc | default(-1) == 0 or
+        (pg_external_path_component_result.rc | default(-1) == 1 and
         (pg_external_path_destination_stats.results |
-         selectattr('item', 'equalto', item.item) | list | length == 1) and
+         selectattr('item', 'equalto', pg_external_path_component_result.item) | list | length == 1) and
         (((pg_external_path_destination_stats.results |
-           selectattr('item', 'equalto', item.item) | first).failed |
+           selectattr('item', 'equalto', pg_external_path_component_result.item) | first).failed |
           default(false) | bool) is false) and
         ((pg_external_path_destination_stats.results |
-          selectattr('item', 'equalto', item.item) | first).stat.exists is defined) and
+           selectattr('item', 'equalto', pg_external_path_component_result.item) | first).stat.exists is defined) and
         (((pg_external_path_destination_stats.results |
-           selectattr('item', 'equalto', item.item) | first).stat.exists |
+           selectattr('item', 'equalto', pg_external_path_component_result.item) | first).stat.exists |
           bool) is false))
-      - item.stdout is not search(' -> ')
-      - item.stderr is not search('Permission denied')
+      - pg_external_path_component_result.stdout is not search(' -> ')
+      - pg_external_path_component_result.stderr is not search('Permission denied')
     fail_msg: >-
       Every existing component of external TLS paths must be traversable and
       must not be a symlink; the role will not mutate external paths.
   loop: "{{ pg_external_path_component_checks.results }}"
   loop_control:
     loop_var: pg_external_path_component_result
-  vars:
-    item: "{{ pg_external_path_component_result }}"
 
 - name: "Inspecting external TLS ancestor ACLs"
   ansible.builtin.command:
@@ -150,21 +148,21 @@
 - name: "Rejecting unsafe external TLS ancestors"
   ansible.builtin.assert:
     that:
-      - item.stat.isdir
-      - not (item.stat.islnk | default(false))
-      - item.stat.pw_name | default('') == 'root'
-      - item.stat.mode is match('^0[0-7][0145][0145]$')
+      - pg_external_path_ancestor_result.stat.isdir
+      - not (pg_external_path_ancestor_result.stat.islnk | default(false))
+      - pg_external_path_ancestor_result.stat.pw_name | default('') == 'root'
+      - pg_external_path_ancestor_result.stat.mode is match('^0[0-7][0145][0145]$')
       - >-
-        item.item not in (pg_external_path_paths | map('dirname') | list)
-        or item.stat.gr_name | default('') in pg_external_path_immediate_groups
+        pg_external_path_ancestor_result.item not in (pg_external_path_paths | map('dirname') | list)
+        or pg_external_path_ancestor_result.stat.gr_name | default('') in pg_external_path_immediate_groups
       - >-
-        item.item not in (pg_external_path_paths | map('dirname') | list)
+        pg_external_path_ancestor_result.item not in (pg_external_path_paths | map('dirname') | list)
         or
-        (item.stat.gr_name | default('') == pg_external_path_service_group and
-         item.stat.mode is match('^0[0-7][145][0145]$'))
+        (pg_external_path_ancestor_result.stat.gr_name | default('') == pg_external_path_service_group and
+         pg_external_path_ancestor_result.stat.mode is match('^0[0-7][145][0145]$'))
         or
-        (item.stat.gr_name | default('') == 'root' and
-         item.stat.mode is match('^0[0-7][0145][0145]$'))
+        (pg_external_path_ancestor_result.stat.gr_name | default('') == 'root' and
+         pg_external_path_ancestor_result.stat.mode is match('^0[0-7][0145][0145]$'))
     fail_msg: >-
       Every existing ancestor of external TLS paths must be a root-owned,
       non-symlink directory without group/other write access. The immediate
@@ -174,34 +172,30 @@
   loop: "{{ pg_external_path_ancestor_stats.results }}"
   loop_control:
     loop_var: pg_external_path_ancestor_result
-  vars:
-    item: "{{ pg_external_path_ancestor_result }}"
 
 - name: "Rejecting unsafe ACLs on external TLS ancestors"
   ansible.builtin.assert:
     that:
-      - item.rc == 0
-      - item.stdout is not search('^default:', multiline=true)
-      - item.stdout is not search('^user:[^:]+:', multiline=true)
-      - item.stdout is not search('^group:[^:]+:', multiline=true)
-      - item.stdout is not search('^group::[^-]*w', multiline=true)
-      - item.stdout is not search('^other::[^-]*[w]', multiline=true)
+      - pg_external_path_ancestor_acl_result.rc == 0
+      - pg_external_path_ancestor_acl_result.stdout is not search('^default:', multiline=true)
+      - pg_external_path_ancestor_acl_result.stdout is not search('^user:[^:]+:', multiline=true)
+      - pg_external_path_ancestor_acl_result.stdout is not search('^group:[^:]+:', multiline=true)
+      - pg_external_path_ancestor_acl_result.stdout is not search('^group::[^-]*w', multiline=true)
+      - pg_external_path_ancestor_acl_result.stdout is not search('^other::[^-]*[w]', multiline=true)
     fail_msg: >-
       External TLS ancestors must have no default or named ACL entries and
       must not grant group or other write access.
   loop: "{{ pg_external_path_ancestor_acls.results }}"
   loop_control:
     loop_var: pg_external_path_ancestor_acl_result
-  vars:
-    item: "{{ pg_external_path_ancestor_acl_result }}"
 
 - name: "Rejecting unsafe ACLs on external TLS files"
   ansible.builtin.assert:
     that:
-      - item.rc == 0
-      - item.stdout is not search('^default:', multiline=true)
-      - item.stdout is not search('^user:[^:]+:', multiline=true)
-      - item.stdout is not search('^group:[^:]+:', multiline=true)
+      - pg_external_path_file_acl_result.rc == 0
+      - pg_external_path_file_acl_result.stdout is not search('^default:', multiline=true)
+      - pg_external_path_file_acl_result.stdout is not search('^user:[^:]+:', multiline=true)
+      - pg_external_path_file_acl_result.stdout is not search('^group:[^:]+:', multiline=true)
     fail_msg: >-
       External TLS files must have successful ACL inspection and no named or
       default ACL entries; access must be provided only by their owner/group
@@ -209,5 +203,3 @@
   loop: "{{ pg_external_path_file_acls.results }}"
   loop_control:
     loop_var: pg_external_path_file_acl_result
-  vars:
-    item: "{{ pg_external_path_file_acl_result }}"

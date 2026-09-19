@@ -334,8 +334,8 @@
           - "'setfacl' in pg_prerequisite_source"
           - "'namei' in pg_prerequisite_source"
           - "'pg_external_path_ancestor_stats' in pg_external_path_source"
-          - "'not (item.stat.islnk | default(false))' in pg_external_path_source"
-          - "'item.stat.pw_name | default('') == 'root'' in pg_external_path_source"
+          - "'not (pg_external_path_ancestor_result.stat.islnk | default(false))' in pg_external_path_source"
+          - "'pg_external_path_ancestor_result.stat.pw_name | default('') == 'root'' in pg_external_path_source"
           - "'default:' in pg_external_path_source"
           - "'validate/validate_external_path_ancestors.yml' in pg_certificate_source"
 

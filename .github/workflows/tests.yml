@@ -90,7 +90,9 @@ jobs:
              "${CI_PYTHON_COMMAND}" scripts/etcd_data_directory_lifecycle_test.py
             "${CI_PYTHON_COMMAND}" scripts/etcd_metadata_guardrails_test.py
              "${CI_PYTHON_COMMAND}" scripts/controller_preflight_guardrails_test.py
-            "${CI_PYTHON_COMMAND}" scripts/certificate_loop_guardrails_test.py
+             "${CI_PYTHON_COMMAND}" scripts/certificate_loop_guardrails_test.py
+             "${CI_PYTHON_COMMAND}" scripts/ci_workflow_guardrails_test.py
+             "${CI_PYTHON_COMMAND}" scripts/pg_hba_record_shapes_test.py
             "${CI_PYTHON_COMMAND}" scripts/endpoint_projection_guardrails_test.py
             "${CI_PYTHON_COMMAND}" scripts/etcd_endpoint_index_contract_test.py
             "${CI_PYTHON_COMMAND}" scripts/patroni_check_mode_contract_test.py
@@ -111,16 +113,17 @@ jobs:
         run: >-
           "${REPLICATION_PYTHON_COMMAND}" scripts/replication_podman_plugin_guardrails_test.py
 
-      - name: Run production-profile Ansible Lint
+      - name: Run production-profile Ansible Lint with the setup-python interpreter
         env:
           ANSIBLE_ROLES_PATH: ..
-        run: ansible-lint --profile production
+        run: >-
+          "${CI_PYTHON_COMMAND}" -m ansiblelint --profile production
 
       - name: Lint Vagrant Patroni failover scenario files
         run: |
           yamllint molecule/vagrant_patroni_failover/prepare.yml \
             molecule/vagrant_patroni_failover/verify.yml
-          ansible-lint --profile production \
+          "${CI_PYTHON_COMMAND}" -m ansiblelint --profile production \
             molecule/vagrant_patroni_failover/prepare.yml \
             molecule/vagrant_patroni_failover/verify.yml
 

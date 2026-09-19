@@ -372,15 +372,16 @@
     argv:
       - restorecon
       - -Rv
-      - "{{ item.item }}"
+      - "{{ pg_patroni_restorecon_result.item }}"
   loop: "{{ pg_patroni_restorecon_stats.results }}"
   loop_control:
-    label: "{{ item.item }}"
+    loop_var: pg_patroni_restorecon_result
+    label: "{{ pg_patroni_restorecon_result.item }}"
   when:
     - pg_cluster_pki_generation_enabled | default(false) | bool
-    - item.stat.exists
+    - pg_patroni_restorecon_result.stat.exists
     - (pg_cluster_selinux_tool_checks.results | default([]) | first | default({})).stdout | default('') | trim in ["Enforcing", "Permissive"]
   changed_when: >-
-    (pg_patroni_restorecon_result.stdout | default("") | trim) != ""
-    or (pg_patroni_restorecon_result.stderr | default("") | trim) != ""
-  register: pg_patroni_restorecon_result
+    (pg_patroni_restorecon_command.stdout | default("") | trim) != ""
+    or (pg_patroni_restorecon_command.stderr | default("") | trim) != ""
+  register: pg_patroni_restorecon_command

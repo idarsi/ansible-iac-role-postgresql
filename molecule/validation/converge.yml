@@ -4189,3 +4189,47 @@
             that:
               - ansible_failed_result is defined
               - "'certificate-aware authentication is enabled without a configured client CA' in (ansible_failed_result | to_nice_json)"
+
+- name: "Execute external-path loop-shape negative case and cleanup"
+  hosts: localhost
+  gather_facts: false
+  become: true
+  vars:
+    iac_external_path_fixture_root: "/tmp/idarsi-external-path-shape"
+    iac_external_path_link: "{{ iac_external_path_fixture_root }}/link"
+    iac_external_path_target: "{{ iac_external_path_link }}/ca.crt"
+  tasks:
+    - name: "Create external-path loop-shape fixture"
+      block:
+        - ansible.builtin.file:
+            path: "{{ iac_external_path_fixture_root }}/real"
+            state: "directory"
+            mode: "0700"
+        - ansible.builtin.copy:
+            content: "validation fixture\n"
+            dest: "{{ iac_external_path_fixture_root }}/real/ca.crt"
+            mode: "0600"
+        - ansible.builtin.file:
+            src: "{{ iac_external_path_fixture_root }}/real"
+            dest: "{{ iac_external_path_link }}"
+            state: "link"
+        - name: "Reject symlinked external path using registered result shape"
+          block:
+            - ansible.builtin.include_tasks: ../../tasks/validate/validate_external_path_ancestors.yml
+              vars:
+                pg_external_path_paths: ["{{ iac_external_path_target }}"]
+                pg_external_path_acl_paths: ["{{ iac_external_path_target }}"]
+                pg_external_path_service_group: "root"
+                pg_external_path_immediate_groups: ["root"]
+            - ansible.builtin.fail:
+                msg: "Symlinked external path was accepted"
+          rescue:
+            - ansible.builtin.assert:
+                that:
+                  - ansible_failed_result is defined
+                  - "'must not be a symlink' in (ansible_failed_result | to_nice_json)"
+                fail_msg: "External path negative case did not reject the symlink"
+      always:
+        - ansible.builtin.file:
+            path: "{{ iac_external_path_fixture_root }}"
+            state: "absent"
