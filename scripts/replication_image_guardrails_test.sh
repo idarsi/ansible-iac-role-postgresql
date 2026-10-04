@@ -359,14 +359,60 @@ assert_file_contains "$root/scripts/replication_molecule.sh" 'validate_replicati
 assert_file_line_order "$ci_file" 'Pull and record the exact Rocky base image before build' 'Run Molecule scenario'
 
 # The image cannot source a controller-side file during its build. Keep its
-# self-contained copy byte-for-byte identical to the shared helper function so
-# the build and prepare.yml cannot silently acquire different acceptance rules.
-docker_normalizer=$(awk '/^normalize_replication_iproute_nevra\(\) \{/{capture=1} capture {print} capture && /^\}$/{exit}' "$dockerfile")
-shared_normalizer=$(awk '/^normalize_replication_iproute_nevra\(\) \{/{capture=1} capture {print} capture && /^\}$/{exit}' "$package_normalize_helper")
-[ -n "$docker_normalizer" ] && [ "$docker_normalizer" = "$shared_normalizer" ] || {
-  printf '%s\n' 'replication image guardrail failed: Dockerfile package normalizer drifted from shared helper' >&2
-  exit 1
-}
+# self-contained copy aligned with the shared helper function. Dockerfile
+# continuation syntax necessarily flattens source lines and cannot represent a
+# literal newline in a single-quoted shell assignment. Compare the resulting
+# shell function semantically, then check the conventional RUN-body contract.
+"$selected_python" - "$dockerfile" "$package_normalize_helper" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+
+def function_source(path):
+    lines = Path(path).read_text().splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip().startswith("normalize_replication_iproute_nevra()"))
+    body = []
+    for line in lines[start:]:
+        normalized = line.strip()
+        if normalized.endswith("\\"):
+            normalized = normalized[:-1].rstrip()
+        body.append(normalized)
+        if line.strip().startswith("}"):
+            break
+    return body
+
+
+def semantic_function(path):
+    body = function_source(path)
+    # Comments are not part of the function's shell semantics.  A Dockerfile
+    # RUN uses semicolons and continuation lines where the shared helper uses
+    # physical line breaks; both are command separators here.
+    body = [line for line in body if not line.startswith("#")]
+    source = " ".join(body)
+    source = re.sub(r"replication_newline='\s*'", "replication_newline=<record-newline>", source)
+    source = re.sub(r"replication_newline=\$\(printf '\\nX'\);\s*replication_newline=\$\{replication_newline%X\}",
+                    "replication_newline=<record-newline>", source)
+    source = re.sub(r"(?<!;);(?!;)", " ", source)
+    return re.sub(r"\s+", " ", source).strip()
+
+
+docker = semantic_function(sys.argv[1])
+shared = semantic_function(sys.argv[2])
+if docker != shared:
+    raise SystemExit("Dockerfile package normalizer drifted semantically from shared helper")
+
+docker_lines = Path(sys.argv[1]).read_text().splitlines()
+function_line = next(i for i, line in enumerate(docker_lines) if line.strip().startswith("normalize_replication_iproute_nevra()"))
+if function_line == 0 or docker_lines[function_line - 1].strip() != "RUN set -eu; \\":
+    raise SystemExit("Dockerfile normalizer RUN body must start with set -eu")
+function_end = next(i for i in range(function_line, len(docker_lines)) if docker_lines[i].strip().startswith("};"))
+if any(not line.rstrip().endswith("\\") for line in docker_lines[function_line:function_end]):
+    raise SystemExit("Dockerfile normalizer RUN body must use continuation syntax")
+if not any("case \"$replication_actual_nevra\" in" in line for line in docker_lines[function_line:function_end + 1]):
+    raise SystemExit("Dockerfile normalizer RUN body must retain case-based validation")
+print("replication Dockerfile package normalizer contract: PASS")
+PY
 
 # The shared normalization must accept only the exact observed aliases and reject
 # every single-alias, alternate-alias, or extra-entry form.
