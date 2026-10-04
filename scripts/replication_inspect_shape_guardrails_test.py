@@ -19,6 +19,13 @@ CONTAINER_INSPECT = "Inspect replication image provenance and architecture"
 IMAGE_INSPECT = "Inspect the image referenced by each replication container"
 NETWORK_ASSERT = "Require the exact default Podman network mapping and IPv4 value"
 UNICAST_ASSERT = "Require a unicast IPv4 address on the default Podman network"
+NON_LOOPBACK_UNICAST_IPV4_REGEX = (
+    r"^(?:[1-9]|[1-9][0-9]|1[01][0-9]|12[0-6]|12[8-9]|1[3-9][0-9]|"
+    r"2[0-1][0-9]|22[0-3])\."
+    r"(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\."
+    r"(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\."
+    r"(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\Z"
+)
 DEFAULT_NETWORK_DIAGNOSTIC = (
     "must use only Podman's default network with a unicast IPv4 address"
 )
@@ -177,9 +184,6 @@ def main():
     assert any('"pasta" not in' in expression for expression in network_assertions)
 
     stage = task_by_name(tasks, "Stage the inspected Podman IPv4 unicast result")
-    stage_text = str(stage)
-    assert "ansible.utils.ipaddr('unicast')" in stage_text
-    assert "is ansible.utils.ipv4" in stage_text
     assert stage.get("when") and all("ipaddr" not in expression for expression in stage["when"])
     stage_conditions = {" ".join(expression.split()) for expression in stage["when"]}
     assert {
@@ -187,8 +191,12 @@ def main():
         "pg_replication_network_podman is mapping",
         "pg_replication_network_ipv4_candidate is string",
         "pg_replication_network_ipv4_candidate | trim | length > 0",
-        "pg_replication_network_ipv4_candidate is ansible.utils.ipv4",
+        f"pg_replication_network_ipv4_candidate is match( '{NON_LOOPBACK_UNICAST_IPV4_REGEX}' )",
     } <= stage_conditions
+    assert re.match(NON_LOOPBACK_UNICAST_IPV4_REGEX, "10.88.0.2")
+    assert not re.match(NON_LOOPBACK_UNICAST_IPV4_REGEX, "127.0.0.1")
+    assert not re.match(NON_LOOPBACK_UNICAST_IPV4_REGEX, "224.0.0.1")
+    assert not re.match(NON_LOOPBACK_UNICAST_IPV4_REGEX, "10.88.0.2\n")
     assert any(
         "pg_replication_network_ipv4_unicast_by_container.get" in expression
         and "is not none" in expression
