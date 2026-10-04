@@ -5,6 +5,19 @@
   vars:
     pg_replication_network_metadata_path: "/run/postgresql-replication/standby-network.json"
     pg_replication_metadata_reader: "/usr/local/bin/read_secure_metadata.py"
+    pg_replication_target_python_executable: >-
+      {{ lookup('env', 'REPLICATION_TARGET_PYTHON_COMMAND') }}
+  pre_tasks:
+    - name: "Require the explicitly selected replication target Python interpreter"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_target_python_executable is defined
+          - pg_replication_target_python_executable is string
+          - pg_replication_target_python_executable | length > 0
+          - pg_replication_target_python_executable is match('^/')
+        fail_msg: >-
+          REPLICATION_TARGET_PYTHON_COMMAND must select an explicit absolute
+          Python executable before replication metadata can be read
   tasks:
     - name: "Install the descriptor-based metadata reader"
       become: true

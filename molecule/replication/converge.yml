@@ -221,6 +221,8 @@
     pg_lang: "en"
     pg_locale: "US"
     pg_disable_postgresql_module: false
+    pg_replication_target_python_executable: >-
+      {{ lookup('env', 'REPLICATION_TARGET_PYTHON_COMMAND') }}
     pg_replication_network_metadata_path: "/run/postgresql-replication/standby-network.json"
     pg_replication_metadata_reader: "/usr/local/bin/read_secure_metadata.py"
     iac_blueprint:
@@ -252,6 +254,16 @@
                   extensions:
                     - name: plpython3u
   pre_tasks:
+    - name: "Require the explicitly selected replication target Python interpreter"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_target_python_executable is defined
+          - pg_replication_target_python_executable is string
+          - pg_replication_target_python_executable | length > 0
+          - pg_replication_target_python_executable is match('^/')
+        fail_msg: >-
+          REPLICATION_TARGET_PYTHON_COMMAND must select an explicit absolute
+          Python executable before persisted replication metadata can be read
     - name: "Inspect persisted metadata parent before reading it"
       become: true
       ansible.builtin.stat:
@@ -314,6 +326,16 @@
   hosts: instance-idarsi-rl9-primary
   become: false
   pre_tasks:
+    - name: "Require the explicitly selected replication target Python interpreter"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_target_python_executable is defined
+          - pg_replication_target_python_executable is string
+          - pg_replication_target_python_executable | length > 0
+          - pg_replication_target_python_executable is match('^/')
+        fail_msg: >-
+          REPLICATION_TARGET_PYTHON_COMMAND must select an explicit absolute
+          Python executable before replication metadata can be read
     - name: "Ensuring the fixture PostgreSQL TLS directory exists"
       become: true
       ansible.builtin.file:
@@ -360,6 +382,9 @@
       changed_when: fixture_postgresql_certificate.rc == 0
       no_log: false
   vars:
+    pg_replication_target_python_executable: >-
+      {{ lookup('env', 'REPLICATION_TARGET_PYTHON_COMMAND') }}
+    pg_replication_python_executable: "{{ pg_replication_target_python_executable }}"
     pg_lang: "en"
     pg_locale: "US"
     pg_disable_postgresql_module: false
@@ -374,11 +399,32 @@
       state: databases_present
     - role: ansible-iac-role-postgresql
       state: replication_present
+      vars:
+        pg_replication_python_executable: "{{ pg_replication_target_python_executable }}"
 
 - name: Converge standby base packages
   hosts: instance-idarsi-rl9-standby
   become: false
+  vars:
+    pg_replication_target_python_executable: >-
+      {{ lookup('env', 'REPLICATION_TARGET_PYTHON_COMMAND') }}
+    pg_replication_metadata_reader: "/usr/local/bin/read_secure_metadata.py"
+    primary_host: "instance-idarsi-rl9-primary"
+    state: present
+    pg_lang: "en"
+    pg_locale: "US"
+    pg_disable_postgresql_module: false
   pre_tasks:
+    - name: "Require the explicitly selected replication target Python interpreter"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_target_python_executable is defined
+          - pg_replication_target_python_executable is string
+          - pg_replication_target_python_executable | length > 0
+          - pg_replication_target_python_executable is match('^/')
+        fail_msg: >-
+          REPLICATION_TARGET_PYTHON_COMMAND must select an explicit absolute
+          Python executable before replication metadata can be read
     - name: "Inspect issuing CA parent before descriptor-safe read"
       become: true
       ansible.builtin.stat:
@@ -519,13 +565,6 @@
                     - name: appdb
                       extensions:
                         - name: plpython3u
-  vars:
-    primary_host: "instance-idarsi-rl9-primary"
-    pg_replication_metadata_reader: "/usr/local/bin/read_secure_metadata.py"
-    state: present
-    pg_lang: "en"
-    pg_locale: "US"
-    pg_disable_postgresql_module: false
   roles:
     - role: ansible-iac-role-postgresql
 
@@ -533,6 +572,16 @@
   hosts: instance-idarsi-rl9-standby
   become: false
   pre_tasks:
+    - name: "Require the explicitly selected replication target Python interpreter"
+      ansible.builtin.assert:
+        that:
+          - pg_replication_target_python_executable is defined
+          - pg_replication_target_python_executable is string
+          - pg_replication_target_python_executable | length > 0
+          - pg_replication_target_python_executable is match('^/')
+        fail_msg: >-
+          REPLICATION_TARGET_PYTHON_COMMAND must select an explicit absolute
+          Python executable before replication metadata can be read
     - name: "Inspect persisted primary CA parent before reading it"
       become: true
       ansible.builtin.stat:
@@ -612,6 +661,9 @@
                         - name: plpython3u
   vars:
     primary_host: "instance-idarsi-rl9-primary"
+    pg_replication_target_python_executable: >-
+      {{ lookup('env', 'REPLICATION_TARGET_PYTHON_COMMAND') }}
+    pg_replication_python_executable: "{{ pg_replication_target_python_executable }}"
     pg_replication_metadata_reader: "/usr/local/bin/read_secure_metadata.py"
     pg_lang: "en"
     pg_locale: "US"
@@ -619,6 +671,8 @@
   roles:
     - role: ansible-iac-role-postgresql
       state: replication_present
+      vars:
+        pg_replication_python_executable: "{{ pg_replication_target_python_executable }}"
     - role: ansible-iac-role-postgresql
       state: instances_present
     - role: ansible-iac-role-postgresql

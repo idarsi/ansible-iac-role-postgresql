@@ -64,6 +64,79 @@ assert scenario_env.get("REPLICATION_TARGET_PYTHON_COMMAND") == "${REPLICATION_T
 )
 prepare_text = (replication_dir / "prepare.yml").read_text()
 wrapper_text = (testing.parent / "scripts/replication_molecule.sh").read_text()
+reader_playbooks = {
+    name: yaml.safe_load((replication_dir / name).read_text())
+    for name in ("converge.yml", "verify.yml")
+}
+
+
+def flattened_tasks(tasks):
+    for task in tasks:
+        yield task
+        for nested_key in ("block", "rescue", "always"):
+            yield from flattened_tasks(task.get(nested_key, []))
+
+
+metadata_usage_count = 0
+for playbook_name, plays in reader_playbooks.items():
+  for play in plays:
+    play_vars = play.get("vars", {})
+    target_interpreter = play_vars.get("pg_replication_target_python_executable", "")
+    tasks = [
+        task
+        for task_key in ("pre_tasks", "tasks", "post_tasks")
+        for task in flattened_tasks(play.get(task_key, []))
+    ]
+    metadata_tasks = [
+        task
+        for task in tasks
+        if "pg_replication_metadata_reader" in repr(
+            task.get("ansible.builtin.command", {})
+        )
+    ]
+    if metadata_tasks:
+        assert target_interpreter, (
+            f"{playbook_name}/{play.get('name')}: reader play must define the target interpreter"
+        )
+        assert "REPLICATION_TARGET_PYTHON_COMMAND" in target_interpreter, (
+            f"{playbook_name}/{play.get('name')}: target interpreter must source the launcher contract"
+        )
+        assert "default(" not in target_interpreter, (
+            f"{playbook_name}/{play.get('name')}: target interpreter must not define a fallback"
+        )
+        assert "ansible_playbook_python" not in target_interpreter, (
+            f"{playbook_name}/{play.get('name')}: target interpreter must not use the controller fallback"
+        )
+    for task in metadata_tasks:
+        argv = task["ansible.builtin.command"].get("argv", [])
+        assert argv and argv[0] == "{{ pg_replication_target_python_executable }}", (
+            f"{playbook_name}/{play.get('name')}: every metadata-reader argv must use the exact target variable"
+        )
+    if metadata_tasks:
+        metadata_usage_count += len(metadata_tasks)
+        guard_indexes = [
+            index
+            for index, task in enumerate(tasks)
+            if "explicitly selected replication target Python interpreter" in task.get("name", "")
+        ]
+        first_metadata_index = next(index for index, task in enumerate(tasks) if task in metadata_tasks)
+        assert guard_indexes and guard_indexes[0] < first_metadata_index, (
+            f"{playbook_name}/{play.get('name')}: target interpreter must be guarded before metadata reads"
+        )
+
+    for role in play.get("roles", []):
+        if not isinstance(role, dict) or role.get("state") != "replication_present":
+            continue
+        assert role.get("vars", {}).get("pg_replication_python_executable") == (
+            "{{ pg_replication_target_python_executable }}"
+        ), f"{playbook_name}/{play.get('name')}: replication_present must receive the exact target variable"
+        guard_indexes = [
+            index
+            for index, task in enumerate(tasks)
+            if "explicitly selected replication target Python interpreter" in task.get("name", "")
+        ]
+        assert guard_indexes, f"{playbook_name}/{play.get('name')}: replication_present requires target preflight"
+assert metadata_usage_count > 0, "reader playbooks must invoke the metadata reader"
 assert "pg_replication_podman_configured" in prepare_text, (
     "replication prepare must retain the explicitly configured Podman value"
 )
