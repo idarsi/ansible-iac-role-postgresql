@@ -619,10 +619,9 @@
             ((pg_replication_network_result.stdout | from_json).get('podman')
              if (pg_replication_network_result.stdout | from_json) is mapping else {}) is mapping
           - >-
-            "IPAddress" in (((pg_replication_network_result.stdout | from_json).get('podman')
-             if (pg_replication_network_result.stdout | from_json) is mapping else {})
-             if (((pg_replication_network_result.stdout | from_json).get('podman')
-             if (pg_replication_network_result.stdout | from_json) is mapping else {}) is mapping else {})
+            "IPAddress" in ((pg_replication_network_result.stdout | from_json).get('podman')
+             if (pg_replication_network_result.stdout | from_json) is mapping and
+             (pg_replication_network_result.stdout | from_json).get('podman') is mapping else {})
           - >-
             (((pg_replication_network_result.stdout | from_json).get('podman')
              if (pg_replication_network_result.stdout | from_json) is mapping else {}).get('IPAddress')
