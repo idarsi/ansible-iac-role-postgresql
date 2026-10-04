@@ -104,7 +104,8 @@
     that:
       - >-
         pg_validation_replication_address in ['0.0.0.0/0', '::/0'] or
-        (pg_validation_replication_address | ansible.utils.ipaddr('unicast'))
+        ((pg_validation_replication_address | ansible.utils.ipaddr('unicast')) ==
+        pg_validation_replication_address)
     fail_msg: >-
       Each PostgreSQL replication standby address must be a valid IPv4 or IPv6
       address or CIDR; invalid values must be rejected before normalization
