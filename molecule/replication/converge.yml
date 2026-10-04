@@ -310,13 +310,16 @@
           - pg_replication_metadata is mapping
           - pg_replication_metadata.network_cidr is string
           - pg_replication_metadata.network_cidr is match('^(?:[0-9]{1,3}\.){3}[0-9]{1,3}/(?:[0-9]|[1-2][0-9]|3[0-2])$')
-          - pg_replication_metadata.network_cidr | ansible.utils.ipaddr('network/prefix') == pg_replication_metadata.network_cidr
-           - pg_replication_metadata.address is ansible.utils.ipv4
-           - pg_replication_metadata.address | ansible.utils.ipaddr('unicast') == pg_replication_metadata.address
-           - pg_replication_metadata.cidr is string
-           - pg_replication_metadata.cidr == pg_replication_metadata.address ~ '/32'
-           - pg_replication_metadata.cidr is ansible.utils.ipv4
-           - pg_replication_metadata.address | ansible.utils.ipaddr(pg_replication_metadata.network_cidr)
+          - >-
+            (pg_replication_metadata.network_cidr
+            | ansible.utils.ipaddr('network/prefix')
+            | default('', true) | string) == pg_replication_metadata.network_cidr
+          - pg_replication_metadata.address is ansible.utils.ipv4
+          - pg_replication_metadata.address | ansible.utils.ipaddr('unicast') == pg_replication_metadata.address
+          - pg_replication_metadata.cidr is string
+          - pg_replication_metadata.cidr == pg_replication_metadata.address ~ '/32'
+          - pg_replication_metadata.cidr is ansible.utils.ipv4
+          - pg_replication_metadata.address | ansible.utils.ipaddr(pg_replication_metadata.network_cidr)
         fail_msg: "Persisted standby metadata must contain a valid IPv4 subnet and address"
       no_log: true
   roles:
