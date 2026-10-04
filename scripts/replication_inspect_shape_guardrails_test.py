@@ -19,6 +19,10 @@ CONTAINER_INSPECT = "Inspect replication image provenance and architecture"
 IMAGE_INSPECT = "Inspect the image referenced by each replication container"
 NETWORK_ASSERT = "Require the exact default Podman network mapping and IPv4 value"
 UNICAST_ASSERT = "Require a unicast IPv4 address on the default Podman network"
+DEFAULT_NETWORK_DIAGNOSTIC = (
+    "must use only Podman's default network with a unicast IPv4 address"
+)
+HOST_PASTA_DIAGNOSTIC = "host and pasta networking are not supported"
 
 
 def registered_result_contract(result):
@@ -60,6 +64,13 @@ def assertion_expressions(task):
     return {" ".join(expression.split()) for expression in assertions}
 
 
+def normalized_ansible_output(completed):
+    """Make callback formatting and CI line wrapping irrelevant to diagnostics."""
+    output = completed.stdout + completed.stderr
+    output = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", output)
+    return " ".join(output.split())
+
+
 def run_network_contract(stage, assertion, case, expected_success):
     """Execute the exact staged filter and assertion tasks for one fixture."""
     result = {
@@ -84,7 +95,12 @@ def run_network_contract(stage, assertion, case, expected_success):
         yaml.safe_dump(playbook, handle, sort_keys=False)
         handle.flush()
         completed = subprocess.run(
-            [shutil.which("ansible-playbook") or "ansible-playbook", "-i", "localhost,", handle.name],
+            [
+                shutil.which("ansible-playbook") or "ansible-playbook",
+                "-i",
+                "localhost,",
+                handle.name,
+            ],
             capture_output=True,
             text=True,
             check=False,
@@ -93,11 +109,15 @@ def run_network_contract(stage, assertion, case, expected_success):
         assert completed.returncode == 0, completed.stdout + completed.stderr
     else:
         assert completed.returncode != 0, completed.stdout + completed.stderr
-        output = " ".join((completed.stdout + completed.stderr).split())
-        assert (
-            "must use only Podman's default network with a unicast IPv4 address; "
-            "host and pasta networking are not supported"
-        ) in output
+        output = normalized_ansible_output(completed)
+        assert DEFAULT_NETWORK_DIAGNOSTIC in output, (
+            "Ansible output omitted the default-network/unicast-IPv4 contract; "
+            f"actual output: {output}"
+        )
+        assert HOST_PASTA_DIAGNOSTIC in output, (
+            "Ansible output omitted the host/pasta rejection; "
+            f"actual output: {output}"
+        )
 
 
 def main():
