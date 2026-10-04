@@ -184,6 +184,7 @@ def main():
     assert any('"pasta" not in' in expression for expression in network_assertions)
 
     stage = task_by_name(tasks, "Stage the inspected Podman IPv4 unicast result")
+    assert "ansible.utils.ipaddr" not in str(stage)
     assert stage.get("when") and all("ipaddr" not in expression for expression in stage["when"])
     stage_conditions = {" ".join(expression.split()) for expression in stage["when"]}
     assert {

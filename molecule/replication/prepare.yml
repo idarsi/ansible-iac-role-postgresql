@@ -639,7 +639,7 @@
         pg_replication_network_ipv4_unicast_by_container: >-
           {{ pg_replication_network_ipv4_unicast_by_container | default({}) |
              combine({pg_replication_network_result.pg_replication_container:
-             (pg_replication_network_ipv4_candidate | ansible.utils.ipaddr('unicast'))}) }}
+             pg_replication_network_ipv4_candidate}) }}
         pg_replication_network_ipv4_candidate_by_container: >-
           {{ pg_replication_network_ipv4_candidate_by_container | default({}) |
              combine({pg_replication_network_result.pg_replication_container:
