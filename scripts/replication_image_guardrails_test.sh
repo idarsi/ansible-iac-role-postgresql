@@ -374,6 +374,13 @@ validate_replication_base_repo_digests <"$repo_digest_fixture" | grep -Fx "$repl
   printf '%s\n' 'replication image guardrail failed: exact Podman RepoDigests fixture was rejected' >&2
   exit 1
 }
+index_docker_io_repo_digest=$(normalize_replication_base_repo_digest \
+  'index.docker.io/rockylinux/rockylinux@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5')
+[ "$index_docker_io_repo_digest" = \
+  'docker.io/rockylinux/rockylinux@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5' ] || {
+  printf '%s\n' 'replication image guardrail failed: index.docker.io alias was not canonicalized' >&2
+  exit 1
+}
 printf '%s\n' \
   'docker.io/rockylinux/rockylinux@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5' \
   'docker.io/rockylinux/rockylinux@sha256:d706f937383b94727cfece22e2e29d67e26ed85c8156993e4718ca68c5e7dcd4' |

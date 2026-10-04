@@ -16,7 +16,9 @@ normalize_replication_sha256() {
 
 normalize_replication_base_repo_digest() {
   replication_repo_digest=$1
-  replication_repo_digest=${replication_repo_digest/index.docker.io/docker.io}
+  case "$replication_repo_digest" in
+    index.docker.io/*) replication_repo_digest="docker.io/${replication_repo_digest#index.docker.io/}" ;;
+  esac
   case "$replication_repo_digest" in
     docker.io/rockylinux/rockylinux@sha256:*) ;;
     *) return 1 ;;

@@ -439,9 +439,9 @@ set -- $(tr '\n' ' ' <"$MOCK_LOG")
 [ "$1" = podman-pull ]
 [ "$2" = podman-image-inspect ]
 [ "$3" = podman-image-inspect ]
-[ "$4" = molecule-test ]
-[ "$5" = molecule-destroy ]
-[ "$6" = podman-ps ]
+[ "${4:-}" = molecule-test ]
+[ "${5:-}" = molecule-destroy ]
+[ "${6:-}" = podman-ps ]
 [ "$(sed -n '1p' "$MOCK_ENV_LOG")" = "MOLECULE_PODMAN_EXECUTABLE=$tmp/bin/podman" ]
 [ "$(sed -n '2p' "$MOCK_ENV_LOG")" = "CONTAINERS_HELPER_BINARY_DIR=$tmp/bin" ]
 [ "$(sed -n '3p' "$MOCK_ENV_LOG")" = "REPLICATION_TARGET_PYTHON_COMMAND=/usr/bin/python3" ] || {
@@ -465,6 +465,19 @@ set -- $(tr '\n' ' ' <"$MOCK_LOG")
   exit 1
 }
 printf '%s\n' 'replication Molecule cleanup guardrails: PASS'
+
+# Regression fixture: a failed invocation can leave a log with fewer than four
+# fields.  The guardrail must inspect the available fields without set -u
+# treating the absent fourth field as an error.
+printf '%s\n' podman-pull podman-image-inspect podman-image-inspect >"$tmp/short-invocation.log"
+(
+  set -- $(tr '\n' ' ' <"$tmp/short-invocation.log")
+  [ "$1" = podman-pull ]
+  [ "$2" = podman-image-inspect ]
+  [ "$3" = podman-image-inspect ]
+  [ "${4:-}" = "" ]
+)
+printf '%s\n' 'replication Molecule short invocation log guardrail: PASS'
 
 # A narrowly recognized absent-container diagnostic is tolerated only after the
 # post-destroy inspection proves no reserved container remains.  Permission and
