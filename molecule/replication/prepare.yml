@@ -601,47 +601,55 @@
       register: pg_replication_container_networks
       changed_when: false
 
+    - name: "Parse replication container network attachments"
+      ansible.builtin.set_fact:
+        pg_replication_network_data_by_container: >-
+          {{ pg_replication_network_data_by_container | default({}) |
+             combine({pg_replication_network_result.pg_replication_container:
+             (pg_replication_network_result.stdout | from_json)}) }}
+      loop: "{{ pg_replication_container_networks.results }}"
+      loop_control:
+        loop_var: pg_replication_network_result
+      delegate_to: localhost
+
     - name: "Require the exact default Podman network mapping and IPv4 value"
       ansible.builtin.assert:
         that:
-          - "(pg_replication_network_result.stdout | from_json) is mapping"
           - >-
-             (pg_replication_network_result.stdout | from_json).keys() | list | sort
+             pg_replication_network_data_by_container.get(
+             pg_replication_network_result.pg_replication_container) is mapping
+          - >-
+             pg_replication_network_data_by_container.get(
+             pg_replication_network_result.pg_replication_container).keys() | list | sort
              == ["podman"]
           - >-
-             (pg_replication_network_result.stdout | from_json).keys() | list
+             pg_replication_network_data_by_container.get(
+             pg_replication_network_result.pg_replication_container).keys() | list
              | difference(["podman"]) | length == 0
           - >-
-            "host" not in (pg_replication_network_result.stdout | from_json).keys()
+             "host" not in pg_replication_network_data_by_container.get(
+             pg_replication_network_result.pg_replication_container).keys()
           - >-
-            "pasta" not in (pg_replication_network_result.stdout | from_json).keys()
+             "pasta" not in pg_replication_network_data_by_container.get(
+             pg_replication_network_result.pg_replication_container).keys()
           - >-
-            ((pg_replication_network_result.stdout | from_json).get('podman')
-             if (pg_replication_network_result.stdout | from_json) is mapping else {}) is mapping
+             pg_replication_network_data_by_container.get(
+             pg_replication_network_result.pg_replication_container).get('podman') is mapping
           - >-
-            "IPAddress" in ((pg_replication_network_result.stdout | from_json).get('podman')
-             if (pg_replication_network_result.stdout | from_json) is mapping and
-             (pg_replication_network_result.stdout | from_json).get('podman') is mapping else {})
+             "IPAddress" in pg_replication_network_data_by_container.get(
+             pg_replication_network_result.pg_replication_container).get('podman')
           - >-
-            (((pg_replication_network_result.stdout | from_json).get('podman')
-             if (pg_replication_network_result.stdout | from_json) is mapping else {}).get('IPAddress')
-             if (((pg_replication_network_result.stdout | from_json).get('podman')
-             if (pg_replication_network_result.stdout | from_json) is mapping else {}) is mapping else {}) is defined
+             pg_replication_network_data_by_container.get(
+             pg_replication_network_result.pg_replication_container).get('podman').get('IPAddress') is defined
           - >-
-            (((pg_replication_network_result.stdout | from_json).get('podman')
-             if (pg_replication_network_result.stdout | from_json) is mapping else {}).get('IPAddress')
-             if (((pg_replication_network_result.stdout | from_json).get('podman')
-             if (pg_replication_network_result.stdout | from_json) is mapping else {}) is mapping else {}) is not none
+             pg_replication_network_data_by_container.get(
+             pg_replication_network_result.pg_replication_container).get('podman').get('IPAddress') is not none
           - >-
-            (((pg_replication_network_result.stdout | from_json).get('podman')
-             if (pg_replication_network_result.stdout | from_json) is mapping else {}).get('IPAddress')
-             if (((pg_replication_network_result.stdout | from_json).get('podman')
-             if (pg_replication_network_result.stdout | from_json) is mapping else {}) is mapping else {}) is string
+             pg_replication_network_data_by_container.get(
+             pg_replication_network_result.pg_replication_container).get('podman').get('IPAddress') is string
           - >-
-            ((((pg_replication_network_result.stdout | from_json).get('podman')
-             if (pg_replication_network_result.stdout | from_json) is mapping else {}).get('IPAddress')
-             if (((pg_replication_network_result.stdout | from_json).get('podman')
-             if (pg_replication_network_result.stdout | from_json) is mapping else {}) is mapping else {}) | default('') | trim | length > 0
+             pg_replication_network_data_by_container.get(
+             pg_replication_network_result.pg_replication_container).get('podman').get('IPAddress') | trim | length > 0
         fail_msg: >-
           Container {{ pg_replication_network_result.pg_replication_container }}
            must use only Podman's default network with a unicast IPv4 address;
@@ -650,7 +658,6 @@
       loop: "{{ pg_replication_container_networks.results }}"
       loop_control:
         loop_var: pg_replication_network_result
-        label: "{{ pg_replication_network_result.pg_replication_container }}"
       delegate_to: localhost
 
     - name: "Stage the inspected Podman IPv4 unicast result"
