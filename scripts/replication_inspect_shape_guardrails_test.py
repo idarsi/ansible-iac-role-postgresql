@@ -93,9 +93,11 @@ def run_network_contract(stage, assertion, case, expected_success):
         assert completed.returncode == 0, completed.stdout + completed.stderr
     else:
         assert completed.returncode != 0, completed.stdout + completed.stderr
-        assert "must use only Podman's default network with a unicast IPv4 address" in (
-            completed.stdout + completed.stderr
-        )
+        output = " ".join((completed.stdout + completed.stderr).split())
+        assert (
+            "must use only Podman's default network with a unicast IPv4 address; "
+            "host and pasta networking are not supported"
+        ) in output
 
 
 def main():
