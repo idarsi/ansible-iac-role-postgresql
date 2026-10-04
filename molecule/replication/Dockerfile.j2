@@ -69,7 +69,7 @@ RUN set -eu; \
 # Keep this build self-contained while using the same normalizer contract as
 # molecule/replication/prepare.yml. The guardrail compares this block exactly
 # with scripts/replication_package_normalize.sh.
-RUN <<'REPLICATION_PACKAGE_VERIFY'
+RUN <<REPLICATION_PACKAGE_VERIFY
 set -eu
 
 normalize_replication_iproute_nevra() {
