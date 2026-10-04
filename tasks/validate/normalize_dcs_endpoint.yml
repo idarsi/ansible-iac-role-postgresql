@@ -1,0 +1,18 @@
+---
+- name: "Normalizing DCS endpoint"
+  ansible.builtin.include_tasks: ../endpoint_normalize.yml
+  vars:
+    pg_endpoint_normalize_input: "{{ pg_validation_dcs_endpoint }}"
+    pg_endpoint_normalize_result_fact: "pg_dcs_endpoint_current"
+    pg_endpoint_normalize_default_scheme: "{{ pg_validation_dcs_effective_scheme }}"
+    pg_endpoint_normalize_expected_scheme: "{{ pg_validation_dcs_effective_scheme }}"
+    pg_endpoint_normalize_render_scheme: true
+    pg_endpoint_normalize_label: "DCS endpoint"
+
+- name: "Adding normalized DCS endpoint"
+  ansible.builtin.set_fact:
+    pg_dcs_endpoint_model: >-
+      {{ pg_dcs_endpoint_model + [pg_dcs_endpoint_current | combine({
+        'provider': pg_validation_cluster_record.dcs.provider,
+        'is_proxy': false
+      })] }}

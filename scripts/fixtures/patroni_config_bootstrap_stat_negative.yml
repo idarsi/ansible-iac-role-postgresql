@@ -1,0 +1,19 @@
+---
+- name: "Negative parent-directory guard fixture"
+  hosts: all
+  tasks:
+    - name: "Inspect bootstrap tools"
+      ansible.builtin.stat:
+        path: "/usr/bin/python3"
+        follow: false
+      register: patroni_config_tool_stats
+
+    - name: "Require a safe local facts directory"
+      ansible.builtin.assert:
+        that:
+          - patroni_config_tool_stats.stat.exists
+          - patroni_config_tool_stats.stat.isdir
+          - not patroni_config_tool_stats.stat.islnk
+          - patroni_config_tool_stats.stat.pw_name == "root"
+          - patroni_config_tool_stats.stat.gr_name == "root"
+          - patroni_config_tool_stats.stat.mode == "0755"

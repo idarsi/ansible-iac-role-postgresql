@@ -1,0 +1,207 @@
+---
+# Keep parser state in task-local expressions and registered results.  The
+# caller receives a result only after every syntax and semantic check passes.
+- name: "Checking endpoint value type"
+  ansible.builtin.assert:
+    that:
+      - pg_endpoint_normalize_input is string
+    fail_msg: >-
+      {{ pg_endpoint_normalize_label }} must be a string host:port endpoint;
+      empty, non-string, and malformed endpoints are not accepted
+
+- name: "Preparing endpoint parser context"
+  ansible.builtin.debug:
+    msg:
+      pattern: '^(?:https?://)?(?:\[[^][]+\]|[^:]+):[0-9]{1,5}/?$'
+      has_scheme: >-
+        {{ pg_endpoint_normalize_input.startswith('http://')
+           or pg_endpoint_normalize_input.startswith('https://') }}
+      scheme: >-
+        {{ 'https' if pg_endpoint_normalize_input.startswith('https://')
+           else 'http' if pg_endpoint_normalize_input.startswith('http://')
+           else pg_endpoint_normalize_default_scheme }}
+      without_scheme: >-
+        {{ (pg_endpoint_normalize_input[8:] if pg_endpoint_normalize_input.startswith('https://')
+            else pg_endpoint_normalize_input[7:] if pg_endpoint_normalize_input.startswith('http://')
+            else pg_endpoint_normalize_input)[:-1]
+           if (pg_endpoint_normalize_input[8:] if pg_endpoint_normalize_input.startswith('https://')
+               else pg_endpoint_normalize_input[7:] if pg_endpoint_normalize_input.startswith('http://')
+               else pg_endpoint_normalize_input).endswith('/')
+           else (pg_endpoint_normalize_input[8:] if pg_endpoint_normalize_input.startswith('https://')
+                 else pg_endpoint_normalize_input[7:] if pg_endpoint_normalize_input.startswith('http://')
+                 else pg_endpoint_normalize_input) }}
+  register: pg_endpoint_normalize_parser
+  changed_when: false
+
+- name: "Checking endpoint syntax"
+  ansible.builtin.assert:
+    that:
+      - pg_endpoint_normalize_input | trim == pg_endpoint_normalize_input
+      - pg_endpoint_normalize_input | length > 0
+      - not (pg_endpoint_normalize_input is search('[\x00-\x1f\x7f]'))
+      - not (pg_endpoint_normalize_input is search("[;,|&$`<>']"))
+      - pg_endpoint_normalize_input is match(pg_endpoint_normalize_parser.msg.pattern)
+    fail_msg: >-
+      {{ pg_endpoint_normalize_label }} must be a host:port endpoint: use a
+      non-empty DNS/IPv4 host:port or bracketed IPv6 [address]:port; unbracketed
+      IPv6, missing ports, empty hosts, schemes other than HTTP(S), and malformed
+      values are invalid
+
+- name: "Checking endpoint scheme matches the effective transport"
+  ansible.builtin.assert:
+    that:
+      - >-
+        not pg_endpoint_normalize_parser.msg.has_scheme
+        or pg_endpoint_normalize_parser.msg.scheme == pg_endpoint_normalize_expected_scheme
+    fail_msg: >-
+      {{ pg_endpoint_normalize_label }} must use
+      {{ pg_endpoint_normalize_expected_scheme }} when its provider TLS setting
+      is effective
+  when: pg_endpoint_normalize_expected_scheme is defined
+
+- name: "Extracting endpoint host and raw port token"
+  ansible.builtin.debug:
+    msg:
+      bracketed: "{{ pg_endpoint_normalize_parser.msg.without_scheme.startswith('[') }}"
+      host: >-
+        {{ (pg_endpoint_normalize_parser.msg.without_scheme.split(']:', 1)[0])[1:]
+           if pg_endpoint_normalize_parser.msg.without_scheme.startswith('[')
+           else pg_endpoint_normalize_parser.msg.without_scheme.rsplit(':', 1)[0] }}
+      port_token: >-
+        {{ pg_endpoint_normalize_parser.msg.without_scheme.split(']:', 1)[1]
+           if pg_endpoint_normalize_parser.msg.without_scheme.startswith('[')
+           else pg_endpoint_normalize_parser.msg.without_scheme.rsplit(':', 1)[1] }}
+  register: pg_endpoint_normalize_parts
+  changed_when: false
+
+- name: "Checking bracketed endpoint host is valid IPv6"
+  ansible.builtin.assert:
+    that:
+      - not pg_endpoint_normalize_parts.msg.bracketed
+        or (pg_endpoint_normalize_parts.msg.host is ansible.utils.ip_address
+            and ':' in pg_endpoint_normalize_parts.msg.host)
+    fail_msg: >-
+      {{ pg_endpoint_normalize_label }} brackets are only valid around a valid
+      IPv6 address
+
+- name: "Checking endpoint port token grammar"
+  ansible.builtin.assert:
+    that:
+      - pg_endpoint_normalize_parts.msg.port_token is string
+      - pg_endpoint_normalize_parts.msg.port_token is match('^[0-9]{1,5}$')
+      - pg_endpoint_normalize_parts.msg.port_token == '0'
+        or pg_endpoint_normalize_parts.msg.port_token is not match('^0')
+    fail_msg: >-
+      {{ pg_endpoint_normalize_label }} port must be canonical decimal digits
+      without leading zeros (and must not be zero)
+
+- name: "Converting the validated endpoint port"
+  ansible.builtin.debug:
+    msg: "{{ pg_endpoint_normalize_parts.msg.port_token | int }}"
+  register: pg_endpoint_normalize_port
+  changed_when: false
+
+- name: "Deriving canonical endpoint host"
+  ansible.builtin.debug:
+    msg: >-
+      {{ (pg_endpoint_normalize_parts.msg.host | ansible.utils.ipaddr('address'))
+         if pg_endpoint_normalize_parts.msg.host is ansible.utils.ip_address
+         else (pg_endpoint_normalize_parts.msg.host | lower | regex_replace('\.$', '')) }}
+  register: pg_endpoint_normalize_canonical_host
+  changed_when: false
+
+- name: "Checking endpoint host and port semantics"
+  ansible.builtin.assert:
+    that:
+      - pg_endpoint_normalize_port.msg | int > 0
+      - pg_endpoint_normalize_port.msg | int < 65536
+      - >-
+        pg_endpoint_normalize_parts.msg.host is ansible.utils.ip_address
+        or pg_endpoint_normalize_parts.msg.host is match(
+          '^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$')
+      - pg_endpoint_normalize_parts.msg.host is not match('^[0-9.]+$')
+        or pg_endpoint_normalize_parts.msg.host is ansible.utils.ip_address
+    fail_msg: "{{ pg_endpoint_normalize_label }} has an invalid host or port (port must be 1-65535)"
+
+- name: "Publishing canonical endpoint model after validation"
+  ansible.builtin.set_fact:
+    "{{ pg_endpoint_normalize_result_fact }}":
+      scheme: "{{ pg_endpoint_normalize_parser.msg.scheme }}"
+      protocol: "{{ pg_endpoint_normalize_parser.msg.scheme }}"
+      has_scheme: "{{ pg_endpoint_normalize_parser.msg.has_scheme | bool }}"
+      host: "{{ pg_endpoint_normalize_parts.msg.host }}"
+      port: "{{ pg_endpoint_normalize_port.msg | int }}"
+      host_is_ipv6: >-
+        {{ pg_endpoint_normalize_parts.msg.host is ansible.utils.ip_address
+           and ':' in pg_endpoint_normalize_parts.msg.host }}
+      is_wildcard: >-
+        {{ pg_endpoint_normalize_canonical_host.msg in ['0.0.0.0', '::'] }}
+      canonical_host: "{{ pg_endpoint_normalize_canonical_host.msg }}"
+      canonical_endpoint: >-
+        {{ ('[' ~ pg_endpoint_normalize_canonical_host.msg ~ ']'
+            if pg_endpoint_normalize_parts.msg.host is ansible.utils.ip_address
+            and ':' in pg_endpoint_normalize_parts.msg.host
+            else pg_endpoint_normalize_canonical_host.msg)
+           }}:{{ pg_endpoint_normalize_port.msg | int }}
+      rendered_host: >-
+        {{ '[' ~ pg_endpoint_normalize_canonical_host.msg ~ ']'
+           if pg_endpoint_normalize_parts.msg.host is ansible.utils.ip_address
+           and ':' in pg_endpoint_normalize_parts.msg.host
+           else pg_endpoint_normalize_canonical_host.msg }}
+      rendered_endpoint: >-
+        {{ (pg_endpoint_normalize_parser.msg.scheme ~ '://' if (pg_endpoint_normalize_parser.msg.has_scheme
+            or pg_endpoint_normalize_render_scheme | default(false) | bool) else '')
+           ~ ('[' ~ pg_endpoint_normalize_canonical_host.msg ~ ']'
+              if pg_endpoint_normalize_parts.msg.host is ansible.utils.ip_address
+              and ':' in pg_endpoint_normalize_parts.msg.host
+              else pg_endpoint_normalize_canonical_host.msg)
+           ~ ':' ~ (pg_endpoint_normalize_port.msg | int) }}
+      scheme_free_endpoint: >-
+        {{ ('[' ~ pg_endpoint_normalize_canonical_host.msg ~ ']'
+            if pg_endpoint_normalize_parts.msg.host is ansible.utils.ip_address
+            and ':' in pg_endpoint_normalize_parts.msg.host
+            else pg_endpoint_normalize_canonical_host.msg)
+           }}:{{ pg_endpoint_normalize_port.msg | int }}
+      uri: >-
+        {{ pg_endpoint_normalize_parser.msg.scheme ~ '://'
+           ~ ('[' ~ pg_endpoint_normalize_canonical_host.msg ~ ']'
+              if pg_endpoint_normalize_parts.msg.host is ansible.utils.ip_address
+              and ':' in pg_endpoint_normalize_parts.msg.host
+              else pg_endpoint_normalize_canonical_host.msg)
+           ~ ':' ~ (pg_endpoint_normalize_port.msg | int) }}
+      path: ""
+      san_identities:
+        - "{{ pg_endpoint_normalize_canonical_host.msg }}"
+
+- name: "Checking normalized endpoint model schema"
+  ansible.builtin.assert:
+    that:
+      - pg_endpoint_normalize_schema_model is mapping
+      - pg_endpoint_normalize_schema_keys is sequence
+      - pg_endpoint_normalize_schema_keys | length == 15
+      - >-
+        pg_endpoint_normalize_schema_keys
+        ==
+        (['canonical_endpoint', 'canonical_host', 'has_scheme', 'host',
+          'host_is_ipv6', 'is_wildcard', 'path', 'port', 'protocol', 'rendered_endpoint',
+          'rendered_host', 'san_identities', 'scheme', 'scheme_free_endpoint',
+          'uri'] | sort)
+      - pg_endpoint_normalize_schema_model.get('has_scheme', false) is boolean
+      - pg_endpoint_normalize_schema_model.get('port', none) is integer
+      - pg_endpoint_normalize_schema_san_identities is sequence
+      - pg_endpoint_normalize_schema_san_identities | length == 1
+      - >-
+        pg_endpoint_normalize_schema_san_identities | length != 1
+        or pg_endpoint_normalize_schema_san_identities | first
+           == pg_endpoint_normalize_schema_model.get('canonical_host', '')
+      - pg_endpoint_normalize_schema_model.get('is_wildcard', false) is boolean
+    fail_msg: "{{ pg_endpoint_normalize_label }} normalized endpoint model schema is invalid"
+  vars:
+    pg_endpoint_normalize_schema_model: >-
+      {{ lookup('vars', pg_endpoint_normalize_result_fact) | default({}, true) }}
+    pg_endpoint_normalize_schema_keys: >-
+      {{ pg_endpoint_normalize_schema_model.keys() | list | sort
+         if pg_endpoint_normalize_schema_model is mapping else [] }}
+    pg_endpoint_normalize_schema_san_identities: >-
+      {{ pg_endpoint_normalize_schema_model.get('san_identities', []) | default([], true) | list
+         if pg_endpoint_normalize_schema_model is mapping else [] }}

@@ -5,16 +5,127 @@
       - iac_git_repos is defined
     fail_msg: "iac_git_repos must be defined"
 
+- name: "Checking git cleanup marker filename"
+  ansible.builtin.assert:
+    that:
+      - pg_git_cleanup_marker_filename is match('^[A-Za-z0-9][A-Za-z0-9._-]*$')
+      - pg_git_cleanup_marker_filename | basename == pg_git_cleanup_marker_filename
+    fail_msg: "Git cleanup marker filename must be a safe basename"
+
 - name: "Checking git repository record"
   ansible.builtin.assert:
     that:
       - iac_git_repo_record.dest is defined
       - iac_git_repo_record.dest is match('^/')
+      - iac_git_repo_record.dest is not search('(^|/)\.\.(/|$)')
+      - >-
+        iac_git_repo_record.dest | regex_replace('/+$', '') not in
+        ['/', '/etc', '/usr', '/var', '/home', '/root', '/srv', '/opt', '/tmp',
+        '/dev', '/proc', '/sys', '/run']
     fail_msg: "Git repository record is missing required fields"
   loop: "{{ iac_git_repos | default([]) }}"
   loop_control:
     loop_var: iac_git_repo_record
     label: "{{ iac_git_repo_record.dest | default('unknown') }}"
+
+- name: "Checking Git working tree path before ownership checks"
+  ansible.builtin.stat:
+    path: "{{ iac_git_repo_record.dest }}"
+    follow: false
+  register: pg_git_destination_paths
+  loop: "{{ iac_git_repos | default([]) }}"
+  loop_control:
+    loop_var: iac_git_repo_record
+    label: "{{ iac_git_repo_record.dest }}"
+
+- name: "Checking managed git working tree ownership marker"
+  ansible.builtin.stat:
+    path: "{{ iac_git_repo_record.dest }}/{{ pg_git_cleanup_marker_filename }}"
+    follow: false
+  register: pg_git_cleanup_marker
+  loop: "{{ iac_git_repos | default([]) }}"
+  loop_control:
+    loop_var: iac_git_repo_record
+    label: "{{ iac_git_repo_record.dest }}"
+
+- name: "Checking Git working tree path"
+  ansible.builtin.stat:
+    path: "{{ iac_git_repo_record.dest }}"
+    follow: false
+  register: pg_git_worktree_paths
+  loop: "{{ iac_git_repos | default([]) }}"
+  loop_control:
+    loop_var: iac_git_repo_record
+    label: "{{ iac_git_repo_record.dest }}"
+
+- name: "Rejecting unmarked or symlinked git working trees"
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+      - item.stat.lnk_target is not defined
+      - item.stat.uid == 0
+      - item.stat.gid == 0
+      - item.stat.mode == '0600'
+    fail_msg: "Refusing to remove an unmarked or symlinked Git working tree: {{ item.item.dest }}"
+  loop: "{{ pg_git_cleanup_marker.results }}"
+  when: pg_git_destination_paths.results[ansible_loop.index0].stat.exists
+  loop_control:
+    extended: true
+
+- name: "Reading Git working tree ownership markers"
+  ansible.builtin.slurp:
+    src: "{{ item.item.dest }}/{{ pg_git_cleanup_marker_filename }}"
+  register: pg_git_cleanup_marker_contents
+  no_log: true
+  loop: "{{ pg_git_cleanup_marker.results }}"
+  when: pg_git_destination_paths.results[ansible_loop.index0].stat.exists
+  loop_control:
+    extended: true
+
+- name: "Rejecting forged Git working tree ownership markers"
+  ansible.builtin.assert:
+    that:
+      - item.content | b64decode == 'Managed by ansible-iac-role-postgresql.\n'
+    fail_msg: "Refusing to remove a Git working tree with an invalid ownership marker"
+  no_log: true
+  loop: "{{ pg_git_cleanup_marker_contents.results }}"
+  when: not (item.skipped | default(false))
+
+- name: "Rejecting symlinked Git working tree paths"
+  ansible.builtin.assert:
+    that:
+      - not item.stat.islnk | default(false)
+    fail_msg: "Refusing to remove a symlinked Git working tree path"
+  loop: "{{ pg_git_worktree_paths.results }}"
+  when: item.stat.exists
+
+- name: "Checking expected Git worktrees"
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ iac_git_repo_record.dest }}"
+      - rev-parse
+      - --show-toplevel
+  register: pg_git_worktree_checks
+  changed_when: false
+  failed_when: false
+  loop: "{{ iac_git_repos | default([]) }}"
+  loop_control:
+    loop_var: iac_git_repo_record
+    label: "{{ iac_git_repo_record.dest }}"
+    extended: true
+  when: pg_git_worktree_paths.results[ansible_loop.index0].stat.exists
+
+- name: "Rejecting paths that are not the expected Git worktree"
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - item.stdout | trim == item.item.dest | regex_replace('/+$', '')
+    fail_msg: "Refusing to remove a path that is not the expected Git worktree"
+  loop: "{{ pg_git_worktree_checks.results }}"
+  when: not (item.skipped | default(false))
 
 - name: "Ensuring git repository working trees are absent"
   ansible.builtin.file:

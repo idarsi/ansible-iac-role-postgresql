@@ -47,7 +47,8 @@
           failed_when: false
         - name: "Assert the selected peer Patroni API is unreachable"
           ansible.builtin.uri:
-            url: "http://{{ '192.168.250.202' if inventory_hostname == 'pg01' else '192.168.250.201' }}:8008/health"
+            url: "https://{{ '192.168.250.202' if inventory_hostname == 'pg01' else '192.168.250.201' }}:8008/health"
+            ca_path: /etc/patroni/pki/ca.crt
           register: vagrant_partition_patroni
           failed_when: false
         - name: "Assert disruption was observed"
@@ -58,14 +59,15 @@
         - name: "Observe surviving DCS quorum and Patroni safety"
           ansible.builtin.command: >-
             etcdctl --endpoints=https://192.168.250.203:2379 --cacert=/etc/etcd/pki/ca.crt
-            --cert=/etc/etcd/pki/etcd.crt --key=/etc/etcd/pki/etcd.key endpoint health
+            --cert=/etc/etcd/pki/etcd-client.crt --key=/etc/etcd/pki/etcd-client.key endpoint health
           delegate_to: pg03
           environment: {ETCDCTL_API: "3"}
           register: vagrant_partition_surviving_dcs
           changed_when: false
         - name: "Read the surviving Patroni view"
           ansible.builtin.uri:
-            url: "http://192.168.250.203:8008/cluster"
+            url: "https://192.168.250.203:8008/cluster"
+            ca_path: /etc/patroni/pki/ca.crt
             url_username: "patroni"
             url_password: "patroni_password"
             force_basic_auth: true
@@ -101,7 +103,8 @@
   tasks:
     - name: "Wait for all three Patroni members after cleanup"
       ansible.builtin.uri:
-        url: http://192.168.250.201:8008/cluster
+        url: https://192.168.250.201:8008/cluster
+        ca_path: /etc/patroni/pki/ca.crt
         url_username: patroni
         url_password: patroni_password
         force_basic_auth: true

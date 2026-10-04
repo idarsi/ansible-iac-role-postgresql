@@ -1,0 +1,220 @@
+---
+- name: "Validate the pinned Patroni configuration fixture"
+  hosts: all
+  become: false
+  vars:
+    patroni_config_fact_path: "/etc/ansible/facts.d/patroni_config.fact"
+    patroni_config_fact_key: "python_interpreter"
+  tasks:
+    - name: "Gather fixture package facts"
+      ansible.builtin.package_facts:
+        manager: "auto"
+
+    - name: "Require packages supplied by the derived image"
+      ansible.builtin.assert:
+        that:
+          - patroni_config_package in ansible_facts.packages
+        fail_msg: "Patroni configuration fixture image is missing {{ patroni_config_package }}"
+      loop:
+        - "bash"
+        - "coreutils"
+        - "openssl"
+        - "acl"
+        - "util-linux"
+        - "python3"
+      loop_control:
+        loop_var: patroni_config_package
+
+    - name: "Provision disposable managed etcd marker roots"
+      ansible.builtin.file:
+        path: "{{ patroni_config_marker_root.path }}"
+        state: "directory"
+        owner: "root"
+        group: "root"
+        mode: "0700"
+        follow: false
+      loop:
+        - {path: "/var/lib/etcd"}
+        - {path: "/var/lib/etcd/.idarsi-managed"}
+      loop_control:
+        loop_var: patroni_config_marker_root
+
+    - name: "Inspect bootstrap tools"
+      ansible.builtin.stat:
+        path: "{{ patroni_config_tool.path }}"
+        follow: false
+      loop:
+        - {name: "bash", path: "/usr/bin/bash"}
+        - {name: "openssl", path: "/usr/bin/openssl"}
+        - {name: "python3", path: "/usr/bin/python3"}
+      loop_control:
+        loop_var: patroni_config_tool
+      register: patroni_config_tool_stats
+
+    - name: "Resolve the Python entry point"
+      ansible.builtin.command:
+        argv:
+          - "/usr/bin/readlink"
+          - "-e"
+          - "--"
+          - "/usr/bin/python3"
+      register: patroni_config_python_realpath
+      changed_when: false
+
+    - name: "Inspect the canonical Python executable"
+      ansible.builtin.stat:
+        path: "{{ patroni_config_python_realpath.stdout | trim }}"
+        follow: false
+      register: patroni_config_python_stat
+      when:
+        - patroni_config_python_realpath.rc == 0
+        - patroni_config_python_realpath.stdout | trim is match('^/')
+
+    - name: "Require regular bootstrap tools"
+      ansible.builtin.assert:
+        that:
+          - patroni_config_tool_result.stat.exists
+          - patroni_config_tool_result.stat.isreg
+          - patroni_config_tool_result.stat.executable
+        fail_msg: >-
+          Patroni configuration fixture requires an executable regular
+          {{ patroni_config_tool_result.patroni_config_tool.name }} tool
+      loop: "{{ patroni_config_tool_stats.results[0:2] }}"
+      loop_control:
+        loop_var: patroni_config_tool_result
+
+    - name: "Require a canonical regular Python executable"
+      ansible.builtin.assert:
+        that:
+          - patroni_config_python_realpath.rc == 0
+          - patroni_config_python_realpath.stdout | trim is match('^/')
+          - patroni_config_python_stat.stat.exists | default(false)
+          - patroni_config_python_stat.stat.isreg | default(false)
+          - patroni_config_python_stat.stat.executable | default(false)
+        fail_msg: >-
+          Patroni configuration fixture requires /usr/bin/python3 to resolve
+          to a canonical executable regular file
+
+    - name: "Create the documented PostgreSQL PKI seed parent"
+      ansible.builtin.file:
+        path: "/var/lib/postgresql-pki-seed"
+        state: "directory"
+        owner: "root"
+        group: "root"
+        mode: "0700"
+        follow: false
+
+    - name: "Require a safe PostgreSQL PKI seed parent"
+      ansible.builtin.stat:
+        path: "/var/lib/postgresql-pki-seed"
+        follow: false
+      register: patroni_config_seed_parent
+
+    - name: "Reject an unsafe PostgreSQL PKI seed parent"
+      ansible.builtin.assert:
+        that:
+          - patroni_config_seed_parent.stat.exists
+          - patroni_config_seed_parent.stat.isdir
+          - not patroni_config_seed_parent.stat.islnk
+          - patroni_config_seed_parent.stat.pw_name == "root"
+          - patroni_config_seed_parent.stat.gr_name == "root"
+          - patroni_config_seed_parent.stat.mode == "0700"
+        fail_msg: >-
+          The PostgreSQL PKI seed parent must be a root-owned, non-symlink
+          directory with mode 0700
+
+    - name: "Export the canonical Python interpreter as a host fact"
+      ansible.builtin.set_fact:
+        patroni_config_python_interpreter: "{{ patroni_config_python_realpath.stdout | trim }}"
+
+    - name: "Create the local facts directory"
+      ansible.builtin.file:
+        path: "/etc/ansible/facts.d"
+        state: "directory"
+        mode: "0755"
+        owner: "root"
+        group: "root"
+        follow: false
+
+    - name: "Inspect the local facts directory without following links"
+      ansible.builtin.stat:
+        path: "{{ patroni_config_fact_path | dirname }}"
+        follow: false
+      register: patroni_config_fact_directory
+
+    - name: "Require a safe local facts directory"
+      ansible.builtin.assert:
+        that:
+          - patroni_config_fact_directory.stat.exists
+          - patroni_config_fact_directory.stat.isdir
+          - not patroni_config_fact_directory.stat.islnk
+          - patroni_config_fact_directory.stat.pw_name == "root"
+          - patroni_config_fact_directory.stat.gr_name == "root"
+          - patroni_config_fact_directory.stat.mode == "0755"
+        fail_msg: "The local facts directory must be a root-owned, non-symlink directory"
+
+    - name: "Write the canonical Python interpreter fact"
+      ansible.builtin.copy:
+        content: "{{ {patroni_config_fact_key: patroni_config_python_interpreter} | to_json }}\n"
+        dest: "{{ patroni_config_fact_path }}"
+        mode: "0644"
+        owner: "root"
+        group: "root"
+        follow: false
+        unsafe_writes: false
+
+    - name: "Inspect the persisted canonical Python interpreter fact"
+      ansible.builtin.stat:
+        path: "{{ patroni_config_fact_path }}"
+        follow: false
+      register: patroni_config_fact_file
+
+    - name: "Require a regular, private-owner canonical fact file"
+      ansible.builtin.assert:
+        that:
+          - patroni_config_fact_file.stat.exists
+          - patroni_config_fact_file.stat.isreg
+          - not patroni_config_fact_file.stat.islnk
+          - patroni_config_fact_file.stat.pw_name == "root"
+          - patroni_config_fact_file.stat.gr_name == "root"
+          - patroni_config_fact_file.stat.mode == "0644"
+        fail_msg: "The persisted canonical fact must be a root-owned regular file with mode 0644"
+
+    - name: "Inspect the pinned bootstrap package"
+      ansible.builtin.command:
+        argv:
+          - rpm
+          - -q
+          - --qf
+          - "%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}"
+          - bash
+      register: patroni_config_bash_package
+      changed_when: false
+
+    - name: "Require the exact signed bootstrap package"
+      ansible.builtin.assert:
+        that:
+          - patroni_config_bash_package.rc == 0
+          - patroni_config_bash_package.stdout == "bash-0:5.1.8-9.el9.x86_64"
+        fail_msg: >-
+          Patroni configuration fixture has unexpected bash package provenance
+
+    - name: "Inspect the preinstalled coreutils package"
+      ansible.builtin.command:
+        argv:
+          - rpm
+          - -q
+          - --qf
+          - "%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}"
+          - coreutils
+      register: patroni_config_coreutils_package
+      changed_when: false
+
+    - name: "Require the compatible coreutils package set"
+      ansible.builtin.assert:
+        that:
+          - patroni_config_coreutils_package.rc == 0
+          - patroni_config_coreutils_package.stdout == "coreutils-0:8.32-40.el9.x86_64"
+        fail_msg: >-
+          Patroni configuration fixture must provide the coreutils package
+          compatible with its pinned Rocky 9.8 image and repository set

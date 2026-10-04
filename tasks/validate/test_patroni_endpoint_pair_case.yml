@@ -1,0 +1,69 @@
+---
+- name: "Checking direct Patroni endpoint pair fixture schema"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (pg_patroni_pair_fixture.keys() | list | sort) ==
+        (["current", "expected", "name", "prior"] | sort)
+      - >-
+        (pg_patroni_pair_fixture.prior.keys() | list
+        | difference(["listen_input"]) | sort) ==
+        ((["connect_collision_key", "host_scope", "listen_address_family",
+        "listen_collision_key", "listen_is_wildcard", "listen_port"]
+        if pg_patroni_pair_fixture.prior.listen_input is not defined
+        else ["connect_collision_key", "host_scope", "listen_address_family",
+        "listen_collision_key", "listen_port"]) | sort)
+      - >-
+        (pg_patroni_pair_fixture.current.keys() | list | sort) ==
+        (["connect_collision_key", "host_scope", "listen_address_family",
+        "listen_collision_key", "listen_is_wildcard", "listen_port"] | sort)
+    fail_msg: >-
+      Direct Patroni endpoint pair fixture {{ pg_patroni_pair_fixture.name }}
+      does not match the validator contract schema.
+
+- name: "Evaluating direct Patroni endpoint pair fixture"
+  block:
+    - name: "Normalizing expanded IPv6 wildcard fixture input"
+      ansible.builtin.include_tasks: ../endpoint_normalize.yml
+      vars:
+        pg_endpoint_normalize_input: "{{ pg_patroni_pair_fixture.prior.listen_input }}"
+        pg_endpoint_normalize_result_fact: "pg_patroni_pair_fixture_listen_model"
+        pg_endpoint_normalize_default_scheme: "http"
+        pg_endpoint_normalize_label: "Patroni fixture listen"
+      when: pg_patroni_pair_fixture.prior.listen_input is defined
+
+    - name: "Using the normalized expanded IPv6 wildcard fixture"
+      ansible.builtin.set_fact:
+        pg_patroni_pair_prior_record: >-
+          {{ pg_patroni_pair_fixture.prior | combine({
+            'listen_address_family': 'ipv6',
+            'listen_is_wildcard': pg_patroni_pair_fixture_listen_model.is_wildcard,
+            'listen_collision_key': pg_patroni_pair_fixture.prior.host_scope ~ ':' ~
+              pg_patroni_pair_fixture_listen_model.canonical_endpoint,
+            'listen_port': pg_patroni_pair_fixture_listen_model.port
+          }) }}
+      when: pg_patroni_pair_fixture.prior.listen_input is defined
+
+    - name: "Applying direct Patroni endpoint pair validator"
+      ansible.builtin.include_tasks: check_patroni_endpoint_pair.yml
+      vars:
+        pg_validation_patroni_current_record: >-
+          {{ pg_patroni_pair_fixture.current }}
+        pg_validation_patroni_prior_record: >-
+          {{ pg_patroni_pair_prior_record | default(pg_patroni_pair_fixture.prior) }}
+    - name: "Recording accepted direct Patroni endpoint pair"
+      ansible.builtin.set_fact:
+        pg_patroni_pair_fixture_outcome: true
+  rescue:
+    - name: "Recording rejected direct Patroni endpoint pair"
+      ansible.builtin.set_fact:
+        pg_patroni_pair_fixture_outcome: false
+
+- name: "Asserting direct Patroni endpoint pair fixture outcome"
+  ansible.builtin.assert:
+    that:
+      - pg_patroni_pair_fixture_outcome == pg_patroni_pair_fixture.expected
+    fail_msg: >-
+      Direct Patroni endpoint pair fixture {{ pg_patroni_pair_fixture.name }}
+      produced {{ pg_patroni_pair_fixture_outcome }}, expected
+      {{ pg_patroni_pair_fixture.expected }}

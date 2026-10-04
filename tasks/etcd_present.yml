@@ -9,11 +9,31 @@
   ansible.builtin.set_fact:
     pg_etcd_config: "{{ pg_cluster.dcs.etcd }}"
     pg_etcd_member: >-
-      {{
-        pg_cluster.dcs.etcd.members
-        | selectattr('host', 'equalto', inventory_hostname)
-        | list | first | default({})
-      }}
+      {{ pg_preflight_etcd_endpoint_models_by_key[
+           (pg_version | string) ~ ':' ~ pg_cluster.name ~ ':' ~ inventory_hostname
+          ] | default({}) }}
+
+- name: "Selecting managed etcd path inputs, including metadata aliases"
+  ansible.builtin.set_fact:
+    # Compatibility contract: data_dir continues to take precedence over the
+    # role default when no alias is supplied.
+    # pg_etcd_config.data_dir | default(pg_etcd_data_directory)
+    pg_etcd_data_path_input: "{{ pg_etcd_config.data_dir | default(pg_etcd_config.data_directory | default(pg_etcd_data_directory)) }}"
+    pg_etcd_data_root_input: "{{ pg_etcd_config.data_dir_root | default(pg_etcd_config.data_directory_root | default(pg_etcd_data_directory_root)) }}"
+    pg_etcd_metadata_directory_input: "{{ pg_etcd_config.metadata_dir | default(pg_etcd_config.metadata_directory | default(pg_etcd_metadata_directory)) }}"
+
+- name: "Canonicalize managed etcd paths before inspection"
+  ansible.builtin.include_tasks: validate/normalize_path.yml
+  loop:
+    - {input: "{{ pg_etcd_data_path_input }}", result: "pg_etcd_data_path"}
+    - {input: "{{ pg_etcd_data_root_input }}", result: "pg_etcd_data_directory_root"}
+    - {input: "{{ pg_etcd_metadata_directory_input }}", result: "pg_etcd_metadata_directory"}
+  loop_control:
+    loop_var: pg_etcd_path_record
+  vars:
+    pg_path_normalize_input: "{{ pg_etcd_path_record.input }}"
+    pg_path_normalize_result_fact: "{{ pg_etcd_path_record.result }}"
+    pg_path_normalize_label: "Managed etcd path"
 
 - name: "Checking local etcd member mapping"
   ansible.builtin.assert:
@@ -22,6 +42,9 @@
       - pg_etcd_member.name is defined
       - pg_etcd_member.peer_url is defined
       - pg_etcd_member.client_url is defined
+      - pg_etcd_member == pg_preflight_etcd_endpoint_models_by_key[
+          (pg_version | string) ~ ':' ~ pg_cluster.name ~ ':' ~ inventory_hostname
+        ]
     fail_msg: >-
       Managed etcd is enabled, but inventory host {{ inventory_hostname }} is
       not defined as an etcd member with name, peer_url, and client_url
@@ -31,14 +54,373 @@
     that:
       - ansible_facts['os_family'] == 'RedHat'
       - ansible_facts['distribution_major_version'] in ['8', '9', '10']
-    fail_msg: "Managed PGDG etcd is supported only on Red Hat family EL8, EL9, and EL10"
+    fail_msg: >-
+      Managed PGDG etcd is supported only on Red Hat family EL8, EL9, and EL10
+
+- name: "Rejecting unsafe configured etcd TLS destinations before mutation"
+  ansible.builtin.assert:
+    that:
+      - >-
+        pg_etcd_tls_path is match(
+          '^/etc/etcd/pki/[A-Za-z0-9_-][A-Za-z0-9_.-]*$'
+          if pg_cluster_etcd_tls.auto_generate | default(false) | bool
+          else '^/[A-Za-z0-9_-][A-Za-z0-9_.-]*(?:/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$')
+    fail_msg: >-
+      Configured etcd TLS paths must be safe absolute normalized paths; generated
+      paths must be direct children of /etc/etcd/pki and external paths must not
+      contain traversal aliases.
+  loop:
+    - "{{ pg_cluster_etcd_tls_effective.ca_file | default('/etc/etcd/pki/ca.crt') }}"
+    - "{{ pg_cluster_etcd_tls_effective.client.ca_file | default('/etc/etcd/pki/ca.crt') }}"
+    - "{{ pg_cluster_etcd_tls_effective.client.cert_file | default('/etc/etcd/pki/etcd-client.crt') }}"
+    - "{{ pg_cluster_etcd_tls_effective.client.key_file | default('/etc/etcd/pki/etcd-client.key') }}"
+    - "{{ pg_cluster_etcd_tls_effective.peer.ca_file | default('/etc/etcd/pki/ca.crt') }}"
+    - "{{ pg_cluster_etcd_tls_effective.peer.cert_file | default('/etc/etcd/pki/etcd-peer.crt') }}"
+    - "{{ pg_cluster_etcd_tls_effective.peer.key_file | default('/etc/etcd/pki/etcd-peer.key') }}"
+  loop_control:
+    loop_var: pg_etcd_tls_path
+
+- name: "Deriving managed etcd metadata paths"
+  ansible.builtin.set_fact:
+    pg_etcd_metadata_identity: "{{ pg_version }}-{{ pg_cluster.name }}"
+    pg_etcd_metadata_marker_path: >-
+      {{ pg_etcd_metadata_directory }}/{{ pg_version }}-{{ pg_cluster.name }}/{{ pg_etcd_data_directory_marker }}
+
+- name: "Rejecting unsafe managed etcd metadata paths before inspection"
+  ansible.builtin.assert:
+    that:
+      - pg_etcd_metadata_directory is string
+      - pg_etcd_metadata_directory is match('^/[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$')
+      - pg_etcd_metadata_identity is string
+      - pg_etcd_metadata_identity is match('^[A-Za-z0-9][A-Za-z0-9_.-]*$')
+      - pg_etcd_data_directory_marker is string
+      - pg_etcd_data_directory_marker is match('^[A-Za-z0-9][A-Za-z0-9_.-]*$')
+      - pg_etcd_metadata_marker_path is match('^/[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$')
+      - pg_etcd_metadata_marker_path == pg_etcd_metadata_directory ~ '/' ~ pg_etcd_metadata_identity ~ '/' ~ pg_etcd_data_directory_marker
+      - pg_etcd_metadata_marker_path | dirname == pg_etcd_metadata_directory ~ '/' ~ pg_etcd_metadata_identity
+    fail_msg: >-
+      Managed etcd metadata directory and marker must be absolute, normalized
+      paths under the dedicated metadata root with safe path components
+
+- name: "Rejecting managed etcd data directory overlap with metadata root"
+  ansible.builtin.assert:
+    that:
+      - pg_etcd_data_path is string
+      - pg_etcd_data_path is match('^/[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$')
+      - pg_etcd_data_path != pg_etcd_metadata_directory
+      - not pg_etcd_data_path.startswith(pg_etcd_metadata_directory ~ '/')
+    fail_msg: >-
+      Managed etcd data_dir must not equal or be below the metadata root;
+      metadata is intentionally stored below the data root, not inside data_dir.
+
+- name: "Deriving managed etcd data and metadata ancestors"
+  ansible.builtin.set_fact:
+    pg_etcd_path_ancestors: >-
+      {% set ns = namespace(paths=[]) %}
+      {% for path in [pg_etcd_data_directory_root, pg_etcd_data_path | dirname,
+                      pg_etcd_metadata_directory,
+                      pg_etcd_metadata_directory ~ '/' ~ pg_etcd_metadata_identity] %}
+      {% set parts = path.split('/') %}
+      {% for index in range(1, parts | length) %}
+      {% set ancestor = '/' ~ (parts[1:index + 1] | join('/')) %}
+      {% if ancestor not in ns.paths %}{% set ns.paths = ns.paths + [ancestor] %}{% endif %}
+      {% endfor %}
+      {% endfor %}{{ ns.paths }}
+
+- name: "Inspecting managed etcd data and metadata ancestors"
+  ansible.builtin.stat:
+    path: "{{ pg_etcd_path_ancestor }}"
+    follow: false
+  loop: "{{ pg_etcd_path_ancestors }}"
+  loop_control:
+    loop_var: pg_etcd_path_ancestor
+  register: pg_etcd_path_ancestor_stats
+  become: true
+  become_user: "root"
+
+- name: "Selecting existing managed etcd ancestors for ACL inspection"
+  ansible.builtin.set_fact:
+    pg_etcd_existing_path_ancestors: >-
+      {{ pg_etcd_path_ancestor_stats.results
+         | selectattr('stat.exists', 'defined')
+         | selectattr('stat.exists')
+         | map(attribute='item') | list }}
+
+- name: "Inspecting managed etcd ancestor ACLs"
+  ansible.builtin.command:
+    argv: ["/usr/bin/getfacl", "-P", "--absolute-names", "--", "{{ pg_etcd_path_ancestor }}"]
+  loop: "{{ pg_etcd_existing_path_ancestors }}"
+  loop_control:
+    loop_var: pg_etcd_path_ancestor
+  register: pg_etcd_path_ancestor_acls
+  changed_when: false
+  failed_when: false
+  become: true
+  become_user: "root"
+
+- name: "Rejecting unsafe managed etcd data and metadata ancestors"
+  ansible.builtin.assert:
+    that:
+      - item.stat.isdir
+      - not (item.stat.islnk | default(false))
+      - item.stat.pw_name | default('') == 'root'
+      - (item.stat.mode | default('0000')) is match('^0[0-7][0145][0145]$')
+    fail_msg: >-
+      Every existing managed etcd data-dir and metadata ancestor must be a
+      root-owned, non-symlink directory without group or other write access.
+  loop: "{{ pg_etcd_path_ancestor_stats.results }}"
+  when: item.stat.exists or (item.stat.islnk | default(false))
+
+- name: "Rejecting unsafe ACLs on managed etcd ancestors"
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - item.stdout is not search('^default:', multiline=true)
+      - item.stdout is not search('^user:[^:]+:', multiline=true)
+      - item.stdout is not search('^group:[^:]+:', multiline=true)
+      - item.stdout is not search('^group::[^-]*w', multiline=true)
+      - item.stdout is not search('^other::[^-]*w', multiline=true)
+    fail_msg: >-
+      Managed etcd data-dir and metadata ancestors must not have named or
+      default ACLs or group/other write access.
+  loop: "{{ pg_etcd_path_ancestor_acls.results }}"
+
+- name: "Checking existing managed etcd data directory"
+  ansible.builtin.stat:
+    path: "{{ pg_etcd_data_path }}"
+    follow: false
+  register: pg_etcd_data_directory_stat
+  become: true
+  become_user: "root"
+
+- name: "Inspecting existing managed etcd data directory ACL without following symlinks"
+  ansible.builtin.command:
+    argv: ["/usr/bin/getfacl", "-P", "--absolute-names", "--", "{{ pg_etcd_data_path }}"]
+  register: pg_etcd_data_directory_acl
+  changed_when: false
+  failed_when: false
+  become: true
+  become_user: "root"
+  when: pg_etcd_data_directory_stat.stat.exists
+
+- name: "Rejecting unsafe ACLs on existing managed etcd data directory"
+  ansible.builtin.assert:
+    that:
+      - pg_etcd_data_directory_acl.rc | default(1) == 0
+      - pg_etcd_data_directory_acl.stdout is not search('^default:', multiline=true)
+      - pg_etcd_data_directory_acl.stdout is not search('^user:[^:]+:', multiline=true)
+      - pg_etcd_data_directory_acl.stdout is not search('^group:[^:]+:', multiline=true)
+      - pg_etcd_data_directory_acl.stdout is not search('^group::[^-]*w', multiline=true)
+      - pg_etcd_data_directory_acl.stdout is not search('^other::[^-]*w', multiline=true)
+    fail_msg: >-
+      Existing managed etcd data_dir must have no named/default ACLs and no
+      group/other write access; the role will not normalize existing data.
+  when: pg_etcd_data_directory_stat.stat.exists
+
+- name: "Checking managed etcd metadata directory and marker"
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop:
+    - "{{ pg_etcd_metadata_directory }}"
+    - "{{ pg_etcd_metadata_directory }}/{{ pg_etcd_metadata_identity }}"
+    - "{{ pg_etcd_metadata_marker_path }}"
+  register: pg_etcd_metadata_stats
+  become: true
+  become_user: "root"
+
+- name: "Rejecting a symlinked managed etcd metadata marker"
+  ansible.builtin.assert:
+    that:
+      - not (pg_etcd_metadata_stats.results[2].stat.islnk | default(false))
+    fail_msg: "Managed etcd metadata marker must not be a symlink"
+  when: >-
+    pg_etcd_metadata_stats.results[2].stat.exists or
+    (pg_etcd_metadata_stats.results[2].stat.islnk | default(false))
+
+- name: "Inspecting managed etcd metadata marker ACL"
+  ansible.builtin.command:
+    argv: ["/usr/bin/getfacl", "-P", "--absolute-names", "--", "{{ pg_etcd_metadata_marker_path }}"]
+  register: pg_etcd_metadata_marker_acl
+  changed_when: false
+  failed_when: false
+  become: true
+  become_user: "root"
+  when: pg_etcd_metadata_stats.results[2].stat.exists
+
+- name: "Rejecting unsafe managed etcd metadata marker ACL"
+  ansible.builtin.assert:
+    that:
+      - pg_etcd_metadata_marker_acl.rc | default(1) == 0
+      - pg_etcd_metadata_marker_acl.stdout is not search('^default:', multiline=true)
+      - pg_etcd_metadata_marker_acl.stdout is not search('^user:[^:]+:', multiline=true)
+      - pg_etcd_metadata_marker_acl.stdout is not search('^group:[^:]+:', multiline=true)
+    fail_msg: >-
+      Managed etcd metadata marker must not have named or default ACL entries
+  when: pg_etcd_metadata_stats.results[2].stat.exists
+
+- name: "Reading managed etcd metadata marker with descriptor-safe reader"
+  ansible.builtin.script: >-
+    {{ role_path }}/files/read_secure_metadata.py --uid 0 --mode 0600 --raw
+    {{ pg_etcd_metadata_marker_path }}
+  register: pg_etcd_metadata_marker_content
+  changed_when: false
+  failed_when: false
+  no_log: true
+  become: true
+  become_user: "root"
+  when:
+    - pg_etcd_metadata_stats.results[2].stat.exists
+    - pg_etcd_metadata_stats.results[2].stat.isreg
+    - not (pg_etcd_metadata_stats.results[2].stat.islnk | default(false))
+
+- name: "Rejecting an unowned or forgeable managed etcd data directory"
+  ansible.builtin.assert:
+    that:
+      - not (pg_etcd_data_directory_stat.stat.islnk | default(false))
+      - not pg_etcd_data_directory_stat.stat.exists or pg_etcd_data_directory_stat.stat.isdir
+      - not pg_etcd_data_directory_stat.stat.exists or pg_etcd_data_directory_stat.stat.pw_name | default('') == 'etcd'
+      - not pg_etcd_data_directory_stat.stat.exists or pg_etcd_data_directory_stat.stat.gr_name | default('') == 'etcd'
+      - not pg_etcd_data_directory_stat.stat.exists or pg_etcd_data_directory_stat.stat.mode | default('') == '0700'
+      - not pg_etcd_data_directory_stat.stat.exists or pg_etcd_metadata_stats.results[2].stat.exists
+      - not pg_etcd_metadata_stats.results[2].stat.exists or pg_etcd_metadata_stats.results[2].stat.isreg
+      - not pg_etcd_metadata_stats.results[2].stat.exists or not (pg_etcd_metadata_stats.results[2].stat.islnk | default(false))
+      - not pg_etcd_metadata_stats.results[2].stat.exists or pg_etcd_metadata_stats.results[2].stat.pw_name | default('') == 'root'
+      - not pg_etcd_metadata_stats.results[2].stat.exists or pg_etcd_metadata_stats.results[2].stat.gr_name | default('') == 'root'
+      - not pg_etcd_metadata_stats.results[2].stat.exists or pg_etcd_metadata_stats.results[2].stat.mode | default('') == '0600'
+      - >-
+        not pg_etcd_metadata_stats.results[2].stat.exists or
+        pg_etcd_metadata_marker_content.rc | default(1) == 0
+      - >-
+        not pg_etcd_metadata_stats.results[2].stat.exists or
+        (pg_etcd_metadata_marker_content.stdout | default('')) ==
+        pg_etcd_data_directory_marker_value ~ '\n'
+    fail_msg: >-
+      Existing managed etcd data_dir requires an exact root-owned 0600 marker
+      in the dedicated root-owned metadata directory and an exact etcd-owned
+      0700 directory; refusing to chown or chmod existing data.
+  no_log: true
+  vars:
+    pg_etcd_data_directory_marker_value: "managed-etcd:{{ pg_version }}:{{ pg_cluster.name }}"
+
+- name: "Ensuring managed etcd metadata directories exist"
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - {path: "{{ pg_etcd_metadata_directory }}", exists: "{{ pg_etcd_metadata_stats.results[0].stat.exists }}"}
+    - {path: "{{ pg_etcd_metadata_directory }}/{{ pg_etcd_metadata_identity }}", exists: "{{ pg_etcd_metadata_stats.results[1].stat.exists }}"}
+  when: not item.exists | bool
+  become: true
+  become_user: "root"
+
+- name: "Ensuring managed etcd data directory exists when absent"
+  ansible.builtin.file:
+    path: "{{ pg_etcd_data_path }}"
+    state: directory
+    owner: etcd
+    group: etcd
+    mode: "0700"
+  when: not pg_etcd_data_directory_stat.stat.exists
+  become: true
+  become_user: "root"
+
+- name: "Capturing managed etcd data directory identity"
+  ansible.builtin.stat:
+    path: "{{ pg_etcd_data_path }}"
+    follow: false
+  register: pg_etcd_data_directory_identity_stat
+  become: true
+  become_user: "root"
+
+- name: "Rejecting an unsafe managed etcd data directory after creation"
+  ansible.builtin.assert:
+    that:
+      - pg_etcd_data_directory_identity_stat.stat.exists
+      - pg_etcd_data_directory_identity_stat.stat.isdir
+      - not (pg_etcd_data_directory_identity_stat.stat.islnk | default(false))
+      - pg_etcd_data_directory_identity_stat.stat.pw_name | default('') == 'etcd'
+      - pg_etcd_data_directory_identity_stat.stat.gr_name | default('') == 'etcd'
+      - pg_etcd_data_directory_identity_stat.stat.mode | default('') == '0700'
+    fail_msg: >-
+      Managed etcd data_dir must be a newly captured, non-symlink etcd-owned
+      0700 directory before its identity is recorded.
+
+- name: "Recording managed etcd data directory identity"
+  ansible.builtin.set_fact:
+    pg_etcd_data_directory_identity:
+      - "{{ pg_etcd_data_directory_identity_stat.stat.dev }}"
+      - "{{ pg_etcd_data_directory_identity_stat.stat.inode }}"
+
+- name: "Writing managed etcd metadata marker"
+  ansible.builtin.copy:
+    content: "{{ pg_etcd_data_directory_marker_value }}\n"
+    dest: "{{ pg_etcd_metadata_marker_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+    force: false
+  when: not pg_etcd_metadata_stats.results[2].stat.exists
+  become: true
+  become_user: "root"
+  vars:
+    pg_etcd_data_directory_marker_value: "managed-etcd:{{ pg_version }}:{{ pg_cluster.name }}"
+
+- name: "Rechecking managed etcd data directory before service use"
+  ansible.builtin.stat:
+    path: "{{ pg_etcd_data_path }}"
+    follow: false
+  register: pg_etcd_data_directory_final_stat
+  become: true
+  become_user: "root"
+
+- name: "Inspecting final managed etcd data directory ACL without following symlinks"
+  ansible.builtin.command:
+    argv: ["/usr/bin/getfacl", "-P", "--absolute-names", "--", "{{ pg_etcd_data_path }}"]
+  register: pg_etcd_data_directory_final_acl
+  changed_when: false
+  failed_when: false
+  become: true
+  become_user: "root"
+
+- name: "Refusing replaced or weakened managed etcd data directory"
+  ansible.builtin.assert:
+    that:
+      - pg_etcd_data_directory_final_stat.stat.exists
+      - pg_etcd_data_directory_final_stat.stat.isdir
+      - not (pg_etcd_data_directory_final_stat.stat.islnk | default(false))
+      - pg_etcd_data_directory_final_stat.stat.pw_name | default('') == 'etcd'
+      - pg_etcd_data_directory_final_stat.stat.gr_name | default('') == 'etcd'
+      - pg_etcd_data_directory_final_stat.stat.mode | default('') == '0700'
+      - >-
+        pg_etcd_data_directory_final_stat.stat.dev | string ==
+        pg_etcd_data_directory_identity[0] | string
+      - >-
+        pg_etcd_data_directory_final_stat.stat.inode | string ==
+        pg_etcd_data_directory_identity[1] | string
+      - pg_etcd_data_directory_final_acl.rc == 0
+      - pg_etcd_data_directory_final_acl.stdout is not search('^default:', multiline=true)
+      - pg_etcd_data_directory_final_acl.stdout is not search('^user:[^:]+:', multiline=true)
+      - pg_etcd_data_directory_final_acl.stdout is not search('^group:[^:]+:', multiline=true)
+    fail_msg: >-
+      Managed etcd data_dir changed or became unsafe during convergence;
+      refusing to use a replaced, symlinked, writable, or ACL-bearing path.
 
 - name: "Selecting managed etcd repository"
   ansible.builtin.set_fact:
-    pg_etcd_repo_id: "pgdg-rhel{{ ansible_facts['distribution_major_version'] }}-extras"
+    pg_etcd_repo_id: >-
+      pgdg-rhel{{ ansible_facts['distribution_major_version'] }}-extras
 
 - name: "Enabling PGDG etcd extras repository"
-  ansible.builtin.command: "dnf config-manager --set-enabled {{ pg_etcd_repo_id }}"
+  ansible.builtin.command:
+    argv:
+      - dnf
+      - config-manager
+      - --set-enabled
+      - "{{ pg_etcd_repo_id }}"
   register: pg_etcd_repo_enable
   changed_when: false
   failed_when: false
@@ -61,34 +443,81 @@
   vars:
     pg_package: "{{ pg_etcd_package }}"
 
-- name: "Installing generated etcd client and peer certificates"
-  ansible.builtin.copy:
-    content: "{{ pg_cluster_member_certificate_files.results[0 if item.kind == 'cert' else 1].content | b64decode }}"
-    dest: "{{ item.path }}"
-    owner: etcd
-    group: etcd
-    mode: "0600"
-  loop:
-    - {kind: cert, path: "{{ pg_cluster_etcd_tls_effective.client.cert_file | default('/etc/etcd/pki/etcd-client.crt') }}"}
-    - {kind: key, path: "{{ pg_cluster_etcd_tls_effective.client.key_file | default('/etc/etcd/pki/etcd-client.key') }}"}
-    - {kind: cert, path: "{{ pg_cluster_etcd_tls_effective.peer.cert_file | default('/etc/etcd/pki/etcd-peer.crt') }}"}
-    - {kind: key, path: "{{ pg_cluster_etcd_tls_effective.peer.key_file | default('/etc/etcd/pki/etcd-peer.key') }}"}
-  no_log: true
-  when:
-    - pg_cluster_etcd_tls.auto_generate | default(false) | bool
+- name: "Setting all configured etcd TLS destinations"
+  ansible.builtin.set_fact:
+    pg_etcd_tls_destinations: >-
+      {{ [
+         pg_cluster_etcd_tls_effective.ca_file,
+         pg_cluster_etcd_tls_effective.client.ca_file,
+        pg_cluster_etcd_tls_effective.client.cert_file,
+        pg_cluster_etcd_tls_effective.client.key_file,
+        pg_cluster_etcd_tls_effective.peer.ca_file,
+        pg_cluster_etcd_tls_effective.peer.cert_file,
+        pg_cluster_etcd_tls_effective.peer.key_file
+      ] | unique | list }}
+    pg_etcd_patroni_tls_destinations:
+      - "{{ pg_cluster_etcd_tls_effective.client.ca_file }}"
+      - "{{ pg_cluster_etcd_tls_effective.client.cert_file }}"
+      - "{{ pg_cluster_etcd_tls_effective.client.key_file }}"
+    pg_etcd_patroni_forbidden_tls_destinations: >-
+      {{ [
+        pg_cluster_etcd_tls_effective.peer.cert_file,
+        pg_cluster_etcd_tls_effective.peer.key_file
+      ] | difference([
+        pg_cluster_etcd_tls_effective.client.ca_file,
+        pg_cluster_etcd_tls_effective.client.cert_file,
+        pg_cluster_etcd_tls_effective.client.key_file
+      ]) }}
+  when: pg_cluster_etcd_tls_effective.enabled | default(false) | bool
 
-- name: "Granting Patroni read access to the generated etcd client certificate"
-  ansible.posix.acl:
-    path: "{{ item }}"
-    entity: postgres
-    etype: user
-    permissions: r
-    state: present
-  loop:
-    - "{{ pg_cluster_etcd_tls_effective.client.cert_file | default('/etc/etcd/pki/etcd-client.crt') }}"
-    - "{{ pg_cluster_etcd_tls_effective.client.key_file | default('/etc/etcd/pki/etcd-client.key') }}"
-  when:
-    - pg_cluster_etcd_tls.auto_generate | default(false) | bool
+- name: "Checking every configured etcd TLS path component before mutation"
+  ansible.builtin.command:
+    argv: ["/usr/bin/namei", "-mo", "{{ pg_etcd_tls_path }}"]
+  register: pg_etcd_tls_path_checks
+  changed_when: false
+  failed_when: false
+  loop: "{{ pg_etcd_tls_destinations }}"
+  loop_control:
+    loop_var: pg_etcd_tls_path
+  when: pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+
+- name: "Checking configured etcd TLS destinations before namei inspection"
+  ansible.builtin.stat:
+    path: "{{ pg_etcd_tls_destination }}"
+    follow: false
+  loop: "{{ pg_etcd_tls_destinations }}"
+  loop_control:
+    loop_var: pg_etcd_tls_destination
+  register: pg_etcd_tls_destination_stats
+  when: pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+
+- name: "Rejecting unsafe configured etcd TLS path components"
+  ansible.builtin.assert:
+    that:
+      - item.item is match('^/etc/etcd/pki/[A-Za-z0-9_-][A-Za-z0-9_.-]*$')
+        if pg_cluster_etcd_tls.auto_generate | default(false) | bool
+        else item.item is match('^/[A-Za-z0-9_-][A-Za-z0-9_.-]*(?:/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$')
+      - item.failed | default(false) | bool is false
+      - >-
+        item.rc | default(-1) == 0 or
+        (item.rc | default(-1) == 1 and
+        (pg_etcd_tls_destination_stats.results |
+         selectattr('item', 'equalto', item.item) | list | length == 1) and
+        (((pg_etcd_tls_destination_stats.results |
+           selectattr('item', 'equalto', item.item) | first).failed |
+          default(false) | bool) is false) and
+        ((pg_etcd_tls_destination_stats.results |
+          selectattr('item', 'equalto', item.item) | first).stat.exists is defined) and
+        (((pg_etcd_tls_destination_stats.results |
+           selectattr('item', 'equalto', item.item) | first).stat.exists |
+          bool) is false))
+      - item.stdout is not search(' -> ')
+      - item.stderr is not search('Permission denied')
+    fail_msg: >-
+      Every existing component of each configured etcd CA, certificate, and
+      key path must be a traversable non-symlink path
+  loop: "{{ pg_etcd_tls_path_checks.results }}"
+  when: pg_cluster_etcd_tls_effective.enabled | default(false) | bool
 
 - name: "Ensuring etcd configuration directory exists"
   ansible.builtin.file:
@@ -97,14 +526,422 @@
     owner: root
     group: root
     mode: "0755"
+  become: true
+  become_user: "root"
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool
 
-- name: "Ensuring etcd data directory exists"
+- name: "Checking etcd TLS directory before creation"
+  ansible.builtin.stat:
+    path: >-
+      {{ pg_cluster_etcd_tls_effective.client.cert_file
+         | default('/etc/etcd/pki/etcd-client.crt') | dirname }}
+    follow: false
+  register: pg_etcd_tls_directory_stat
+  when: pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+
+- name: "Rejecting symlinked or non-directory etcd TLS directory"
+  ansible.builtin.assert:
+    that:
+      - not pg_etcd_tls_directory_stat.stat.exists
+        or (pg_etcd_tls_directory_stat.stat.isdir
+        and not (pg_etcd_tls_directory_stat.stat.islnk | default(false)))
+    fail_msg: "Managed etcd TLS directory must be a non-symlink directory"
+  when: pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+
+- name: "Ensuring every etcd TLS parent directory exists before installing material"
   ansible.builtin.file:
-    path: "{{ (pg_etcd_config.data_dir | default(pg_etcd_data_directory)) }}"
+    path: "{{ item }}"
     state: directory
-    owner: etcd
+    owner: root
     group: etcd
-    mode: "0700"
+    mode: "0750"
+  loop: "{{ pg_etcd_tls_destinations | map('dirname') | unique | list }}"
+  become: true
+  become_user: "root"
+  when:
+    - pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool
+
+- name: "Installing generated etcd client and peer certificates"
+  ansible.builtin.copy:
+    content: >-
+       {{ (pg_cluster_etcd_member_certificate_files.results
+           | selectattr('item', 'equalto', item.source) | first).content | b64decode }}
+    dest: "{{ item.path }}"
+    owner: root
+    group: etcd
+    mode: "0640"
+  loop:
+    - kind: "cert"
+      source: "client.crt"
+      path: "{{ pg_cluster_etcd_tls_effective.client.cert_file
+        | default('/etc/etcd/pki/etcd-client.crt') }}"
+    - kind: "key"
+      source: "client.key"
+      path: "{{ pg_cluster_etcd_tls_effective.client.key_file
+        | default('/etc/etcd/pki/etcd-client.key') }}"
+    - kind: "cert"
+      source: "peer.crt"
+      path: "{{ pg_cluster_etcd_tls_effective.peer.cert_file
+        | default('/etc/etcd/pki/etcd-peer.crt') }}"
+    - kind: "key"
+      source: "peer.key"
+      path: "{{ pg_cluster_etcd_tls_effective.peer.key_file
+        | default('/etc/etcd/pki/etcd-peer.key') }}"
+  no_log: true
+  become: true
+  become_user: "root"
+  when:
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool
+
+- name: "Checking etcd TLS material before restrictive enforcement"
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop:
+    - "{{ pg_cluster_etcd_tls_effective.client.ca_file }}"
+    - "{{ pg_cluster_etcd_tls_effective.client.cert_file }}"
+    - "{{ pg_cluster_etcd_tls_effective.client.key_file }}"
+    - "{{ pg_cluster_etcd_tls_effective.peer.ca_file }}"
+    - "{{ pg_cluster_etcd_tls_effective.peer.cert_file }}"
+    - "{{ pg_cluster_etcd_tls_effective.peer.key_file }}"
+  register: pg_etcd_tls_material_stats
+  when: pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+
+- name: "Rejecting missing, non-regular, or symlinked etcd TLS material"
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+      - not (item.stat.islnk | default(false))
+    fail_msg: >-
+      Managed etcd TLS material must exist as regular non-symlink files before
+      access enforcement
+  loop: "{{ pg_etcd_tls_material_stats.results | default([]) }}"
+  when: pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+
+- name: "Checking externally supplied etcd TLS ownership and permissions"
+  ansible.builtin.assert:
+    that:
+      - item.stat.pw_name | default('') == 'root'
+      - >-
+        item.stat.gr_name | default('') ==
+        (pg_cluster_etcd_external_tls_access_group
+         if item.item in pg_etcd_patroni_tls_destinations else 'etcd')
+      - item.stat.mode | default('') == '0640'
+    fail_msg: >-
+      Externally supplied etcd TLS files must already be regular non-symlinks,
+      root-owned, mode 0640, and group-owned by the pre-provisioned client
+      access group (client material) or etcd (peer material). The role will not
+      change operator-managed files; fix the external contract before retrying.
+  loop: "{{ pg_etcd_tls_material_stats.results | default([]) }}"
+  when:
+    - pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+    - not (pg_cluster_etcd_tls.auto_generate | default(false) | bool)
+
+- name: "Normalizing ACLs on generated etcd TLS files"
+  ansible.builtin.command:
+    argv: ["setfacl", "-b", "--", "{{ item }}"]
+  loop: "{{ pg_etcd_tls_destinations }}"
+  changed_when: true
+  become: true
+  become_user: "root"
+  when:
+    - pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool
+
+- name: "Checking root readability of externally supplied etcd TLS material"
+  ansible.builtin.command:
+    argv: ["test", "-r", "{{ item }}"]
+  become: true
+  become_user: "root"
+  changed_when: false
+  loop: "{{ pg_etcd_tls_destinations }}"
+  when:
+    - pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+    - not (pg_cluster_etcd_tls.auto_generate | default(false) | bool)
+
+- name: "Checking etcd service readability of externally supplied TLS material"
+  ansible.builtin.command:
+    argv: ["test", "-r", "{{ item }}"]
+  become: true
+  become_user: "etcd"
+  changed_when: false
+  loop: "{{ pg_etcd_tls_destinations }}"
+  when:
+    - pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+    - not (pg_cluster_etcd_tls.auto_generate | default(false) | bool)
+
+- name: "Checking Patroni service readability of externally supplied etcd TLS material"
+  ansible.builtin.command:
+    argv: ["test", "-r", "{{ item }}"]
+  become: true
+  become_user: "{{ pg_patroni_user }}"
+  changed_when: false
+  loop: "{{ pg_etcd_patroni_tls_destinations }}"
+  when:
+    - pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+    - not (pg_cluster_etcd_tls.auto_generate | default(false) | bool)
+
+- name: "Checking pre-provisioned external etcd TLS access group membership"
+  ansible.builtin.command:
+    argv: ["id", "-Gn", "{{ item }}"]
+  register: pg_etcd_external_tls_group_checks
+  changed_when: false
+  failed_when: false
+  loop:
+    - "{{ pg_patroni_user }}"
+    - "etcd"
+  when:
+    - pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+    - not (pg_cluster_etcd_tls.auto_generate | default(false) | bool)
+
+- name: "Rejecting incomplete external etcd TLS access contract"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_etcd_external_tls_access_group | default('') | trim | length > 0
+      - item.rc == 0
+      - pg_cluster_etcd_external_tls_access_group in item.stdout.split()
+    fail_msg: >-
+      External etcd TLS access contract is incomplete: pre-provisioned group
+      {{ pg_cluster_etcd_external_tls_access_group | default('<unset>') }} must
+      exist and contain both {{ pg_patroni_user }} and etcd. The role will not
+      create groups, change membership, or alter external TLS metadata.
+  loop: "{{ pg_etcd_external_tls_group_checks.results | default([]) }}"
+  when:
+    - pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+    - not (pg_cluster_etcd_tls.auto_generate | default(false) | bool)
+
+- name: "Checking external etcd TLS parent components and ACLs"
+  ansible.builtin.include_tasks: validate/validate_external_path_ancestors.yml
+  vars:
+    pg_external_path_paths: "{{ pg_etcd_tls_destinations | list }}"
+    pg_external_path_acl_paths: "{{ pg_etcd_tls_destinations | list }}"
+    pg_external_path_service_group: "{{ pg_cluster_etcd_external_tls_access_group }}"
+    pg_external_path_immediate_groups: ["{{ pg_cluster_etcd_external_tls_access_group }}"]
+  when:
+    - pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+    - not (pg_cluster_etcd_tls.auto_generate | default(false) | bool)
+
+- name: "Checking SELinux contexts of externally supplied etcd TLS material"
+  ansible.builtin.command:
+    argv: ["restorecon", "-n", "-v", "{{ item }}"]
+  register: pg_etcd_external_tls_selinux_checks
+  changed_when: false
+  loop: "{{ pg_etcd_tls_destinations }}"
+  when:
+    - pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+    - not (pg_cluster_etcd_tls.auto_generate | default(false) | bool)
+    - (pg_cluster_selinux_tool_checks.results | default([]) | first | default({})).stdout | default('') | trim in ['Enforcing', 'Permissive']
+
+- name: "Rejecting mismatched SELinux contexts of externally supplied etcd TLS material"
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - item.stdout | trim == ''
+      - item.stderr | trim == ''
+    fail_msg: "Externally supplied etcd TLS files must already have the SELinux context prescribed by policy"
+  loop: "{{ pg_etcd_external_tls_selinux_checks.results | default([]) }}"
+  when:
+    - pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+    - not (pg_cluster_etcd_tls.auto_generate | default(false) | bool)
+
+- name: "Restricting managed etcd TLS material"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    owner: root
+    group: etcd
+    mode: "0640"
+  loop: "{{ pg_etcd_tls_destinations }}"
+  become: true
+  become_user: "root"
+  when:
+    - pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool
+
+- name: "Inspecting managed etcd PKI parent ACLs before removal"
+  ansible.builtin.command:
+    argv: ["/usr/bin/getfacl", "--absolute-names", "--", "{{ item }}"]
+  loop: "{{ pg_etcd_tls_destinations | map('dirname') | unique | list }}"
+  register: pg_etcd_managed_tls_parent_acl_before_removal
+  changed_when: false
+  become: true
+  become_user: "root"
+  when:
+    - pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool
+
+- name: "Removing inherited default ACLs from managed etcd PKI paths"
+  ansible.builtin.command:
+    argv: ["setfacl", "-k", "--", "{{ item }}"]
+  loop: "{{ pg_etcd_tls_destinations | map('dirname') | unique | list }}"
+  changed_when: true
+  become: true
+  become_user: "root"
+  when:
+    - pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool
+    - not ansible_check_mode
+    - >-
+      (pg_etcd_managed_tls_parent_acl_before_removal.results
+       | selectattr('item', 'equalto', item) | first).stdout
+      is search('^default:', multiline=true)
+
+- name: "Inspecting ACLs on managed etcd PKI paths"
+  ansible.builtin.command:
+    argv: ["/usr/bin/getfacl", "--absolute-names", "--", "{{ item }}"]
+  loop: "{{ (pg_etcd_tls_destinations + (pg_etcd_tls_destinations | map('dirname') | list)) | unique }}"
+  register: pg_etcd_managed_tls_acl_checks
+  changed_when: false
+  become: true
+  become_user: "root"
+  when:
+    - pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool
+
+- name: "Rejecting inherited default ACLs on managed etcd PKI paths"
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - item.stdout is not search('^default:', multiline=true)
+    fail_msg: "Managed etcd PKI paths must not retain inherited default ACL entries"
+  loop: "{{ pg_etcd_managed_tls_acl_checks.results | default([]) }}"
+  when:
+    - pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool
+
+- name: "Inspecting ACLs on generated etcd TLS files after normalization"
+  ansible.builtin.command:
+    argv: ["/usr/bin/getfacl", "--absolute-names", "--", "{{ item }}"]
+  loop: "{{ pg_etcd_tls_destinations }}"
+  register: pg_etcd_generated_tls_file_acls
+  changed_when: false
+  failed_when: false
+  become: true
+  become_user: "root"
+  when:
+    - pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool
+
+- name: "Rejecting unsafe ACLs on generated etcd TLS files"
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - item.stdout is not search('^default:', multiline=true)
+      - >-
+        (item.item in pg_etcd_patroni_tls_destinations and
+         item.stdout is search('^user:' ~ pg_patroni_user ~ ':', multiline=true))
+        or
+        (item.item not in pg_etcd_patroni_tls_destinations and
+         item.stdout is not search('^user:[^:]+:', multiline=true))
+      - >-
+        item.item in pg_etcd_patroni_tls_destinations
+        or item.stdout is not search('^group:[^:]+:', multiline=true)
+    fail_msg: >-
+      Generated etcd TLS files must have successful ACL inspection, no default
+      ACLs, and only the explicit Patroni client read ACL where required.
+  loop: "{{ pg_etcd_generated_tls_file_acls.results | default([]) }}"
+
+- name: "Granting Patroni read access to managed etcd client TLS material"
+  ansible.posix.acl:
+    path: "{{ item }}"
+    entity: "{{ pg_patroni_user }}"
+    etype: user
+    permissions: "r"
+    state: present
+  loop: "{{ pg_etcd_patroni_tls_destinations }}"
+  become: true
+  become_user: "root"
+  when:
+    - pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool
+
+- name: "Removing Patroni access to managed etcd peer-only TLS material"
+  ansible.posix.acl:
+    path: "{{ item }}"
+    entity: "{{ pg_patroni_user }}"
+    etype: user
+    state: absent
+  loop: "{{ pg_etcd_patroni_forbidden_tls_destinations }}"
+  become: true
+  become_user: "root"
+  when:
+    - pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool
+
+- name: "Granting Patroni traversal of managed etcd client TLS parents"
+  ansible.posix.acl:
+    path: "{{ item }}"
+    entity: "{{ pg_patroni_user }}"
+    etype: user
+    permissions: "x"
+    state: present
+  loop: "{{ (pg_etcd_patroni_tls_destinations | map('dirname') | list + ['/etc/etcd']) | unique }}"
+  become: true
+  become_user: "root"
+  when:
+    - pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool
+
+- name: "Checking generated etcd client TLS material is readable by Patroni"
+  ansible.builtin.command:
+    argv: ["test", "-r", "{{ item }}"]
+  become: true
+  become_user: "{{ pg_patroni_user }}"
+  changed_when: false
+  loop: "{{ pg_etcd_patroni_tls_destinations }}"
+  when:
+    - pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool
+
+- name: "Checking generated etcd peer private keys are unreadable by Patroni"
+  ansible.builtin.command:
+    argv: ["test", "-r", "{{ item }}"]
+  become: true
+  become_user: "{{ pg_patroni_user }}"
+  changed_when: false
+  failed_when: false
+  register: pg_etcd_generated_peer_key_checks
+  loop:
+    - "{{ pg_cluster_etcd_tls_effective.peer.cert_file }}"
+    - "{{ pg_cluster_etcd_tls_effective.peer.key_file }}"
+  when:
+    - pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool
+
+- name: "Checking external etcd peer material is unreadable by Patroni"
+  ansible.builtin.command:
+    argv: ["test", "-r", "{{ item }}"]
+  become: true
+  become_user: "{{ pg_patroni_user }}"
+  changed_when: false
+  failed_when: false
+  register: pg_etcd_external_peer_read_checks
+  loop: "{{ pg_etcd_patroni_forbidden_tls_destinations }}"
+  when:
+    - pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+    - not (pg_cluster_etcd_tls.auto_generate | default(false) | bool)
+
+- name: "Rejecting Patroni access to external etcd peer material"
+  ansible.builtin.assert:
+    that: item.rc != 0
+    fail_msg: >-
+      Patroni must not be able to read external etcd peer CA, certificate, or
+      private key material; fix the pre-provisioned group, ACLs, and modes.
+  loop: "{{ pg_etcd_external_peer_read_checks.results | default([]) }}"
+  when:
+    - pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+    - not (pg_cluster_etcd_tls.auto_generate | default(false) | bool)
+
+- name: "Rejecting Patroni access to generated etcd peer private keys"
+  ansible.builtin.assert:
+    that: item.rc != 0
+    fail_msg: "Patroni must not be able to read generated etcd peer private keys"
+  loop: "{{ pg_etcd_generated_peer_key_checks.results | default([]) }}"
+  when:
+    - pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool
 
 - name: "Rendering etcd configuration"
   ansible.builtin.template:
@@ -115,6 +952,24 @@
     mode: "0644"
   register: pg_etcd_config_result
   notify: "Restarting etcd after configuration changes"
+  become: true
+  become_user: "root"
+
+- name: "Restoring SELinux contexts for package-created etcd paths"
+  ansible.builtin.command: "restorecon -Rv {{ item }}"
+  register: pg_etcd_restorecon_package_paths
+  changed_when: >-
+    (pg_etcd_restorecon_package_paths.stdout | default('') | trim) != ''
+    or (pg_etcd_restorecon_package_paths.stderr | default('') | trim) != ''
+  loop:
+    - "{{ pg_etcd_config_directory }}"
+    - "{{ pg_etcd_config_file }}"
+  become: true
+  become_user: "root"
+  when:
+    - pg_cluster_etcd_tls_effective.enabled | default(false) | bool
+    - pg_cluster_etcd_tls.auto_generate | default(false) | bool
+    - (pg_cluster_selinux_tool_checks.results | default([]) | first | default({})).stdout | default('') | trim in ['Enforcing', 'Permissive']
 
 - name: "Ensuring etcd service is started"
   ansible.builtin.systemd_service:

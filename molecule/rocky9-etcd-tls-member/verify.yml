@@ -4,11 +4,191 @@
   become: false
   vars:
     etcdctl_tls_args:
-      - --cacert=/etc/etcd/pki/ca.crt
-      - --cert=/etc/etcd/pki/etcd-client.crt
-      - --key=/etc/etcd/pki/etcd-client.key
+      - "--cacert=/etc/etcd/pki/custom-ca.crt"
+      - "--cert=/etc/etcd/pki/custom-client.crt"
+      - "--key=/etc/etcd/pki/custom-client.key"
   tasks:
-    - name: "Check the etcd service is active"
+    - name: "Assert generated PKI uses positive unique certificate serials"
+      ansible.builtin.command: "openssl x509 -in {{ item }} -noout -serial"
+      loop:
+        - "/etc/etcd/pki/custom-ca.crt"
+        - "/etc/etcd/pki/custom-client.crt"
+        - "/etc/etcd/pki/custom-peer.crt"
+      register: certificate_serials
+      changed_when: false
+      no_log: true
+
+    - name: "Assert PKI serial and cleanup guardrails"
+      ansible.builtin.assert:
+        that:
+          - certificate_serials.results | map(attribute="stdout") | select("match", "^serial=[0-9A-Fa-f]*[1-9A-Fa-f][0-9A-Fa-f]*$") | list | length == 3
+          - certificate_serials.results | map(attribute="stdout") | unique | list | length == 3
+        fail_msg: "Generated CA and leaf certificates must have positive distinct serials"
+
+    - name: "Cryptographically verify the generated CA and etcd leaves"
+      ansible.builtin.shell: |
+        set -euo pipefail
+        ca=/etc/etcd/pki/custom-ca.crt
+        openssl verify -CAfile "$ca" "$ca"
+        openssl x509 -in "$ca" -noout -text | grep -q 'CA:TRUE'
+        openssl x509 -in "$ca" -noout -text | grep -q keyCertSign
+        for leaf in /etc/etcd/pki/custom-client.crt /etc/etcd/pki/custom-peer.crt; do
+          openssl verify -CAfile "$ca" "$leaf"
+          text=$(openssl x509 -in "$leaf" -noout -text)
+          [[ "$text" =~ CA:[[:space:]]*FALSE ]]
+          [[ "$text" =~ digitalSignature ]]
+           [[ "$text" =~ clientAuth ]]
+           if [[ "$leaf" == *peer.crt ]]; then [[ "$text" =~ serverAuth ]]; else ! [[ "$text" =~ serverAuth ]]; fi
+        done
+      args:
+        executable: /bin/bash
+      changed_when: false
+      no_log: true
+
+    - name: "Verify generated client and peer keys have distinct fingerprints"
+      ansible.builtin.shell: |
+        set -euo pipefail
+        client=$(openssl pkey -in /etc/etcd/pki/custom-client.key -pubout | sha256sum | cut -d' ' -f1)
+        peer=$(openssl pkey -in /etc/etcd/pki/custom-peer.key -pubout | sha256sum | cut -d' ' -f1)
+        client_cert=$(openssl x509 -in /etc/etcd/pki/custom-client.crt -pubkey -noout | sha256sum | cut -d' ' -f1)
+        peer_cert=$(openssl x509 -in /etc/etcd/pki/custom-peer.crt -pubkey -noout | sha256sum | cut -d' ' -f1)
+        [[ "$client" == "$client_cert" && "$peer" == "$peer_cert" && "$client" != "$peer" ]]
+        printf '%s %s\n' "$client" "$peer"
+      args:
+        executable: /bin/bash
+      register: client_peer_fingerprints
+      changed_when: false
+      no_log: true
+
+    - name: "Discover generated seed artifacts"
+      ansible.builtin.find:
+        paths: /var/lib/postgresql-pki-seed
+        patterns: "molecule-etcd-tls-*"
+        file_type: file
+      register: seed_files
+
+    - name: "Inspect generated seed directory ACLs and metadata"
+      ansible.builtin.command:
+        argv: ["getfacl", "--absolute-names", "--", "{{ item }}"]
+      loop: "{{ ['/var/lib/postgresql-pki-seed'] + (seed_files.files | map(attribute='path') | list) }}"
+      register: seed_acl_checks
+      changed_when: false
+      failed_when: false
+
+    - name: "Assert generated seed directory is root-only without default ACLs"
+      ansible.builtin.stat:
+        path: /var/lib/postgresql-pki-seed
+        follow: false
+      register: seed_directory_stat
+
+    - name: "Assert seed artifact directory guardrails"
+      ansible.builtin.assert:
+        that:
+          - seed_directory_stat.stat.isdir
+          - seed_directory_stat.stat.pw_name == 'root'
+          - seed_directory_stat.stat.gr_name == 'root'
+          - seed_directory_stat.stat.mode == '0700'
+          - seed_acl_checks.results[0].stdout is not search('^default:', multiline=true)
+          - seed_files.files | length > 0
+          - seed_acl_checks.results[1:] | map(attribute='stdout') | select('search', '^default:', multiline=true) | list | length == 0
+        fail_msg: "Generated PKI seed directory must be root-owned mode 0700 with no default ACL"
+
+    - name: "Check generated seed artifact ownership and modes"
+      ansible.builtin.stat:
+        path: "{{ item.path }}"
+        follow: false
+      loop: "{{ seed_files.files }}"
+      register: seed_artifact_stats
+
+    - name: "Assert generated seed artifacts are root-only"
+      ansible.builtin.assert:
+        that:
+          - item.stat.pw_name == 'root'
+          - item.stat.gr_name == 'root'
+          - item.stat.mode == ('0644' if item.item.path.endswith('.crt') else '0600')
+        fail_msg: "Generated seed artifacts must be root-owned with restrictive exact modes"
+      loop: "{{ seed_artifact_stats.results }}"
+
+    - name: "Verify Patroni cannot read the generated peer private key"
+      become: true
+      become_user: postgres
+      ansible.builtin.command:
+        argv: ["test", "-r", "/etc/etcd/pki/custom-peer.key"]
+      register: generated_patroni_peer_key
+      changed_when: false
+      failed_when: false
+
+    - name: "Assert generated peer private key isolation"
+      ansible.builtin.assert:
+        that: generated_patroni_peer_key.rc != 0
+        fail_msg: "Patroni must not read the generated etcd peer private key"
+
+    - name: "Check generated PKI transaction artifacts were cleaned"
+      ansible.builtin.find:
+        paths:
+          - /etc/etcd/pki
+          - /var/lib/pgsql
+        patterns:
+          - ".*.backup.*"
+          - ".*.inspect.*"
+          - "*.new"
+        recurse: true
+      register: generated_pki_transaction_artifacts
+
+    - name: "Assert generated PKI transaction artifacts are absent"
+      ansible.builtin.assert:
+        that: generated_pki_transaction_artifacts.files | length == 0
+        fail_msg: "PKI issuance must remove temporary, backup, and new artifacts"
+
+    - name: "Check custom generated destinations and default paths"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+      loop:
+        - "/etc/etcd/pki/custom-ca.crt"
+        - "/etc/etcd/pki/custom-client.crt"
+        - "/etc/etcd/pki/custom-client.key"
+        - "/etc/etcd/pki/custom-peer.crt"
+        - "/etc/etcd/pki/custom-peer.key"
+        - "/etc/etcd/pki/ca.crt"
+        - "/etc/etcd/pki/etcd-client.crt"
+        - "/etc/etcd/pki/etcd-client.key"
+        - "/etc/etcd/pki/etcd-peer.crt"
+        - "/etc/etcd/pki/etcd-peer.key"
+      register: custom_generated_destination_stats
+
+    - name: "Assert custom generated destination metadata and no defaults"
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists == (item.item.startswith('/etc/etcd/pki/custom-'))
+          - not item.stat.exists or item.stat.isreg
+          - not item.stat.exists or not (item.stat.islnk | default(false))
+          - not item.stat.exists or item.stat.pw_name == 'root'
+          - not item.stat.exists or item.stat.gr_name == 'etcd'
+          - not item.stat.exists or item.stat.mode == '0640'
+        fail_msg: "Custom PKI destinations must be regular root:etcd files with mode 0640; default destinations must be absent"
+      loop: "{{ custom_generated_destination_stats.results }}"
+
+    - name: "Inspect generated PKI ACLs"
+      ansible.builtin.command:
+        argv: ["getfacl", "--absolute-names", "--", "{{ item }}"]
+      loop:
+        - "/etc/etcd/pki"
+        - "/etc/etcd/pki/custom-ca.crt"
+        - "/etc/etcd/pki/custom-client.crt"
+        - "/etc/etcd/pki/custom-client.key"
+        - "/etc/etcd/pki/custom-peer.crt"
+        - "/etc/etcd/pki/custom-peer.key"
+      register: generated_pki_acls
+      changed_when: false
+
+    - name: "Assert generated PKI has no inherited default ACLs"
+      ansible.builtin.assert:
+        that: item.stdout is not search('^default:', multiline=true)
+        fail_msg: "Managed generated PKI must not retain inherited default ACLs"
+      loop: "{{ generated_pki_acls.results }}"
+
+    - name: "Check the etcd service is active" # noqa command-instead-of-module
       ansible.builtin.command: systemctl is-active etcd.service
       changed_when: false
 
@@ -52,6 +232,20 @@
       delay: 2
       until: patroni_tls_health.status == 200
 
+    - name: "Read the rendered Patroni configuration"
+      ansible.builtin.slurp:
+        src: /etc/patroni/17-main.yml
+      register: rendered_patroni_config
+
+    - name: "Assert etcd-only TLS does not enable Patroni REST API TLS"
+      ansible.builtin.assert:
+        that:
+          - "'cafile:' not in (rendered_patroni_config.content | b64decode)"
+          - "'certfile:' not in (rendered_patroni_config.content | b64decode)"
+          - "'keyfile:' not in (rendered_patroni_config.content | b64decode)"
+          - "'verify_client:' not in (rendered_patroni_config.content | b64decode)"
+        fail_msg: "etcd-only TLS must not render Patroni REST API TLS settings"
+
     - name: "Save the original TLS material"
       ansible.builtin.copy:
         src: "{{ item.src }}"
@@ -59,44 +253,48 @@
         dest: "{{ item.dest }}"
         mode: "0600"
       loop:
-        - {src: /etc/etcd/pki/ca.crt, dest: /tmp/old-ca.crt}
-        - {src: /etc/etcd/pki/etcd-client.crt, dest: /tmp/old-etcd.crt}
-        - {src: /etc/etcd/pki/etcd-client.key, dest: /tmp/old-etcd.key}
+        - {src: /etc/etcd/pki/custom-ca.crt, dest: /tmp/old-ca.crt}
+        - {src: /etc/etcd/pki/custom-client.crt, dest: /tmp/old-etcd.crt}
+        - {src: /etc/etcd/pki/custom-client.key, dest: /tmp/old-etcd.key}
 
     - name: "Generate replacement TLS material"
-      ansible.builtin.command:
-        argv:
-          - openssl
-          - req
-          - -x509
-          - -nodes
-          - -newkey
-          - rsa:2048
-          - -keyout
-          - /tmp/new-etcd.key
-          - -out
-          - /tmp/new-etcd.crt
-          - -days
-          - "1"
-          - -subj
-          - /CN=etcd01
-          - -addext
-          - subjectAltName=DNS:etcd01
+      ansible.builtin.shell: |
+        set -eu
+        umask 077
+        openssl req -x509 -nodes -newkey rsa:2048 \
+          -keyout /tmp/new-etcd.key -out /tmp/new-etcd.crt -days 1 \
+          -subj /CN=etcd01 -addext subjectAltName=DNS:etcd01
+        chmod 0600 /tmp/new-etcd.key
       args:
         creates: /tmp/new-etcd.crt
+        executable: /bin/bash
+
+    - name: "Restrict etcd key destinations before TLS replacement"
+      become: true
+      ansible.builtin.file:
+        path: "{{ item }}"
+        owner: root
+        group: etcd
+        mode: "0640"
+      loop:
+        - /etc/etcd/pki/custom-client.key
+        - /etc/etcd/pki/custom-peer.key
 
     - name: "Install replacement TLS material"
       ansible.builtin.copy:
         src: "{{ item.src }}"
         remote_src: true
         dest: "{{ item.dest }}"
-        mode: "0644"
+        owner: root
+        group: etcd
+        mode: "{{ item.mode }}"
       loop:
-        - {src: /tmp/new-etcd.crt, dest: /etc/etcd/pki/ca.crt}
-        - {src: /tmp/new-etcd.crt, dest: /etc/etcd/pki/etcd-client.crt}
-        - {src: /tmp/new-etcd.key, dest: /etc/etcd/pki/etcd-client.key}
-        - {src: /tmp/new-etcd.crt, dest: /etc/etcd/pki/etcd-peer.crt}
-        - {src: /tmp/new-etcd.key, dest: /etc/etcd/pki/etcd-peer.key}
+        - {src: /tmp/new-etcd.crt, dest: /etc/etcd/pki/custom-ca.crt, mode: "0640"}
+        - {src: /tmp/new-etcd.crt, dest: /etc/etcd/pki/custom-client.crt, mode: "0640"}
+        - {src: /tmp/new-etcd.key, dest: /etc/etcd/pki/custom-client.key, mode: "0640"}
+        - {src: /tmp/new-etcd.crt, dest: /etc/etcd/pki/custom-peer.crt, mode: "0640"}
+        - {src: /tmp/new-etcd.key, dest: /etc/etcd/pki/custom-peer.key, mode: "0640"}
+      no_log: true
 
     - name: "Restart etcd and Patroni after TLS rotation"
       ansible.builtin.systemd_service:
@@ -161,3 +359,67 @@
     - name: "Assert PostgreSQL 18 is operational"
       ansible.builtin.assert:
         that: pg18_database.stdout == "t"
+
+    - name: "Read the external TLS metadata and ACL baseline"
+      ansible.builtin.slurp:
+        src: "/tmp/molecule-external-tls-baseline"
+      register: external_tls_baseline
+
+    - name: "Collect external TLS content, metadata, and ACLs after convergence"
+      ansible.builtin.shell: >-
+         sha256sum /etc/etcd/pki/external/* && stat -c '%n %u %g %a %Y %C'
+         /etc/etcd/pki/external /etc/etcd/pki && ls -Zd /etc/etcd/pki/external
+         /etc/etcd/pki/external/* && getfacl --absolute-names
+         /etc/etcd/pki/external /etc/etcd/pki/external/*
+      args:
+        executable: "/bin/bash"
+      register: external_tls_after
+      changed_when: false
+      no_log: true
+
+    - name: "Assert external TLS content, parent metadata, and ACLs are immutable"
+      ansible.builtin.assert:
+        that: external_tls_after.stdout == (external_tls_baseline.content | b64decode | trim)
+        fail_msg: "Role convergence changed externally managed etcd TLS content, metadata, or ACLs"
+
+    - name: "Verify etcd can read all external TLS material"
+      become: true
+      become_user: "etcd"
+      ansible.builtin.command:
+        argv: ["test", "-r", "{{ item }}"]
+      loop:
+        - "/etc/etcd/pki/external/ca.crt"
+        - "/etc/etcd/pki/external/client.crt"
+        - "/etc/etcd/pki/external/client.key"
+        - "/etc/etcd/pki/external/peer.crt"
+        - "/etc/etcd/pki/external/peer.key"
+      changed_when: false
+
+    - name: "Verify Patroni can read only external client TLS material"
+      become: true
+      become_user: "postgres"
+      ansible.builtin.command:
+        argv: ["test", "-r", "{{ item }}"]
+      loop:
+        - "/etc/etcd/pki/external/ca.crt"
+        - "/etc/etcd/pki/external/client.crt"
+        - "/etc/etcd/pki/external/client.key"
+      changed_when: false
+
+    - name: "Verify Patroni cannot read external peer material"
+      become: true
+      become_user: "postgres"
+      ansible.builtin.command:
+        argv: ["test", "-r", "{{ item }}"]
+      loop:
+        - "/etc/etcd/pki/external/peer.crt"
+        - "/etc/etcd/pki/external/peer.key"
+      register: patroni_peer_material_reads
+      changed_when: false
+      failed_when: false
+
+    - name: "Assert external peer material isolation"
+      ansible.builtin.assert:
+        that: item.rc != 0
+        fail_msg: "Patroni can read external etcd peer certificate or private key"
+      loop: "{{ patroni_peer_material_reads.results }}"

@@ -39,10 +39,14 @@ platforms:
 
 provisioner:
   name: ansible
+  inventory:
+    group_vars:
+      all:
+        # Set this explicitly from the controller runtime.  Target containers
+        # do not reliably have the podman CLI or host SELinux view.
+        pg_tls_host_runtime_rootless_podman: >-
+          {{ lookup('ansible.builtin.env', 'MOLECULE_HOST_RUNTIME_ROOTLESS_PODMAN', default='unknown') }}
   env:
-    ANSIBLE_ALLOW_BROKEN_CONDITIONALS: "1"
-    ANSIBLE_ASYNC_DIR: "${MOLECULE_PROJECT_DIRECTORY}/.ansible_async"
-    ANSIBLE_LOCAL_TEMP: "/tmp/.ansible/tmp"
     ANSIBLE_REMOTE_TMP: "/tmp"
     ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/.."
 

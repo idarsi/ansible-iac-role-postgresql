@@ -1,0 +1,260 @@
+---
+# Pure cluster certificate model.  This file deliberately contains only
+# set_fact operations so that preflight and convergence cannot derive
+# different destinations.
+- name: "Normalize cluster certificate capability settings"
+  ansible.builtin.set_fact:
+    pg_cluster_etcd_tls: "{{ (((pg_cluster.dcs | default({})).etcd | default({})).tls | default({})) }}"
+    pg_cluster_patroni_restapi: "{{ (pg_cluster.patroni | default({})).restapi | default({}) }}"
+    pg_cluster_patroni_members: >-
+      {{ pg_cluster.members | default([]) if pg_cluster.provider | default('') == 'patroni' else [] }}
+    pg_cluster_etcd_members: >-
+      {{ ((pg_cluster.dcs | default({})).etcd | default({})).members | default([])
+         if ((pg_cluster.dcs | default({})).etcd | default({})).enabled | default(false) | bool else [] }}
+    pg_cluster_certificate_seed_host: "{{ (pg_cluster.members | default([]) | first).host | default(inventory_hostname) }}"
+    pg_cluster_certificate_name: >-
+       {{ (pg_cluster.name | string | regex_replace('[^A-Za-z0-9_.-]', '_')) ~ '-' ~ ((pg_cluster.name | string | hash('sha256'))[0:12]) }}
+
+- name: "Normalize cluster certificate members"
+  ansible.builtin.set_fact:
+    pg_cluster_certificate_members: >-
+      {{ (pg_cluster_patroni_members | map('combine', {'certificate_role': 'patroni'}) | list
+          if pg_cluster_patroni_restapi.auto_generate | default(false) | bool else [])
+         + (pg_cluster_etcd_members | map('combine', {'certificate_role': 'client'}) | list
+            + pg_cluster_etcd_members | map('combine', {'certificate_role': 'peer'}) | list
+             if pg_cluster_etcd_tls.auto_generate | default(false) | bool else []) }}
+
+- name: "Normalize Patroni TLS field aliases"
+  ansible.builtin.assert:
+    that:
+      - >-
+        pg_cluster_patroni_restapi.ca_file is not defined
+        or pg_cluster_patroni_restapi.cafile is not defined
+        or pg_cluster_patroni_restapi.ca_file == pg_cluster_patroni_restapi.cafile
+      - >-
+        pg_cluster_patroni_restapi.cert_file is not defined
+        or pg_cluster_patroni_restapi.certfile is not defined
+        or pg_cluster_patroni_restapi.cert_file == pg_cluster_patroni_restapi.certfile
+      - >-
+        pg_cluster_patroni_restapi.key_file is not defined
+        or pg_cluster_patroni_restapi.keyfile is not defined
+        or pg_cluster_patroni_restapi.key_file == pg_cluster_patroni_restapi.keyfile
+    fail_msg: "Patroni TLS aliases must not conflict with cafile, certfile, or keyfile"
+
+- name: "Publish canonical Patroni TLS aliases"
+  ansible.builtin.set_fact:
+    pg_cluster_patroni_restapi: >-
+      {{ pg_cluster_patroni_restapi | combine({
+        'cafile': pg_cluster_patroni_restapi.cafile | default(pg_cluster_patroni_restapi.ca_file)
+      } if (pg_cluster_patroni_restapi.cafile is defined or pg_cluster_patroni_restapi.ca_file is defined) else {}) | combine({
+        'certfile': pg_cluster_patroni_restapi.certfile | default(pg_cluster_patroni_restapi.cert_file)
+      } if (pg_cluster_patroni_restapi.certfile is defined or pg_cluster_patroni_restapi.cert_file is defined) else {}) | combine({
+        'keyfile': pg_cluster_patroni_restapi.keyfile | default(pg_cluster_patroni_restapi.key_file)
+       } if (pg_cluster_patroni_restapi.keyfile is defined or pg_cluster_patroni_restapi.key_file is defined) else {}) }}
+
+- name: "Canonicalize cluster certificate seed directory"
+  ansible.builtin.include_tasks: validate/normalize_path.yml
+  vars:
+    pg_path_normalize_input: "{{ pg_cluster_certificate_seed_directory }}"
+    pg_path_normalize_result_fact: "pg_cluster_certificate_seed_directory"
+    pg_path_normalize_label: "Cluster certificate seed directory"
+
+- name: "Normalize cluster certificate destinations and artifacts"
+  ansible.builtin.set_fact:
+    pg_cluster_patroni_restapi_tls_enabled: >-
+      {{ pg_cluster_patroni_restapi.enabled | default(false) | bool
+         or pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+         or pg_cluster_patroni_restapi.cafile is defined
+         or pg_cluster_patroni_restapi.certfile is defined
+         or pg_cluster_patroni_restapi.keyfile is defined }}
+    pg_cluster_etcd_tls_effective: >-
+      {{ pg_cluster_etcd_tls | combine({
+        'ca_file': pg_cluster_etcd_tls.ca_file | default('/etc/etcd/pki/ca.crt'),
+        'client': pg_cluster_etcd_tls.client | default({}) | combine({
+          'ca_file': (pg_cluster_etcd_tls.client | default({})).ca_file
+            | default(pg_cluster_etcd_tls.ca_file | default('/etc/etcd/pki/ca.crt')),
+          'cert_file': (pg_cluster_etcd_tls.client | default({})).cert_file
+            | default('/etc/etcd/pki/etcd-client.crt'),
+          'key_file': (pg_cluster_etcd_tls.client | default({})).key_file
+            | default('/etc/etcd/pki/etcd-client.key')
+        }),
+        'peer': pg_cluster_etcd_tls.peer | default({}) | combine({
+          'ca_file': (pg_cluster_etcd_tls.peer | default({})).ca_file
+            | default(pg_cluster_etcd_tls.ca_file | default('/etc/etcd/pki/ca.crt')),
+          'cert_file': (pg_cluster_etcd_tls.peer | default({})).cert_file
+            | default('/etc/etcd/pki/etcd-peer.crt'),
+          'key_file': (pg_cluster_etcd_tls.peer | default({})).key_file
+            | default('/etc/etcd/pki/etcd-peer.key')
+        })
+      }, recursive=true) }}
+
+- name: "Normalize effective cluster TLS paths"
+  ansible.builtin.set_fact:
+    pg_cluster_patroni_restapi_effective: >-
+      {{ pg_cluster_patroni_restapi | combine({
+        'cafile': pg_cluster_patroni_restapi.cafile | default('/etc/patroni/pki/ca.crt'),
+        'certfile': pg_cluster_patroni_restapi.certfile | default('/etc/patroni/pki/server.crt'),
+        'keyfile': pg_cluster_patroni_restapi.keyfile | default('/etc/patroni/pki/server.key')
+      } if pg_cluster_patroni_restapi_tls_enabled else {}, recursive=true) }}
+    pg_cluster_pki_generation_enabled: >-
+      {{ pg_cluster_etcd_tls.auto_generate | default(false) | bool or pg_cluster_patroni_restapi.auto_generate | default(false) | bool }}
+
+- name: "Normalize effective cluster PKI destination lists"
+  ansible.builtin.set_fact:
+    pg_cluster_patroni_external_pki_destinations: >-
+      {{ [pg_cluster_patroni_restapi.cafile, pg_cluster_patroni_restapi.certfile,
+          pg_cluster_patroni_restapi.keyfile]
+         if pg_cluster_patroni_restapi_tls_enabled
+         and not (pg_cluster_patroni_restapi.auto_generate | default(false) | bool)
+         else [] }}
+    pg_cluster_etcd_pki_destinations: >-
+      {{ [pg_cluster_etcd_tls_effective.ca_file,
+          pg_cluster_etcd_tls_effective.client.ca_file,
+          pg_cluster_etcd_tls_effective.client.cert_file,
+          pg_cluster_etcd_tls_effective.client.key_file,
+          pg_cluster_etcd_tls_effective.peer.ca_file,
+          pg_cluster_etcd_tls_effective.peer.cert_file,
+          pg_cluster_etcd_tls_effective.peer.key_file]
+         | unique | list
+         if pg_cluster_etcd_tls.auto_generate | default(false) | bool else [] }}
+    pg_cluster_patroni_pki_destinations: >-
+      {{ [pg_cluster_patroni_restapi_effective.cafile,
+         pg_cluster_patroni_restapi_effective.certfile,
+         pg_cluster_patroni_restapi_effective.keyfile]
+         if pg_cluster_patroni_restapi.auto_generate | default(false) | bool else [] }}
+
+- name: "Canonicalize Patroni TLS paths"
+  ansible.builtin.include_tasks: validate/normalize_path.yml
+  loop:
+    - {input: "{{ pg_cluster_patroni_restapi_effective.cafile }}", result: "pg_cluster_patroni_cafile"}
+    - {input: "{{ pg_cluster_patroni_restapi_effective.certfile }}", result: "pg_cluster_patroni_certfile"}
+    - {input: "{{ pg_cluster_patroni_restapi_effective.keyfile }}", result: "pg_cluster_patroni_keyfile"}
+  loop_control:
+    loop_var: pg_cluster_tls_path_record
+  vars:
+    pg_path_normalize_input: "{{ pg_cluster_tls_path_record.input }}"
+    pg_path_normalize_result_fact: "{{ pg_cluster_tls_path_record.result }}"
+    pg_path_normalize_label: "Patroni TLS path"
+  when: pg_cluster_patroni_restapi_tls_enabled | bool
+
+- name: "Publish canonical Patroni TLS paths"
+  ansible.builtin.set_fact:
+    pg_cluster_patroni_restapi_effective: >-
+      {{ pg_cluster_patroni_restapi_effective | combine({
+         'cafile': pg_cluster_patroni_cafile,
+         'certfile': pg_cluster_patroni_certfile,
+         'keyfile': pg_cluster_patroni_keyfile
+       }) }}
+  when: pg_cluster_patroni_restapi_tls_enabled | bool
+
+- name: "Canonicalize managed etcd TLS paths"
+  ansible.builtin.include_tasks: validate/normalize_path.yml
+  loop:
+    - {input: "{{ pg_cluster_etcd_tls_effective.ca_file }}", result: "pg_cluster_etcd_ca_file"}
+    - {input: "{{ pg_cluster_etcd_tls_effective.client.ca_file }}", result: "pg_cluster_etcd_client_ca_file"}
+    - {input: "{{ pg_cluster_etcd_tls_effective.client.cert_file }}", result: "pg_cluster_etcd_client_cert_file"}
+    - {input: "{{ pg_cluster_etcd_tls_effective.client.key_file }}", result: "pg_cluster_etcd_client_key_file"}
+    - {input: "{{ pg_cluster_etcd_tls_effective.peer.ca_file }}", result: "pg_cluster_etcd_peer_ca_file"}
+    - {input: "{{ pg_cluster_etcd_tls_effective.peer.cert_file }}", result: "pg_cluster_etcd_peer_cert_file"}
+    - {input: "{{ pg_cluster_etcd_tls_effective.peer.key_file }}", result: "pg_cluster_etcd_peer_key_file"}
+  loop_control:
+    loop_var: pg_cluster_tls_path_record
+  vars:
+    pg_path_normalize_input: "{{ pg_cluster_tls_path_record.input }}"
+    pg_path_normalize_result_fact: "{{ pg_cluster_tls_path_record.result }}"
+    pg_path_normalize_label: "Managed etcd TLS path"
+  when: pg_cluster_etcd_tls.auto_generate | default(false) | bool
+
+- name: "Publish canonical managed etcd TLS paths"
+  ansible.builtin.set_fact:
+    pg_cluster_etcd_tls_effective: >-
+      {{ pg_cluster_etcd_tls_effective | combine({
+         'ca_file': pg_cluster_etcd_ca_file,
+         'client': pg_cluster_etcd_tls_effective.client | combine({
+           'ca_file': pg_cluster_etcd_client_ca_file,
+           'cert_file': pg_cluster_etcd_client_cert_file,
+           'key_file': pg_cluster_etcd_client_key_file
+         }),
+         'peer': pg_cluster_etcd_tls_effective.peer | combine({
+           'ca_file': pg_cluster_etcd_peer_ca_file,
+           'cert_file': pg_cluster_etcd_peer_cert_file,
+           'key_file': pg_cluster_etcd_peer_key_file
+         })
+       }, recursive=true) }}
+  when: pg_cluster_etcd_tls.auto_generate | default(false) | bool
+
+- name: "Rebuild canonical cluster PKI destination lists"
+  ansible.builtin.set_fact:
+    pg_cluster_patroni_external_pki_destinations: >-
+      {{ [pg_cluster_patroni_restapi_effective.cafile,
+          pg_cluster_patroni_restapi_effective.certfile,
+          pg_cluster_patroni_restapi_effective.keyfile]
+         if pg_cluster_patroni_restapi_tls_enabled
+         and not (pg_cluster_patroni_restapi.auto_generate | default(false) | bool)
+         else [] }}
+    pg_cluster_etcd_pki_destinations: >-
+      {{ [pg_cluster_etcd_tls_effective.ca_file,
+          pg_cluster_etcd_tls_effective.client.ca_file,
+          pg_cluster_etcd_tls_effective.client.cert_file,
+          pg_cluster_etcd_tls_effective.client.key_file,
+          pg_cluster_etcd_tls_effective.peer.ca_file,
+          pg_cluster_etcd_tls_effective.peer.cert_file,
+          pg_cluster_etcd_tls_effective.peer.key_file]
+         | unique | list
+         if pg_cluster_etcd_tls.auto_generate | default(false) | bool else [] }}
+    pg_cluster_patroni_pki_destinations: >-
+      {{ [pg_cluster_patroni_restapi_effective.cafile,
+          pg_cluster_patroni_restapi_effective.certfile,
+          pg_cluster_patroni_restapi_effective.keyfile]
+         if pg_cluster_patroni_restapi.auto_generate | default(false) | bool else [] }}
+
+- name: "Normalize complete cluster generated artifact list"
+  ansible.builtin.set_fact:
+    pg_cluster_generated_pki_destinations: >-
+      {{ (pg_cluster_etcd_pki_destinations + pg_cluster_patroni_pki_destinations)
+         | unique | list }}
+    pg_cluster_seed_pki_artifacts: >-
+      {% set ns = namespace(paths=[
+        pg_cluster_certificate_seed_directory ~ '/' ~ pg_cluster_certificate_name ~ '.ca.key',
+        pg_cluster_certificate_seed_directory ~ '/' ~ pg_cluster_certificate_name ~ '.ca.crt']) %}
+      {% for member in (pg_cluster_patroni_members + pg_cluster_etcd_members)
+         | unique(attribute='host') %}
+      {% for role in (['patroni'] if member in pg_cluster_patroni_members else [])
+         + (['client', 'peer'] if member in pg_cluster_etcd_members else []) %}
+      {% set prefix = pg_cluster_certificate_seed_directory ~ '/' ~ pg_cluster_certificate_name ~ '-'
+         ~ (member.host | regex_replace('[^A-Za-z0-9_.-]', '_')) ~ '-'
+         ~ ((member.host | string | hash('sha256'))[0:12]) ~ '-' ~ role %}
+      {% for extension in ['key', 'crt', 'csr', 'ext'] %}
+       {% set ns.paths = ns.paths + [prefix ~ '.' ~ extension] %}
+       {% endfor %}{% endfor %}{% endfor %}{{ ns.paths }}
+
+- name: "Convert normalized cluster seed artifacts to a native list"
+  ansible.builtin.set_fact:
+    pg_cluster_seed_pki_artifacts: "{{ pg_cluster_seed_pki_artifacts | from_yaml }}"
+
+- name: "Canonicalize cluster metadata, registry, and lock paths"
+  ansible.builtin.include_tasks: validate/normalize_path.yml
+  loop:
+    - {input: "{{ pg_etcd_metadata_directory | default('/var/lib/etcd/.idarsi-managed') }}", result: "pg_cluster_metadata_directory_canonical"}
+    - input: "{{ pg_cluster_registry_directory_source | default('/var/lib/postgresql-pki') }}"
+      result: "pg_cluster_registry_directory_canonical"
+    - input: "{{ pg_cluster_lock_directory_source | default('/var/lib/postgresql-pki/locks') }}"
+      result: "pg_cluster_lock_directory_canonical"
+    - input: "{{ pg_cluster_registry_path_source | default('/var/lib/postgresql-pki/' ~ pg_cluster_certificate_name ~ '.serials') }}"
+      result: "pg_cluster_registry_path_canonical"
+    - input: "{{ pg_cluster_lock_path_source | default('/var/lib/postgresql-pki/locks/' ~ pg_cluster_certificate_name ~ '.lock') }}"
+      result: "pg_cluster_lock_path_canonical"
+  loop_control:
+    loop_var: pg_cluster_internal_path
+  vars:
+    pg_path_normalize_input: "{{ pg_cluster_internal_path.input }}"
+    pg_path_normalize_result_fact: "{{ pg_cluster_internal_path.result }}"
+    pg_path_normalize_label: "Cluster managed path"
+
+- name: "Publish canonical cluster metadata, registry, and lock paths"
+  ansible.builtin.set_fact:
+    pg_cluster_metadata_directory: "{{ pg_cluster_metadata_directory_canonical }}"
+    pg_cluster_registry_directory: "{{ pg_cluster_registry_directory_canonical }}"
+    pg_cluster_lock_directory: "{{ pg_cluster_lock_directory_canonical }}"
+    pg_cluster_registry_path: "{{ pg_cluster_registry_path_canonical }}"
+    pg_cluster_lock_path: "{{ pg_cluster_lock_path_canonical }}"

@@ -1,7 +1,8 @@
 ---
 - name: "Check live Patroni health after isolated restore startup"
   ansible.builtin.uri:
-    url: "http://pg01:8008/health"
+    url: "https://pg01:8008/health"
+    ca_path: /etc/patroni/pki/ca.crt
     url_username: "patroni"
     url_password: "patroni_password"
     force_basic_auth: true
@@ -9,7 +10,8 @@
   no_log: true
 - name: "Read live Patroni cluster and PostgreSQL continuity"
   ansible.builtin.uri:
-    url: "http://pg01:8008/cluster"
+    url: "https://pg01:8008/cluster"
+    ca_path: /etc/patroni/pki/ca.crt
     url_username: "patroni"
     url_password: "patroni_password"
     force_basic_auth: true
@@ -25,8 +27,8 @@
   ansible.builtin.command: "{{ vagrant_identity_command.command }}"
   environment: {ETCDCTL_API: "3"}
   loop:
-    - {command: "etcdctl --endpoints=https://pg01:2379 --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd.crt --key=/etc/etcd/pki/etcd.key get /molecule/snapshot-marker --print-value-only"}
-    - {command: "etcdctl --endpoints=https://pg01:2379 --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd.crt --key=/etc/etcd/pki/etcd.key endpoint status -w json"}
+    - {command: "etcdctl --endpoints=https://pg01:2379 --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd-client.crt --key=/etc/etcd/pki/etcd-client.key get /molecule/snapshot-marker --print-value-only"}
+    - {command: "etcdctl --endpoints=https://pg01:2379 --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd-client.crt --key=/etc/etcd/pki/etcd-client.key endpoint status -w json"}
     - {command: "etcdctl --endpoints=http://127.0.0.1:32379 endpoint status -w json"}
   loop_control: {loop_var: vagrant_identity_command}
   register: vagrant_identity_results

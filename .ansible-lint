@@ -6,4 +6,5 @@ exclude_paths:
   - .molecule/
   - docs/
   - molecule/
+  # External shared-task submodule; linted by its own repository.
   - tasks/shared/

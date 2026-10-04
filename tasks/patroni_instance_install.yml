@@ -19,71 +19,95 @@
     pg_patroni_version: "{{ pg_patroni_instance_record.0.version | string }}"
     pg_patroni_port: "{{ pg_patroni_instance_record.1.configuration.port | default(pg_default_port) }}"
 
+- name: "Selecting the local Patroni cluster member"
+  ansible.builtin.set_fact:
+    pg_patroni_member: >-
+      {{ pg_patroni_cluster.members
+         | selectattr('host', 'equalto', inventory_hostname)
+         | selectattr('instance', 'equalto', pg_patroni_instance)
+         | list | first }}
+
 - name: "Selecting Patroni REST API settings"
   ansible.builtin.set_fact:
     pg_patroni_restapi: "{{ pg_patroni_cluster.patroni.restapi | default({}) }}"
+
+- name: "Selecting the canonical per-instance Patroni REST endpoint model"
+  ansible.builtin.set_fact:
+    pg_patroni_endpoint_model_key: >-
+      {{ pg_patroni_version }}:{{ pg_patroni_cluster.name }}:{{ pg_patroni_member.host }}:{{ pg_patroni_member.instance }}
+
+- name: "Checking the canonical per-instance Patroni REST endpoint model key before readiness"
+  ansible.builtin.assert:
+    that:
+      - pg_patroni_endpoint_model_key in (pg_patroni_endpoint_projection_by_key | default({}))
+    fail_msg: >-
+      Cannot probe Patroni without a canonical endpoint model for
+      {{ pg_patroni_endpoint_model_key }}
+
+- name: "Selecting the canonical per-instance Patroni REST endpoint model"
+  ansible.builtin.set_fact:
+    pg_patroni_restapi_endpoint_model: "{{ pg_patroni_endpoint_projection_by_key[pg_patroni_endpoint_model_key] }}"
+
+- name: "Checking the canonical per-instance Patroni REST endpoint model before readiness"
+  ansible.builtin.assert:
+    that:
+      - pg_patroni_restapi_endpoint_model is mapping
+      - pg_patroni_restapi_endpoint_model.key == pg_patroni_endpoint_model_key
+      - pg_patroni_restapi_endpoint_model.version == pg_patroni_version
+      - pg_patroni_restapi_endpoint_model.cluster == pg_patroni_cluster.name
+      - pg_patroni_restapi_endpoint_model.member == pg_patroni_member.host
+      - pg_patroni_restapi_endpoint_model.instance == pg_patroni_member.instance
+      - pg_patroni_restapi_endpoint_model.uri is string
+    fail_msg: "Cannot probe Patroni without the canonical endpoint model for this member"
 
 - name: "Selecting Patroni REST API port"
   ansible.builtin.set_fact:
     pg_patroni_restapi_port_effective: "{{ (pg_patroni_cluster.patroni.restapi | default({})).port | default(pg_patroni_restapi_port) }}"
 
+- name: "Constructing Patroni REST API listen default"
+  ansible.builtin.include_tasks: host_port.yml
+  vars:
+    pg_host_port_host: "{{ pg_patroni_restapi_listen_address }}"
+    pg_host_port_port: "{{ pg_patroni_restapi_port_effective }}"
+    pg_host_port_result_fact: "pg_patroni_instance_default_listen_endpoint"
+  when: (pg_patroni_cluster.patroni.restapi | default({})).listen is not defined
+
 - name: "Selecting Patroni REST API connection settings"
   ansible.builtin.set_fact:
     pg_patroni_restapi_listen: >-
-      {{ (pg_patroni_cluster.patroni.restapi | default({})).listen
-         | default(pg_patroni_restapi_listen_address ~ ':' ~ pg_patroni_restapi_port_effective) }}
+       {{ (pg_patroni_cluster.patroni.restapi | default({})).listen
+          | default(pg_patroni_instance_default_listen_endpoint) }}
     pg_patroni_restapi_username: "{{ (pg_patroni_cluster.patroni.restapi | default({})).authentication.username | default('') }}"
     pg_patroni_restapi_password: "{{ (pg_patroni_cluster.patroni.restapi | default({})).authentication.password | default('') }}"
     pg_patroni_restapi_cafile: "{{ pg_patroni_restapi.cafile | default('/etc/patroni/pki/ca.crt') }}"
     pg_patroni_restapi_certfile: "{{ pg_patroni_restapi.certfile | default('/etc/patroni/pki/server.crt') }}"
     pg_patroni_restapi_keyfile: "{{ pg_patroni_restapi.keyfile | default('/etc/patroni/pki/server.key') }}"
     pg_patroni_restapi_verify_client: "{{ pg_patroni_restapi.verify_client | default('none') }}"
-    pg_patroni_restapi_scheme: >-
-      {{
-        'https'
-        if (pg_patroni_restapi.auto_generate | default(false) | bool or pg_patroni_restapi.cafile is defined)
-        else 'http'
-      }}
 
-- name: "Deriving Patroni REST API listener host"
-  ansible.builtin.set_fact:
-    pg_patroni_restapi_listen_host_candidate: "{{ (pg_patroni_restapi_listen | trim) | regex_replace(':[0-9]+$', '') | trim }}"
-
-- name: "Selecting a reachable Patroni REST API listener host"
-  ansible.builtin.set_fact:
-    pg_patroni_restapi_listen_host: >-
-      {{ inventory_hostname
-         if pg_patroni_restapi_listen_host_candidate in ['0.0.0.0', '*', '::', '[0.0.0.0]', '[::]']
-         else pg_patroni_restapi_listen_host_candidate }}
-
-- name: "Selecting Patroni REST API URL host"
-  ansible.builtin.set_fact:
-    pg_patroni_restapi_connect_host: "{{ (pg_patroni_restapi_connect_address_effective | trim) | regex_replace(':[0-9]+$', '') | trim }}"
-
-- name: "Selecting Patroni REST API URL host"
-  ansible.builtin.set_fact:
-    pg_patroni_restapi_url_host: >-
-      {{
-        '[' ~ pg_patroni_restapi_connect_host ~ ']'
-        if ':' in (pg_patroni_restapi_connect_host | string)
-        and (pg_patroni_restapi_connect_host | string) is not match('^\\[')
-        else pg_patroni_restapi_connect_host
-      }}
+- name: "Rejecting unsupported Patroni REST API required client verification before probing"
+  ansible.builtin.assert:
+    that:
+      - pg_patroni_restapi_verify_client != 'required'
+    fail_msg: >-
+      Patroni REST API verify_client: required is not supported. Use
+      verify_client: optional or none, or provide a future role version that
+      manages dedicated client certificate, key, and CA trust material and
+      configures Patroni tooling to use it.
 
 - name: "Waiting for local Patroni API"
   ansible.builtin.uri:
-    url: "{{ pg_patroni_restapi_scheme }}://{{ pg_patroni_restapi_url_host }}:{{ pg_patroni_restapi_port_effective }}/cluster"
+    url: "{{ pg_patroni_restapi_endpoint_model.uri }}/cluster"
     validate_certs: true
-    ca_path: "{{ pg_patroni_restapi_cafile if pg_patroni_restapi_scheme == 'https' else omit }}"
+    ca_path: "{{ pg_patroni_restapi_cafile if pg_patroni_restapi_endpoint_model.scheme == 'https' else omit }}"
     client_cert: >-
-      {{ pg_patroni_restapi_certfile
-         if pg_patroni_restapi_scheme == 'https'
-         and pg_patroni_restapi_verify_client in ['optional', 'required']
+       {{ pg_patroni_restapi_certfile
+          if pg_patroni_restapi_endpoint_model.scheme == 'https'
+          and pg_patroni_restapi_verify_client == 'optional'
          else omit }}
     client_key: >-
-      {{ pg_patroni_restapi_keyfile
-         if pg_patroni_restapi_scheme == 'https'
-         and pg_patroni_restapi_verify_client in ['optional', 'required']
+       {{ pg_patroni_restapi_keyfile
+          if pg_patroni_restapi_endpoint_model.scheme == 'https'
+          and pg_patroni_restapi_verify_client == 'optional'
          else omit }}
     status_code: 200
     return_content: true
@@ -159,9 +183,19 @@
 
 - name: "Waiting for Patroni after first bootstrap restart"
   ansible.builtin.uri:
-    url: "{{ pg_patroni_restapi_scheme }}://{{ pg_patroni_restapi_url_host }}:{{ pg_patroni_restapi_port_effective }}/cluster"
+    url: "{{ pg_patroni_restapi_endpoint_model.uri }}/cluster"
     validate_certs: true
-    ca_path: "{{ pg_patroni_restapi_cafile if pg_patroni_restapi_scheme == 'https' else omit }}"
+    ca_path: "{{ pg_patroni_restapi_cafile if pg_patroni_restapi_endpoint_model.scheme == 'https' else omit }}"
+    client_cert: >-
+      {{ pg_patroni_restapi_certfile
+         if pg_patroni_restapi_endpoint_model.scheme == 'https'
+          and pg_patroni_restapi_verify_client == 'optional'
+         else omit }}
+    client_key: >-
+      {{ pg_patroni_restapi_keyfile
+         if pg_patroni_restapi_endpoint_model.scheme == 'https'
+          and pg_patroni_restapi_verify_client == 'optional'
+         else omit }}
     status_code: 200
     return_content: true
     url_username: "{{ pg_patroni_restapi_username }}"

@@ -1,0 +1,87 @@
+---
+- name: "Check validation container availability"
+  ansible.builtin.command:  # noqa syntax-check[specific] -- task fragment is included by prepare.yml
+    argv:
+      - "{{ iac_validation_podman_executable }}"
+      - "container"
+      - "exists"
+      - "{{ iac_validation_container_name }}"
+  changed_when: false
+  failed_when: false
+  loop: "{{ iac_validation_container_names }}"
+  loop_control:
+    loop_var: iac_validation_container_name
+  register: iac_validation_container_status
+
+- name: "Reject Podman availability errors with original command context"
+  ansible.builtin.fail:
+    msg: >-
+      Podman could not check validation container '{{ iac_validation_container_name.iac_validation_container_name }}'; only
+      rc=1 (documented container absent/not-found) is allowed. rc={{ iac_validation_container_name.rc }}
+      command={{ iac_validation_container_name.cmd | default([]) | join(' ') }}
+      stdout={{ iac_validation_container_name.stdout | default('') | trim | default('<empty>', true) }}
+      stderr={{ iac_validation_container_name.stderr | default('') | trim | default('<empty>', true) }}
+  loop: "{{ iac_validation_container_status.results }}"
+  loop_control:
+    loop_var: iac_validation_container_name
+  when: iac_validation_container_name.rc not in [0, 1]
+
+- name: "Reject missing validation containers before target execution"
+  ansible.builtin.assert:
+    that:
+      - iac_validation_container_status.results | selectattr('rc', 'equalto', 0) | list | length == iac_validation_container_names | length
+    fail_msg: >-
+      {% if iac_validation_container_status.results | selectattr('rc', 'equalto', 1) | list | length == iac_validation_container_names | length %}
+      Molecule validation prepare ran before the create stage; run the scenario
+      lifecycle (destroy, create, prepare) instead of relying on external containers.
+      {% else %}
+      Molecule validation requires all created containers to remain available;
+      an externally removed validation container must be recreated before retrying.
+      {% endif %}
+      Absent container results: {{ iac_validation_container_status.results
+      | selectattr('rc', 'equalto', 1) | map(attribute='iac_validation_container_name') | list | to_nice_json }}
+
+- name: "Inspect validation container image, state, and command"
+  ansible.builtin.command:
+    argv:
+      - "{{ iac_validation_podman_executable }}"
+      - "container"
+      - "inspect"
+      - "--format"
+      - "json"
+      - "{{ iac_validation_container_name }}"
+  changed_when: false
+  failed_when: false
+  loop: "{{ iac_validation_container_names }}"
+  loop_control:
+    loop_var: iac_validation_container_name
+  register: iac_validation_container_inspection
+
+- name: "Reject inspection errors with original command context"
+  ansible.builtin.fail:
+    msg: >-
+      Podman could not inspect expected validation container '{{ iac_validation_container_name.iac_validation_container_name }}';
+      the container may have disappeared or Podman reported an infrastructure
+      error. rc={{ iac_validation_container_name.rc }} command={{ iac_validation_container_name.cmd | default([]) | join(' ') }}
+      stdout={{ iac_validation_container_name.stdout | default('') | trim | default('<empty>', true) }}
+      stderr={{ iac_validation_container_name.stderr | default('') | trim | default('<empty>', true) }}
+  loop: "{{ iac_validation_container_inspection.results }}"
+  loop_control:
+    loop_var: iac_validation_container_name
+  when: iac_validation_container_name.rc != 0
+
+- name: "Reject stale, stopped, or replaced validation containers"
+  ansible.builtin.assert:
+    that:
+      - (iac_validation_container_name.stdout | from_json | first).State.Running | default(false) | bool
+      - (iac_validation_container_name.stdout | from_json | first).State.Status | default('') == "running"
+      - (iac_validation_container_name.stdout | from_json | first).ImageName | default('') == iac_validation_expected_image
+      - (iac_validation_container_name.stdout | from_json | first).Path | default('') == iac_validation_expected_command
+    fail_msg: >-
+      Validation container '{{ iac_validation_container_name.iac_validation_container_name }}' is stale or does not match the
+      Molecule contract: expected running image={{ iac_validation_expected_image }}
+      command={{ iac_validation_expected_command }}; inspect={{ iac_validation_container_name.stdout
+      | default('<empty>') }}
+  loop: "{{ iac_validation_container_inspection.results }}"
+  loop_control:
+    loop_var: iac_validation_container_name

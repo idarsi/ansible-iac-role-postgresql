@@ -2,8 +2,8 @@ scope: {{ pg_cluster.name }}
 name: {{ pg_patroni_name }}
 
 restapi:
-  listen: {{ pg_patroni_restapi_listen_effective | to_json }}
-  connect_address: {{ pg_patroni_restapi_connect_address_effective | to_json }}
+  listen: {{ pg_patroni_restapi_endpoint_model.rendered_listener | to_json }}
+  connect_address: {{ pg_patroni_restapi_endpoint_model.advertised_connect | to_json }}
   authentication:
     username: {{ pg_patroni.restapi.authentication.username | to_json }}
     password: {{ pg_patroni.restapi.authentication.password | to_json }}
@@ -18,43 +18,43 @@ restapi:
     - {{ member.host | to_json }}
 {% endfor %}
 {% endif %}
-{% if pg_patroni.restapi.cafile is defined %}
-  cafile: {{ pg_patroni.restapi.cafile | to_json }}
-  certfile: {{ pg_patroni.restapi.certfile | to_json }}
-  keyfile: {{ pg_patroni.restapi.keyfile | to_json }}
+{% if pg_patroni_restapi_endpoint_model.tls_enabled | default(false) | bool %}
+  cafile: {{ pg_patroni_restapi_endpoint_model.cafile | to_json }}
+  certfile: {{ pg_patroni_restapi_endpoint_model.certfile | to_json }}
+  keyfile: {{ pg_patroni_restapi_endpoint_model.keyfile | to_json }}
   verify_client: {{ pg_patroni.restapi.verify_client | default('none') | to_json }}
 {% endif %}
 
 {% if pg_cluster.dcs.provider == 'etcd3' %}
 etcd3:
-  hosts: {{ pg_cluster.dcs.endpoints | map('regex_replace', '^https?://', '') | join(',') }}
-{% if pg_cluster.dcs.proxy is defined %}
-  proxy: {{ pg_cluster.dcs.proxy }}
+  hosts: {{ pg_patroni_dcs_endpoint_model | map(attribute='rendered_endpoint') | map('regex_replace', '^https?://', '') | join(',') | to_json }}
+{% if pg_patroni_dcs_proxy_model is mapping %}
+  proxy: {{ pg_patroni_dcs_proxy_model.rendered_endpoint | to_json }}
 {% endif %}
 {% if pg_cluster.dcs.use_proxies is defined %}
   use_proxies: {{ pg_cluster.dcs.use_proxies | bool | lower }}
 {% endif %}
-{% if (pg_cluster.dcs.etcd.tls | default({})).enabled | default(false) | bool %}
-  protocol: https
-  cacert: {{ pg_cluster.dcs.etcd.tls.client.ca_file }}
-  cert: {{ pg_cluster.dcs.etcd.tls.client.cert_file }}
-  key: {{ pg_cluster.dcs.etcd.tls.client.key_file }}
+{% if pg_cluster_dcs_model.protocol == 'https' %}
+  protocol: {{ pg_cluster_dcs_model.protocol }}
+  cacert: {{ pg_cluster_etcd_tls_effective.client.ca_file }}
+  cert: {{ pg_cluster_etcd_tls_effective.client.cert_file }}
+  key: {{ pg_cluster_etcd_tls_effective.client.key_file }}
 {% endif %}
 {% elif pg_cluster.dcs.provider == 'consul' %}
 consul:
-  hosts: {{ pg_cluster.dcs.endpoints | join(',') }}
+  hosts: {{ pg_patroni_dcs_endpoint_model | map(attribute='rendered_endpoint') | join(',') | to_json }}
 {% elif pg_cluster.dcs.provider == 'kubernetes' %}
 kubernetes:
-  namespace: {{ pg_cluster.dcs.namespace | default('default') }}
+  namespace: {{ pg_cluster.dcs.namespace | default('default') | to_json }}
   labels:
-    app: {{ pg_cluster.name }}
+    app: {{ pg_cluster.name | to_json }}
 {% endif %}
 
 bootstrap:
 {% if pg_patroni.pg_hba is defined %}
   pg_hba:
 {% for pg_hba_line in pg_patroni.pg_hba %}
-    - {{ pg_hba_line }}
+    - {{ pg_hba_line | to_json }}
 {% endfor %}
 {% endif %}
   dcs:

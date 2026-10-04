@@ -1,0 +1,20 @@
+[
+  {"name": "missing-final-component-with-directory-parent", "safe": true,
+   "namei": {"pg_certificate_preflight_path": "/var/lib/pki/missing.crt", "rc": 1},
+   "stats": [
+     {"pg_certificate_preflight_path": "/var/lib/pki/missing.crt", "failed": false, "stat": {"exists": false}},
+     {"pg_certificate_preflight_path": "/var/lib/pki", "failed": false, "stat": {"exists": true, "isdir": true}}
+   ]},
+  {"name": "existing-file-as-parent", "safe": false,
+   "namei": {"pg_certificate_preflight_path": "/var/lib/pki-file/missing.crt", "rc": 1, "stderr": "ENOTDIR"},
+   "stats": [
+     {"pg_certificate_preflight_path": "/var/lib/pki-file/missing.crt", "failed": false, "stat": {"exists": false}},
+     {"pg_certificate_preflight_path": "/var/lib/pki-file", "failed": false, "stat": {"exists": true, "isreg": true, "isdir": false}}
+   ]},
+  {"name": "same-path-different-host-common-ancestor", "safe": false,
+   "namei": {"pg_certificate_preflight_path": "/var/lib/pki/missing.crt", "rc": 1},
+   "stats": [
+     {"pg_certificate_preflight_path": "/var/lib/pki/missing.crt", "failed": false, "stat": {"exists": false}},
+     {"pg_certificate_preflight_path": "/var/lib/pki", "failed": false, "stat": {"exists": false}}
+   ]}
+]

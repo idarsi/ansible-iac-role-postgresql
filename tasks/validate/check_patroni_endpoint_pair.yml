@@ -1,0 +1,48 @@
+---
+- name: "Rejecting a Patroni listen endpoint pair collision"
+  ansible.builtin.assert:
+    that:
+      # A wildcard covers both families unless IPV6_V6ONLY is explicitly
+      # enforced; reject cross-family wildcard binds conservatively.
+      - >-
+        not (
+          pg_validation_patroni_current_record.host_scope ==
+          pg_validation_patroni_prior_record.host_scope
+          and pg_validation_patroni_current_record.listen_port ==
+              pg_validation_patroni_prior_record.listen_port
+           and (
+             pg_validation_patroni_current_record.listen_is_wildcard | bool
+             or pg_validation_patroni_prior_record.listen_is_wildcard | bool
+             or (
+               pg_validation_patroni_current_record.listen_address_family ==
+               pg_validation_patroni_prior_record.listen_address_family
+               and pg_validation_patroni_current_record.listen_collision_key ==
+                   pg_validation_patroni_prior_record.listen_collision_key
+             )
+           )
+        )
+    fail_msg: >-
+      Patroni listen endpoint collision on host
+      {{ pg_validation_patroni_current_record.host_scope }}:
+      {{ pg_validation_patroni_current_record.listen_collision_key }} is used
+      by another distinct
+      Patroni
+      cluster/instance, including wildcard/listen overlap. Use a unique bind
+      address and port for every instance.
+
+- name: "Rejecting a Patroni advertised endpoint pair collision"
+  ansible.builtin.assert:
+    that:
+      - >-
+        not (
+          pg_validation_patroni_current_record.host_scope ==
+          pg_validation_patroni_prior_record.host_scope
+          and pg_validation_patroni_current_record.connect_collision_key ==
+              pg_validation_patroni_prior_record.connect_collision_key
+        )
+    fail_msg: >-
+      Patroni advertised endpoint collision on host
+      {{ pg_validation_patroni_current_record.host_scope }}:
+      {{ pg_validation_patroni_current_record.connect_collision_key }} is used
+      by another distinct Patroni cluster/instance. Use a unique advertised
+      endpoint.

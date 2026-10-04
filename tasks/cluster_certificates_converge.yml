@@ -1,0 +1,20 @@
+---
+###############################################################################
+#
+# Check-mode boundary for cluster certificate convergence.
+#
+# Certificate generation, slurp, installation, and ACL operations are an
+# explicit no-op in check mode.  The apply task file is included only after
+# this boundary, so registered-result consumers can never observe a skipped
+# producer as an invalid preview.
+#
+###############################################################################
+
+- name: "Skipping cluster certificate convergence in check mode"
+  ansible.builtin.set_fact:
+    pg_cluster_certificate_convergence_skipped: true
+  when: ansible_check_mode | bool
+
+- name: "Converging cluster certificates outside check mode"
+  ansible.builtin.include_tasks: cluster_certificates_apply.yml
+  when: not (ansible_check_mode | bool)

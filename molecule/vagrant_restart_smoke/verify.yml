@@ -10,7 +10,8 @@
   tasks:
     - name: "Discover the current Patroni leader"
       ansible.builtin.uri:
-        url: "http://{{ vagrant_patroni_private_addresses[item] }}:8008/cluster"
+        url: "https://{{ vagrant_patroni_private_addresses[item] }}:8008/cluster"
+        ca_path: /etc/patroni/pki/ca.crt
         url_username: "patroni"
         url_password: "patroni_password"
         force_basic_auth: true
@@ -100,7 +101,8 @@
           register: vagrant_postgresql_ready
         - name: "Read cluster membership after the replica restart"
           ansible.builtin.uri:
-            url: "http://{{ vagrant_patroni_private_addresses[groups['all'] | difference([vagrant_restart_target]) | first] }}:8008/cluster"
+            url: "https://{{ vagrant_patroni_private_addresses[groups['all'] | difference([vagrant_restart_target]) | first] }}:8008/cluster"
+            ca_path: /etc/patroni/pki/ca.crt
             url_username: "patroni"
             url_password: "patroni_password"
             force_basic_auth: true

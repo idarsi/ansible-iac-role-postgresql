@@ -1,0 +1,50 @@
+---
+# Tool-dependent read-only certificate gate.  Bootstrap packages are installed
+# by present.yml before this file is reached on a clean host.
+- name: "Inspect all PostgreSQL certificate destinations before mutation"
+  ansible.builtin.include_tasks: certification_preflight.yml
+  loop: "{{ pg_instances }}"
+  loop_control:
+    loop_var: pg_preflight_instance
+  vars:
+    pg_version: "{{ pg_preflight_instance.0.version | string }}"
+    pg_instance: "{{ pg_preflight_instance.1.name }}"
+    pg_security_ssl: >-
+      {{ (pg_validation_cluster_models | selectattr('key', 'equalto',
+         (pg_preflight_instance.0.version | string) ~ ':' ~ (pg_preflight_instance.1.cluster | default('')))
+         | map(attribute='security_ssl') | list | first)
+         | default(pg_preflight_instance.1.security_ssl | default(pg_preflight_instance.1.security_profile | default('off'))) }}
+    pg_certificate_private_key_fullpath: "{{ pg_default_dir }}/{{ pg_version }}/{{ pg_instance }}/ssl/{{ pg_certificate_private_key_path }}"
+    pg_certificate_public_key_fullpath: "{{ pg_default_dir }}/{{ pg_version }}/{{ pg_instance }}/ssl/{{ pg_certificate_public_key_path }}"
+    pg_certificate_subject_alt_names: "{{ pg_preflight_instance.1.certificate_subject_alt_names | default([inventory_hostname]) }}"
+    pg_client_certificate_authority_fullpath: "{{ pg_default_dir }}/{{ pg_version }}/{{ pg_instance }}/ssl/{{ pg_client_certificate_authority_path }}"
+    # Keep the internal value defined for the read-only preflight include.  An
+    # omitted include var can still make the delegated stat task run with an
+    # undefined module argument; the empty value is the same sentinel used by
+    # instances_present.yml and is never passed to a module.
+    pg_client_certificate_authority_src: "{{ pg_preflight_instance.1.client_certificate_authority_src | default('') }}"
+  when: >-
+    pg_security_ssl != 'off'
+    or (pg_preflight_instance.1.client_certificate_authority_src | default('') | trim | length > 0)
+    or pg_preflight_instance.1.client_certificate_authority_content is defined
+
+- name: "Inspect all cluster certificate destinations before mutation"
+  ansible.builtin.include_tasks: cluster_certificates_preflight.yml
+  loop: "{{ pg_validation_cluster_models | default([]) }}"
+  loop_control:
+    loop_var: pg_preflight_cluster
+  vars:
+    pg_cluster: "{{ pg_preflight_cluster.record }}"
+    pg_version: "{{ pg_preflight_cluster.version | string }}"
+  when: >-
+    pg_preflight_cluster.record.provider == 'patroni'
+    and (
+      pg_preflight_cluster.record.patroni.restapi.auto_generate | default(false) | bool
+      or pg_preflight_cluster.record.patroni.restapi.cafile is defined
+      or (((pg_preflight_cluster.record.dcs | default({})).etcd | default({})).tls | default({})).auto_generate | default(false) | bool
+      or (((pg_preflight_cluster.record.dcs | default({})).etcd | default({})).tls | default({})).enabled | default(false) | bool
+    )
+
+- name: "Publish completed certificate preflight model"
+  ansible.builtin.set_fact:
+    pg_certificate_preflight_complete: true

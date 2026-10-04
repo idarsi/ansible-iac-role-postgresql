@@ -1,0 +1,61 @@
+---
+# Canonicalize a Unix path without resolving symlinks. Missing paths remain
+# missing and can safely be inspected with stat/namei afterwards.
+- name: "Checking path supplied for canonicalization"
+  ansible.builtin.assert:
+    that:
+      - pg_path_normalize_input is string
+      - pg_path_normalize_input | length > 0
+      - pg_path_normalize_input is not search('\\\\')
+      - pg_path_normalize_input is match('^/')
+      - pg_path_normalize_input is not search('(^|/)\.\.(?:/|$)')
+      - pg_path_normalize_input is not search('[\x00-\x1f\x7f]')
+    fail_msg: "{{ pg_path_normalize_label | default('Path') }} must be a non-empty absolute Unix path"
+
+- name: "Canonicalizing path without resolving symlinks"
+  ansible.builtin.set_fact:
+    "{{ pg_path_normalize_result_fact }}": >-
+      {% set ns = namespace(parts=[]) %}
+      {% set normalized = pg_path_normalize_input | regex_replace('/+', '/') %}
+      {% for part in normalized.split('/') %}
+      {% if part in ['', '.'] %}
+      {% elif part == '..' %}
+      {% if ns.parts | length > 0 %}{% set _ = ns.parts.pop() %}{% endif %}
+      {% else %}{% set _ = ns.parts.append(part) %}
+      {% endif %}
+      {% endfor %}/{{ ns.parts | join('/') }}
+
+- name: "Trim canonical path result"
+  ansible.builtin.set_fact:
+    "{{ pg_path_normalize_result_fact }}": "{{ lookup('vars', pg_path_normalize_result_fact) | trim }}"
+
+- name: "Checking canonical path result"
+  ansible.builtin.assert:
+    that:
+      - lookup('vars', pg_path_normalize_result_fact) is string
+      - lookup('vars', pg_path_normalize_result_fact) is match('^/')
+      - lookup('vars', pg_path_normalize_result_fact) is not search('//')
+      - lookup('vars', pg_path_normalize_result_fact) is not search('(^|/)\./')
+      - lookup('vars', pg_path_normalize_result_fact) is not search('(^|/)\.\.?(/|$)')
+    fail_msg: "{{ pg_path_normalize_label | default('Path') }} could not be safely canonicalized"
+
+- name: "Checking Patroni TLS path guardrail"
+  ansible.builtin.assert:
+    that:
+      - pg_patroni_tls_path_record.path is string
+      - pg_path_normalize_input == pg_patroni_tls_path_record.path
+      - lookup('vars', pg_path_normalize_result_fact) is match('^/[A-Za-z0-9_-][A-Za-z0-9_.-]*(?:/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$')
+      - lookup('vars', pg_path_normalize_result_fact) not in ['/', '/etc', '/usr', '/var', '/tmp', '/home']
+    fail_msg: >-
+      Explicit Patroni TLS {{ pg_patroni_tls_path_record.name }} must be a
+      non-empty absolute file path with safe components; '.', '..', traversal,
+      and filesystem-root paths are not allowed. Existing-file ownership, mode,
+      SELinux context, and symlink checks are performed during convergence.
+  when: pg_patroni_tls_path_record is defined
+
+- name: "Publishing canonical path to optional accumulator"
+  ansible.builtin.set_fact:
+    "{{ pg_path_normalize_accumulator }}": >-
+      {{ (lookup('vars', pg_path_normalize_accumulator) | default([], true) | list)
+         + [lookup('vars', pg_path_normalize_result_fact)] }}
+  when: pg_path_normalize_accumulator is defined

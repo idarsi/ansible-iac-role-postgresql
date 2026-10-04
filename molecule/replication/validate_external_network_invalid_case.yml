@@ -1,0 +1,48 @@
+---
+# yamllint disable rule:line-length
+- name: "Reset external-network failure collection"  # noqa syntax-check[specific] -- task fragment
+  ansible.builtin.set_fact:  # noqa syntax-check[specific] -- task fragment
+    pg_shared_failure_messages: []
+    pg_shared_failure_results: []
+
+- name: "Validate an intentionally invalid external-network case"
+  block:  # noqa syntax-check[specific] -- task fragment is included by converge.yml
+    - name: "Run the actual external-network validation path"
+      ansible.builtin.include_tasks: validate_external_network_case.yml
+      vars:
+        pg_replication_external_network_case: "{{ pg_replication_external_case }}"
+    - name: "Fail if the invalid external-network case was accepted"
+      ansible.builtin.fail:
+        msg: >-
+          Invalid external-network case {{ pg_replication_external_case.name }}
+          was accepted; expected: {{ pg_replication_external_case.expected_message }}
+  rescue:
+    - name: "Collect underlying external-network validation task messages"
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/../shared/collect_failure_messages.yml"
+      vars:
+        pg_failure_nodes: "{{ [ansible_failed_result | default({})] }}"
+      when: ansible_failed_task.name != "Fail if the invalid external-network case was accepted"
+
+    - name: "Aggregate invalid external-network case outcome"
+      ansible.builtin.set_fact:
+        pg_replication_invalid_external_network_outcomes: >-
+          {{ (pg_replication_invalid_external_network_outcomes | default([])) + [
+             {'name': pg_replication_external_case.name,
+                'rejected': (ansible_failed_task.name !=
+                  "Fail if the invalid external-network case was accepted") and
+                  (pg_shared_failure_results | default([]) | length > 0),
+                'expected_message': pg_replication_external_case.expected_message,
+               'expected_published_facts': pg_replication_external_case.published_facts | default({}),
+                'observed_messages': pg_shared_failure_messages | default([]),
+                'observed_results': pg_shared_failure_results | default([]),
+               'published_facts': ({
+                 'pg_replication_external_ipv4': pg_replication_external_ipv4
+                } if pg_replication_external_ipv4 is defined else {}) | combine({
+                  'pg_replication_external_subnet': pg_replication_external_subnet
+                } if pg_replication_external_subnet is defined else {})} ] }}
+    - name: "Continue after expected invalid external-network rejection"
+      ansible.builtin.debug:
+        msg: >-
+          Rejected invalid external-network case
+          {{ pg_replication_external_case.name }} without publishing
+          replication facts

@@ -4,7 +4,11 @@
   serial: 1
   become: true
   vars:
-    vagrant_cluster_addresses: {pg01: "192.168.250.201", pg02: "192.168.250.202", pg03: "192.168.250.203"}
+    vagrant_cluster_addresses:
+      pg01: "192.168.250.201"
+      pg02: "192.168.250.202"
+      pg03: "192.168.250.203"
+    vagrant_etcd_pki_directory_group: "tlsreaders"
   tasks:
     - name: "Verify the Vagrant private device is present"
       ansible.builtin.assert:
@@ -31,12 +35,12 @@
 
     - name: "Import the PGDG repository signing key"
       ansible.builtin.rpm_key:
-        key: "https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-RHEL"
+        key: "https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-RHEL"  # yamllint disable-line rule:line-length
         state: "present"
 
     - name: "Install the signed PGDG repository package"
       ansible.builtin.dnf:
-        name: "https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm"
+        name: "https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm"  # yamllint disable-line rule:line-length
         state: "present"
         sslverify: true
         validate_certs: true
@@ -46,12 +50,12 @@
       ansible.builtin.command: "dnf config-manager --set-enabled pgdg17"
       changed_when: false
 
-    - name: "Enable the PGDG Rocky Linux 9 extras repository"
-      ansible.builtin.command: "dnf config-manager --set-enabled pgdg-rhel9-extras"
+    - name: "Enable the PGDG Rocky Linux 9 extras repository"  # yamllint disable-line rule:line-length
+      ansible.builtin.command: "dnf config-manager --set-enabled pgdg-rhel9-extras"  # yamllint disable-line rule:line-length
       changed_when: false
 
     - name: "Check the PGDG etcd extras repository is enabled"
-      ansible.builtin.command: "dnf repolist --enabled pgdg-rhel9-extras"
+      ansible.builtin.command: "dnf repolist --enabled pgdg-rhel9-extras"  # yamllint disable-line rule:line-length
       changed_when: false
 
     - name: "Install packages managed by the combined cluster scenario"
@@ -122,7 +126,8 @@
       register: vagrant_firewalld_zone
       notify: "Reload firewalld after creating the private cluster zone"
 
-    - name: "Apply the private cluster zone before adding runtime rules"  # noqa no-handler
+    - name: "Apply the private cluster zone before adding runtime rules"  # yamllint disable-line rule:line-length
+      # noqa no-handler
       ansible.builtin.meta: flush_handlers
       when: vagrant_firewalld_zone.changed
 
@@ -149,42 +154,53 @@
         - "5432"
         - "8008"
 
-    - name: "Create etcd PKI directory"
+    - name: "Create the shared external TLS access group"
+      ansible.builtin.group:
+        name: tlsreaders
+        state: "present"
+    - name: "Add etcd and PostgreSQL service accounts to the shared TLS group"
+      ansible.builtin.user:
+        name: "{{ item }}"
+        groups: [tlsreaders]
+        append: true
+      loop: [etcd, postgres]
+    - name: "Create etcd PKI parent directory"
       ansible.builtin.file:
         path: /etc/etcd/pki
         state: directory
-        mode: "0755"
-    - name: "Create the PostgreSQL group for fixture ACL ownership"
-      ansible.builtin.group:
-        name: postgres
-        state: "present"
+        owner: root
+        group: "{{ vagrant_etcd_pki_directory_group }}"
+        mode: "0750"
     - name: "Generate a short-lived certificate on pg01"
-      ansible.builtin.command:
-        argv:
-          - "openssl"
-          - "req"
-          - "-x509"
-          - "-nodes"
-          - "-newkey"
-          - "rsa:2048"
-          - "-keyout"
-          - "/tmp/etcd.key"
-          - "-out"
-          - "/tmp/etcd.crt"
-          - "-days"
-          - "1"
-          - "-subj"
-          - "/CN=etcd-cluster"
-          - "-addext"
-          - "subjectAltName=DNS:pg01,DNS:pg02,DNS:pg03,IP:192.168.250.201,IP:192.168.250.202,IP:192.168.250.203"
+      ansible.builtin.shell: |
+        set -eu
+        umask 077
+        openssl req -x509 -nodes -newkey rsa:2048 \
+          -keyout /tmp/etcd-client.key \
+          -out /tmp/etcd-client.crt \
+          -days 1 \
+          -subj /CN=etcd-cluster \
+          -addext 'subjectAltName=DNS:pg01,DNS:pg02,DNS:pg03,IP:192.168.250.201,IP:192.168.250.202,IP:192.168.250.203'
+        chmod 0600 /tmp/etcd-client.key
+        chown root:root /tmp/etcd-client.key
       args:
-        creates: /tmp/etcd.crt
+        creates: /tmp/etcd-client.crt
+        executable: /bin/bash
+      delegate_to: pg01
+      run_once: true
+    - name: "Enforce restrictive ownership on the source private key"
+      ansible.builtin.file:
+        path: /tmp/etcd-client.key
+        owner: root
+        group: root
+        mode: "0600"
+        state: file
       delegate_to: pg01
       run_once: true
     - name: "Read the certificate and key"
       ansible.builtin.slurp:
         src: "{{ item }}"
-      loop: [/tmp/etcd.crt, /tmp/etcd.key]
+      loop: [/tmp/etcd-client.crt, /tmp/etcd-client.key]
       delegate_to: pg01
       run_once: true
       register: vagrant_etcd_pki
@@ -192,19 +208,24 @@
       ansible.builtin.copy:
         content: "{{ item.1.content | b64decode }}"
         dest: "/etc/etcd/pki/{{ item.0 }}"
-        owner: etcd
-        group: postgres
+        owner: root
+        group: tlsreaders
         mode: "0640"
 
       loop:
         - [ca.crt, "{{ vagrant_etcd_pki.results[0] }}"]
-        - [etcd.crt, "{{ vagrant_etcd_pki.results[0] }}"]
-        - [etcd.key, "{{ vagrant_etcd_pki.results[1] }}"]
+        - [etcd-client.crt, "{{ vagrant_etcd_pki.results[0] }}"]
+        - [etcd-client.key, "{{ vagrant_etcd_pki.results[1] }}"]
+        - [etcd-peer.crt, "{{ vagrant_etcd_pki.results[0] }}"]
+        - [etcd-peer.key, "{{ vagrant_etcd_pki.results[1] }}"]
 
     - name: "Require private guest name resolution"
-      ansible.builtin.getent:
-        database: hosts
-        key: "{{ item }}"
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_facts['python']['executable'] }}"
+          - "-c"
+          - "import socket; socket.getaddrinfo('{{ item }}', None)"
+      changed_when: false
       loop: [pg01, pg02, pg03]
 
   handlers:

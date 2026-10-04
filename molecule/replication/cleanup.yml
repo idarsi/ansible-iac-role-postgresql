@@ -1,0 +1,31 @@
+---
+- name: Remove the replication run-scoped metadata
+  hosts: instance-idarsi-rl9-primary
+  become: true
+  vars:
+    pg_replication_network_metadata_path: "/run/postgresql-replication/standby-network.json"
+    pg_replication_target_python_executable: >-
+      {{ lookup('env', 'REPLICATION_TARGET_PYTHON_COMMAND') | default('/usr/bin/python3', true) }}
+  tasks:
+    - name: "Inspect replication metadata before cleanup without following links"
+      ansible.builtin.stat:
+        path: "{{ pg_replication_network_metadata_path }}"
+        follow: false
+      register: pg_replication_metadata_stat
+
+    - name: "Refuse cleanup of an unexpected metadata path"
+      ansible.builtin.assert:
+        that:
+          - not pg_replication_metadata_stat.stat.exists
+            or (pg_replication_metadata_stat.stat.isreg | default(false)
+                and not (pg_replication_metadata_stat.stat.islnk | default(false))
+                and pg_replication_metadata_stat.stat.pw_name | default("") == "root"
+                and pg_replication_metadata_stat.stat.gr_name | default("") == "root"
+                and pg_replication_metadata_stat.stat.mode | default("") == "0600")
+        fail_msg: "Refusing to remove a non-regular or unmanaged replication metadata path"
+
+    - name: "Remove replication metadata"
+      ansible.builtin.file:
+        path: "{{ pg_replication_network_metadata_path }}"
+        state: absent
+      when: pg_replication_metadata_stat.stat.exists

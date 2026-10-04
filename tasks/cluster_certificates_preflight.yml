@@ -1,0 +1,575 @@
+---
+# This is deliberately fail-closed.  Missing paths may be created by the
+# convergence phase, but every existing component is inspected first and no
+# external path is ever passed to a mutating module here.
+- name: "Normalize cluster certificate paths before inspection"
+  ansible.builtin.include_tasks: cluster_certificates_normalize.yml
+
+- name: "Deriving cluster certificate preflight model"
+  ansible.builtin.set_fact:
+    pg_cluster_pki_generation_enabled: >-
+       {{ (((pg_cluster.dcs | default({})).etcd | default({})).tls | default({})).auto_generate | default(false) | bool
+          or ((pg_cluster.patroni | default({})).restapi | default({})).auto_generate | default(false) | bool }}
+    pg_cluster_certificate_seed_host: "{{ (pg_cluster.members | default([]) | first).host | default(inventory_hostname) }}"
+    pg_cluster_preflight_paths: >-
+      {{ [pg_cluster_certificate_seed_directory,
+          pg_cluster_registry_directory, pg_cluster_lock_directory,
+          pg_cluster_metadata_directory]
+         + (pg_cluster_seed_pki_artifacts | default([]) | list)
+         + (pg_cluster_generated_pki_destinations | default([]) | list)
+         + (pg_cluster_patroni_external_pki_destinations | default([]) | list)
+          + (pg_cluster_etcd_pki_destinations | default([]) | list) }}
+    pg_cluster_seed_preflight_paths: >-
+      {{ [pg_cluster_certificate_seed_directory]
+         + (pg_cluster_seed_pki_artifacts | default([]) | list) }}
+    pg_cluster_local_preflight_host: "{{ inventory_hostname }}"
+    pg_cluster_seed_preflight_host: "{{ pg_cluster_certificate_seed_host }}"
+
+- name: "Rejecting cluster paths that cannot be derived safely"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_preflight_paths | length > 0
+      - pg_cluster_seed_pki_artifacts | default([]) | length >= 2
+      - pg_cluster_certificate_seed_host is defined
+    fail_msg: "Cluster certificate destinations and member/CA artifacts must be absolute and derivable"
+
+- name: "Build canonical cluster PKI collision model"
+  ansible.builtin.set_fact:
+    pg_cluster_collision_generated_paths: "{{ pg_cluster_generated_pki_destinations | default([]) | list }}"
+    pg_cluster_collision_ca_paths: "{{ pg_cluster_seed_pki_artifacts | default([]) | list }}"
+    pg_cluster_collision_registry_paths:
+      - "{{ pg_cluster_registry_directory }}"
+      - "{{ pg_cluster_registry_path }}"
+    pg_cluster_collision_lock_paths:
+      - "{{ pg_cluster_lock_directory }}"
+      - "{{ pg_cluster_lock_path }}"
+    pg_cluster_collision_metadata_paths:
+      - "{{ pg_cluster_metadata_directory }}"
+      - "{{ pg_cluster_metadata_directory }}/{{ pg_version | string }}-{{ pg_cluster.name | string }}"
+    pg_cluster_collision_managed_paths:
+      - "{{ pg_cluster_certificate_seed_directory }}"
+
+- name: "Canonicalize cluster metadata path before collision checks"
+  ansible.builtin.include_tasks: validate/normalize_path.yml
+  vars:
+    pg_path_normalize_input: "{{ pg_etcd_metadata_directory | default('/var/lib/etcd/.idarsi-managed') }}"
+    pg_path_normalize_result_fact: "pg_cluster_metadata_directory_canonical"
+    pg_path_normalize_label: "Cluster etcd metadata directory"
+
+- name: "Publish canonical cluster metadata collision paths"
+  ansible.builtin.set_fact:
+    pg_cluster_collision_metadata_paths:
+      - "{{ pg_cluster_metadata_directory }}"
+      - "{{ pg_cluster_metadata_directory }}/{{ pg_version | string }}-{{ pg_cluster.name | string }}"
+
+- name: "Preserve cluster PKI collision evidence before deduplication"
+  ansible.builtin.set_fact:
+    # CA reuse is intentional: one CA may back client, peer, and Patroni
+    # certificates.  All other duplicate evidence remains fail-closed.
+    pg_cluster_collision_shared_ca_paths: >-
+      {{ ([pg_cluster_etcd_tls_effective.get('ca_file'),
+           pg_cluster_etcd_tls_effective.get('client', {}).get('ca_file'),
+           pg_cluster_etcd_tls_effective.get('peer', {}).get('ca_file')]
+          if (pg_cluster_etcd_tls.enabled | default(false) | bool or
+              pg_cluster_etcd_tls.auto_generate | default(false) | bool) else [])
+         + ([pg_cluster_patroni_restapi_effective.get('cafile')]
+            if pg_cluster_patroni_restapi_tls_enabled | bool else [])
+         | select('defined') | map('trim') | list | unique }}
+    pg_cluster_collision_generated_occurrences: >-
+      {% set ns = namespace(records=[]) %}
+      {% for path in pg_cluster_etcd_pki_destinations | default([]) %}
+      {% if path is defined and path is string and path | trim | length > 0 %}
+      {% set ns.records = ns.records + [{'path': path, 'role': 'generated-etcd',
+         'shared_ca': (pg_cluster_collision_shared_ca_paths | default([]) | select('equalto', path | trim) | list | length > 0)}] %}
+      {% endif %}{% endfor %}
+      {% for path in pg_cluster_patroni_pki_destinations | default([]) %}
+      {% if path is defined and path is string and path | trim | length > 0 %}
+      {% set ns.records = ns.records + [{'path': path, 'role': 'generated-patroni',
+         'shared_ca': (pg_cluster_collision_shared_ca_paths | default([]) | select('equalto', path | trim) | list | length > 0)}] %}
+      {% endif %}{% endfor %}{{ ns.records }}
+- name: "Publish raw cluster PKI collision paths"
+  ansible.builtin.set_fact:
+    pg_cluster_collision_shared_ca_paths: "{{ pg_cluster_collision_shared_ca_paths | map('trim') | list }}"
+    pg_cluster_collision_generated_occurrences: "{{ pg_cluster_collision_generated_occurrences | from_yaml }}"
+
+- name: "Select non-generated certificate collision occurrences"
+  ansible.builtin.set_fact:
+    pg_cluster_collision_certificate_paths: >-
+      {% set generated = pg_cluster_generated_pki_destinations | default([]) | list %}
+      {% set shared_ca = pg_cluster_collision_shared_ca_paths | default([]) | list %}
+      {% set candidates =
+        ([pg_cluster_etcd_tls_effective.get('client', {}).get('cert_file'),
+          pg_cluster_etcd_tls_effective.get('client', {}).get('key_file'),
+          pg_cluster_etcd_tls_effective.get('peer', {}).get('cert_file'),
+          pg_cluster_etcd_tls_effective.get('peer', {}).get('key_file')]
+         if (pg_cluster_etcd_tls.enabled | default(false) | bool or
+             pg_cluster_etcd_tls.auto_generate | default(false) | bool) else [])
+        + ([pg_cluster_patroni_restapi_effective.get('certfile'),
+            pg_cluster_patroni_restapi_effective.get('keyfile')]
+           if pg_cluster_patroni_restapi_tls_enabled | bool else []) %}
+      {% set ns = namespace(paths=[]) %}
+      {% for path in candidates %}
+      {% if path is defined and path is string and path | trim | length > 0
+            and (path not in generated or path in shared_ca) %}
+      {% set ns.paths = ns.paths + [path] %}
+      {% endif %}{% endfor %}{{ ns.paths | unique | list }}
+
+- name: "Convert certificate collision occurrences to a native list"
+  ansible.builtin.set_fact:
+    pg_cluster_collision_certificate_paths: "{{ pg_cluster_collision_certificate_paths | from_yaml }}"
+
+- name: "Build complete cluster PKI collision occurrence model"
+  ansible.builtin.set_fact:
+    pg_cluster_collision_occurrences: >-
+      {% set ns = namespace(records=[]) %}
+      {% for path in pg_cluster_collision_shared_ca_paths %}
+      {% set ns.records = ns.records + [{'path': path, 'role': 'shared-ca', 'shared_ca': true}] %}
+      {% endfor %}
+      {% for record in pg_cluster_collision_generated_occurrences %}
+      {% set ns.records = ns.records + [record] %}
+      {% endfor %}
+      {% for path in pg_cluster_collision_certificate_paths %}
+      {% set ns.records = ns.records + [{'path': path, 'role': 'certificate', 'shared_ca': false}] %}
+      {% endfor %}
+      {% for path in pg_cluster_collision_ca_paths %}
+      {% set ns.records = ns.records + [{'path': path, 'role': 'seed-artifact', 'shared_ca': false}] %}
+      {% endfor %}
+      {% for path in pg_cluster_collision_registry_paths %}
+      {% set ns.records = ns.records + [{'path': path, 'role': 'registry', 'shared_ca': false}] %}
+      {% endfor %}
+      {% for path in pg_cluster_collision_lock_paths %}
+      {% set ns.records = ns.records + [{'path': path, 'role': 'lock', 'shared_ca': false}] %}
+      {% endfor %}
+      {% for path in pg_cluster_collision_metadata_paths %}
+      {% set ns.records = ns.records + [{'path': path, 'role': 'metadata', 'shared_ca': false}] %}
+      {% endfor %}
+      {% for path in pg_cluster_collision_managed_paths %}
+      {% set ns.records = ns.records + [{'path': path, 'role': 'managed', 'shared_ca': false}] %}
+      {% endfor %}{{ ns.records }}
+
+- name: "Convert complete cluster PKI collision occurrence model"
+  ansible.builtin.set_fact:
+    pg_cluster_collision_occurrences: "{{ pg_cluster_collision_occurrences | from_yaml }}"
+
+- name: "Publish raw cluster PKI collision paths"
+  ansible.builtin.set_fact:
+    pg_cluster_collision_paths_raw: "{{ pg_cluster_collision_occurrences | map(attribute='path') | list }}"
+
+- name: "Derive unintended cluster PKI collision evidence"
+  ansible.builtin.set_fact:
+    pg_cluster_collision_unintended_duplicates: >-
+      {% set ns = namespace(paths=[]) %}
+      {% for path in pg_cluster_collision_occurrences | map(attribute='path') | unique %}
+      {% set occurrences = pg_cluster_collision_occurrences | selectattr('path', 'equalto', path) | list %}
+       {% if occurrences | length > 1 and
+             (pg_cluster_collision_shared_ca_paths | select('equalto', path) | list | length == 0
+              or occurrences | selectattr('role', 'equalto', 'certificate') | list | length > 0) %}
+       {% set ns.paths = ns.paths + [path] %}
+       {% endif %}{% endfor %}{{ ns.paths }}
+
+- name: "Convert unintended cluster PKI collision evidence to a native list"
+  ansible.builtin.set_fact:
+    pg_cluster_collision_unintended_duplicates: "{{ pg_cluster_collision_unintended_duplicates | from_yaml }}"
+
+- name: "Rejecting pairwise cluster PKI path collisions"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_collision_unintended_duplicates | length == 0
+    fail_msg: >-
+      Cluster generated, CA, registry, lock, metadata, managed, and seed paths
+      must be pairwise distinct after canonical normalization; only explicitly
+      shared CA destinations may occur more than once
+
+- name: "Rejecting empty or relative cluster certificate paths"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_preflight_path is string
+      - pg_cluster_preflight_path | length > 0
+      - pg_cluster_preflight_path is match('^/')
+    fail_msg: "Every cluster certificate destination, artifact, and ancestor must be a non-empty absolute path"
+  loop: "{{ pg_cluster_preflight_paths }}"
+  loop_control:
+    loop_var: pg_cluster_preflight_path
+
+- name: "Collecting all cluster PKI path ancestors"
+  ansible.builtin.set_fact:
+    pg_cluster_preflight_paths: >-
+      {% set ns = namespace(paths=['/']) %}
+      {% for path in pg_cluster_preflight_paths %}
+      {% for index in range(1, path.split('/') | length) %}
+      {% set value = '/' ~ (path.split('/')[1:index + 1] | join('/')) %}
+      {% if value not in ns.paths %}{% set ns.paths = ns.paths + [value] %}{% endif %}
+      {% endfor %}{% endfor %}{{ ns.paths }}
+
+- name: "Collecting seed-host PKI path ancestors"
+  ansible.builtin.set_fact:
+    pg_cluster_seed_preflight_paths: >-
+      {% set ns = namespace(paths=['/']) %}
+      {% for path in pg_cluster_seed_preflight_paths %}
+      {% for index in range(1, path.split('/') | length) %}
+      {% set value = '/' ~ (path.split('/')[1:index + 1] | join('/')) %}
+      {% if value not in ns.paths %}{% set ns.paths = ns.paths + [value] %}{% endif %}
+      {% endfor %}{% endfor %}{{ ns.paths }}
+
+- name: "Convert cluster PKI ancestor paths to native lists"
+  ansible.builtin.set_fact:
+    pg_cluster_preflight_paths: "{{ pg_cluster_preflight_paths | from_yaml }}"
+    pg_cluster_seed_preflight_paths: "{{ pg_cluster_seed_preflight_paths | from_yaml }}"
+
+- name: "Preserving local and seed-host cluster PKI path provenance"
+  ansible.builtin.set_fact:
+    # The same path can resolve differently on the two hosts.  Inspect every
+    # common ancestor independently rather than treating equal path strings as
+    # evidence that one host's result applies to the other.
+    pg_cluster_local_preflight_paths: "{{ pg_cluster_preflight_paths }}"
+
+- name: "Defining cluster PKI preflight tool paths"
+  ansible.builtin.set_fact:
+    pg_cluster_preflight_tool_paths:
+      stat: "/usr/bin/stat"
+      namei: "/usr/bin/namei"
+      getfacl: "/usr/bin/getfacl"
+      setfacl: "/usr/bin/setfacl"
+      openssl: "/usr/bin/openssl"
+      flock: "/usr/bin/flock"
+      install: "/usr/bin/install"
+
+- name: "Checking cluster PKI preflight tools"
+  ansible.builtin.stat:
+    path: "{{ pg_cluster_preflight_tool_record.value }}"
+    follow: false
+  loop: "{{ pg_cluster_preflight_tool_paths | dict2items }}"
+  loop_control:
+    loop_var: pg_cluster_preflight_tool_record
+  register: pg_cluster_preflight_tool_stats
+
+- name: "Requiring cluster PKI preflight tools"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_preflight_tool_result.pg_cluster_preflight_tool_record is mapping
+      - pg_cluster_preflight_tool_result.pg_cluster_preflight_tool_record.value is string
+      - pg_cluster_preflight_tool_result.pg_cluster_preflight_tool_record.value | length > 0
+      - pg_cluster_preflight_tool_result.stat | default({}) is mapping
+      - pg_cluster_preflight_tool_result.stat.exists | default(false)
+      - pg_cluster_preflight_tool_result.stat.isreg | default(false)
+      - pg_cluster_preflight_tool_result.stat.executable | default(false)
+    fail_msg: >-
+        Required cluster PKI preflight tool {{ pg_cluster_preflight_tool_result.pg_cluster_preflight_tool_record.key | default('unknown') }}
+        ({{ pg_cluster_preflight_tool_result.pg_cluster_preflight_tool_record.value | default('missing') }}) is missing or not executable;
+        install the package providing it and retry.
+  loop: "{{ pg_cluster_preflight_tool_stats.results }}"
+  loop_control:
+    loop_var: pg_cluster_preflight_tool_result
+
+- name: "Checking seed-host cluster PKI preflight tools"
+  ansible.builtin.stat:
+    path: "{{ pg_cluster_seed_preflight_tool_record.value }}"
+    follow: false
+  loop: "{{ pg_cluster_preflight_tool_paths | dict2items }}"
+  loop_control:
+    loop_var: pg_cluster_seed_preflight_tool_record
+  register: pg_cluster_seed_preflight_tool_stats
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+
+- name: "Requiring seed-host cluster PKI preflight tools"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_seed_preflight_tool_result.pg_cluster_seed_preflight_tool_record is mapping
+      - pg_cluster_seed_preflight_tool_result.pg_cluster_seed_preflight_tool_record.value is string
+      - pg_cluster_seed_preflight_tool_result.pg_cluster_seed_preflight_tool_record.value | length > 0
+      - pg_cluster_seed_preflight_tool_result.stat | default({}) is mapping
+      - pg_cluster_seed_preflight_tool_result.stat.exists | default(false)
+      - pg_cluster_seed_preflight_tool_result.stat.isreg | default(false)
+      - pg_cluster_seed_preflight_tool_result.stat.executable | default(false)
+    fail_msg: >-
+        Required cluster PKI preflight tool {{ pg_cluster_seed_preflight_tool_result.pg_cluster_seed_preflight_tool_record.key | default('unknown') }}
+        ({{ pg_cluster_seed_preflight_tool_result.pg_cluster_seed_preflight_tool_record.value | default('missing') }}) is missing or not executable
+        on {{ pg_cluster_certificate_seed_host }}; install the package providing it
+        and retry.
+  loop: "{{ pg_cluster_seed_preflight_tool_stats.results }}"
+  loop_control:
+    loop_var: pg_cluster_seed_preflight_tool_result
+
+- name: "Inspecting every seed, local, generated, and external cluster path"
+  ansible.builtin.stat:
+    path: "{{ pg_cluster_preflight_path }}"
+    follow: false
+  loop: "{{ pg_cluster_local_preflight_paths }}"
+  loop_control:
+    loop_var: pg_cluster_preflight_path
+  register: pg_cluster_preflight_stats
+  become: true
+  become_user: "root"
+  delegate_to: "{{ pg_cluster_local_preflight_host }}"
+
+- name: "Inspecting seed-host cluster PKI paths"
+  ansible.builtin.stat:
+    path: "{{ pg_cluster_seed_preflight_path }}"
+    follow: false
+  loop: "{{ pg_cluster_seed_preflight_paths }}"
+  loop_control:
+    loop_var: pg_cluster_seed_preflight_path
+  register: pg_cluster_seed_preflight_stats
+  become: true
+  become_user: "root"
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+
+- name: "Checking every cluster PKI path component"
+  ansible.builtin.command:
+    argv: ["{{ pg_cluster_preflight_tool_paths.namei }}", "-mo", "{{ pg_cluster_preflight_path }}"]
+  loop: "{{ pg_cluster_local_preflight_paths }}"
+  loop_control:
+    loop_var: pg_cluster_preflight_path
+  register: pg_cluster_preflight_namei
+  changed_when: false
+  failed_when: false
+  become: true
+  become_user: "root"
+  delegate_to: "{{ pg_cluster_local_preflight_host }}"
+
+- name: "Checking every seed-host cluster PKI path component"
+  ansible.builtin.command:
+    argv: ["{{ pg_cluster_preflight_tool_paths.namei }}", "-mo", "{{ pg_cluster_seed_preflight_path }}"]
+  loop: "{{ pg_cluster_seed_preflight_paths }}"
+  loop_control:
+    loop_var: pg_cluster_seed_preflight_path
+  register: pg_cluster_seed_preflight_namei
+  changed_when: false
+  failed_when: false
+  become: true
+  become_user: "root"
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+
+- name: "Rejecting unknown, inaccessible, or symlinked cluster PKI paths"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_preflight_namei_result.failed | default(false) | bool is false
+      - >-
+          pg_cluster_preflight_namei_result.rc | default(-1) == 0 or
+           (pg_cluster_preflight_namei_result.rc | default(-1) == 1 and
+           (
+           (pg_cluster_preflight_namei_result.pg_cluster_preflight_path == pg_cluster_certificate_seed_directory or
+            pg_cluster_preflight_namei_result.pg_cluster_preflight_path | dirname == pg_cluster_certificate_seed_directory) and
+           (pg_cluster_preflight_stats.results |
+            selectattr('pg_cluster_preflight_path', 'equalto', pg_cluster_preflight_namei_result.pg_cluster_preflight_path | dirname | dirname) |
+            list | length == 1) and
+           (((pg_cluster_preflight_stats.results |
+             selectattr('pg_cluster_preflight_path', 'equalto', pg_cluster_preflight_namei_result.pg_cluster_preflight_path | dirname | dirname) |
+             first).failed | default(false) | bool) is false) and
+           (((pg_cluster_preflight_stats.results |
+             selectattr('pg_cluster_preflight_path', 'equalto', pg_cluster_preflight_namei_result.pg_cluster_preflight_path | dirname | dirname) |
+             first).stat.isdir | default(false) | bool) and
+            not ((pg_cluster_preflight_stats.results |
+             selectattr('pg_cluster_preflight_path', 'equalto', pg_cluster_preflight_namei_result.pg_cluster_preflight_path | dirname | dirname) |
+             first).stat.islnk | default(false) | bool))
+           ) or
+           (
+           (pg_cluster_preflight_stats.results |
+           selectattr('pg_cluster_preflight_path', 'equalto', pg_cluster_preflight_namei_result.pg_cluster_preflight_path) |
+           list | length == 1) and
+          (((pg_cluster_preflight_stats.results |
+            selectattr('pg_cluster_preflight_path', 'equalto', pg_cluster_preflight_namei_result.pg_cluster_preflight_path) |
+            first).failed | default(false) | bool) is false) and
+          (((pg_cluster_preflight_stats.results |
+             selectattr('pg_cluster_preflight_path', 'equalto', pg_cluster_preflight_namei_result.pg_cluster_preflight_path) |
+            first).stat.exists is defined) and
+           ((pg_cluster_preflight_stats.results |
+            selectattr('pg_cluster_preflight_path', 'equalto', pg_cluster_preflight_namei_result.pg_cluster_preflight_path) |
+            first).stat.exists | bool) is false) and
+           ((pg_cluster_preflight_stats.results |
+            selectattr('pg_cluster_preflight_path', 'equalto', pg_cluster_preflight_namei_result.pg_cluster_preflight_path | dirname) |
+            list | length) == 1) and
+           (((pg_cluster_preflight_stats.results |
+            selectattr('pg_cluster_preflight_path', 'equalto', pg_cluster_preflight_namei_result.pg_cluster_preflight_path | dirname) |
+            first).failed | default(false) | bool) is false) and
+           (((pg_cluster_preflight_stats.results |
+            selectattr('pg_cluster_preflight_path', 'equalto', pg_cluster_preflight_namei_result.pg_cluster_preflight_path | dirname) |
+            first).stat.exists | default(false) | bool) and
+            ((pg_cluster_preflight_stats.results |
+            selectattr('pg_cluster_preflight_path', 'equalto', pg_cluster_preflight_namei_result.pg_cluster_preflight_path | dirname) |
+            first).stat.isdir | default(false) | bool) and
+             not ((pg_cluster_preflight_stats.results |
+             selectattr('pg_cluster_preflight_path', 'equalto', pg_cluster_preflight_namei_result.pg_cluster_preflight_path | dirname) |
+             first).stat.islnk | default(false) | bool)))
+           )
+      - (pg_cluster_preflight_namei_result.stdout | default('')) is not search(' -> ')
+      - (pg_cluster_preflight_namei_result.stderr | default('') | trim) == ''
+      - (pg_cluster_preflight_namei_result.stderr | default('')) is not search('ENOTDIR')
+    fail_msg: "Cluster seed, generated, external, metadata, and ancestor paths must be provable safe"
+  loop: "{{ pg_cluster_preflight_namei.results }}"
+  loop_control:
+    loop_var: pg_cluster_preflight_namei_result
+  vars:
+    pg_cluster_preflight_namei_path: >-
+       {{ pg_cluster_preflight_namei_result.pg_cluster_preflight_path }}
+
+- name: "Rejecting unsafe or uninspectable seed-host PKI paths"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_seed_preflight_namei_result.failed | default(false) | bool is false
+      - >-
+          pg_cluster_seed_preflight_namei_result.rc | default(-1) == 0 or
+           (pg_cluster_seed_preflight_namei_result.rc | default(-1) == 1 and
+           (
+           (pg_cluster_seed_preflight_namei_result.pg_cluster_seed_preflight_path == pg_cluster_certificate_seed_directory or
+            pg_cluster_seed_preflight_namei_result.pg_cluster_seed_preflight_path | dirname == pg_cluster_certificate_seed_directory) and
+           (pg_cluster_seed_preflight_stats.results |
+              selectattr('pg_cluster_seed_preflight_path', 'equalto',
+              pg_cluster_seed_preflight_namei_result.pg_cluster_seed_preflight_path | dirname | dirname) |
+            list | length == 1) and
+           (((pg_cluster_seed_preflight_stats.results |
+              selectattr('pg_cluster_seed_preflight_path', 'equalto',
+              pg_cluster_seed_preflight_namei_result.pg_cluster_seed_preflight_path | dirname | dirname) |
+             first).failed | default(false) | bool) is false) and
+           (((pg_cluster_seed_preflight_stats.results |
+              selectattr('pg_cluster_seed_preflight_path', 'equalto',
+              pg_cluster_seed_preflight_namei_result.pg_cluster_seed_preflight_path | dirname | dirname) |
+             first).stat.isdir | default(false) | bool) and
+            not ((pg_cluster_seed_preflight_stats.results |
+              selectattr('pg_cluster_seed_preflight_path', 'equalto',
+              pg_cluster_seed_preflight_namei_result.pg_cluster_seed_preflight_path | dirname | dirname) |
+             first).stat.islnk | default(false) | bool))
+           ) or
+           (
+           (pg_cluster_seed_preflight_stats.results |
+           selectattr('pg_cluster_seed_preflight_path', 'equalto', pg_cluster_seed_preflight_namei_result.pg_cluster_seed_preflight_path) |
+           list | length == 1) and
+          (((pg_cluster_seed_preflight_stats.results |
+            selectattr('pg_cluster_seed_preflight_path', 'equalto', pg_cluster_seed_preflight_namei_result.pg_cluster_seed_preflight_path) |
+            first).failed | default(false) | bool) is false) and
+          (((pg_cluster_seed_preflight_stats.results |
+             selectattr('pg_cluster_seed_preflight_path', 'equalto', pg_cluster_seed_preflight_namei_result.pg_cluster_seed_preflight_path) |
+            first).stat.exists is defined) and
+           ((pg_cluster_seed_preflight_stats.results |
+            selectattr('pg_cluster_seed_preflight_path', 'equalto', pg_cluster_seed_preflight_namei_result.pg_cluster_seed_preflight_path) |
+            first).stat.exists | bool) is false) and
+           ((pg_cluster_seed_preflight_stats.results |
+            selectattr('pg_cluster_seed_preflight_path', 'equalto', pg_cluster_seed_preflight_namei_result.pg_cluster_seed_preflight_path | dirname) |
+            list | length) == 1) and
+           (((pg_cluster_seed_preflight_stats.results |
+            selectattr('pg_cluster_seed_preflight_path', 'equalto', pg_cluster_seed_preflight_namei_result.pg_cluster_seed_preflight_path | dirname) |
+            first).failed | default(false) | bool) is false) and
+           (((pg_cluster_seed_preflight_stats.results |
+            selectattr('pg_cluster_seed_preflight_path', 'equalto', pg_cluster_seed_preflight_namei_result.pg_cluster_seed_preflight_path | dirname) |
+            first).stat.exists | default(false) | bool) and
+            ((pg_cluster_seed_preflight_stats.results |
+            selectattr('pg_cluster_seed_preflight_path', 'equalto', pg_cluster_seed_preflight_namei_result.pg_cluster_seed_preflight_path | dirname) |
+            first).stat.isdir | default(false) | bool) and
+             not ((pg_cluster_seed_preflight_stats.results |
+             selectattr('pg_cluster_seed_preflight_path', 'equalto', pg_cluster_seed_preflight_namei_result.pg_cluster_seed_preflight_path | dirname) |
+             first).stat.islnk | default(false) | bool)))
+           )
+      - (pg_cluster_seed_preflight_namei_result.stdout | default('')) is not search(' -> ')
+      - (pg_cluster_seed_preflight_namei_result.stderr | default('') | trim) == ''
+      - (pg_cluster_seed_preflight_namei_result.stderr | default('')) is not search('ENOTDIR')
+    fail_msg: "Cluster seed paths and ancestors must be provable safe on the seed host"
+  loop: "{{ pg_cluster_seed_preflight_namei.results }}"
+  loop_control:
+    loop_var: pg_cluster_seed_preflight_namei_result
+  vars:
+    pg_cluster_seed_preflight_namei_path: >-
+       {{ pg_cluster_seed_preflight_namei_result.pg_cluster_seed_preflight_path }}
+
+- name: "Inspecting cluster PKI ACLs before any mutation"
+  ansible.builtin.command:
+    argv:
+      - "{{ pg_cluster_preflight_tool_paths.getfacl }}"
+      - "--absolute-names"
+      - "--"
+      - "{{ pg_cluster_preflight_acl_target.pg_cluster_preflight_path | default('') }}"
+  loop: "{{ pg_cluster_preflight_stats.results }}"
+  loop_control:
+    loop_var: pg_cluster_preflight_acl_target
+  when: pg_cluster_preflight_acl_target.stat.exists | default(false)
+  register: pg_cluster_preflight_acls
+  changed_when: false
+  failed_when: false
+  become: true
+  become_user: "root"
+  delegate_to: "{{ pg_cluster_local_preflight_host }}"
+
+- name: "Inspecting seed-host cluster PKI ACLs before any mutation"
+  ansible.builtin.command:
+    argv:
+      - "{{ pg_cluster_preflight_tool_paths.getfacl }}"
+      - "--absolute-names"
+      - "--"
+      - "{{ pg_cluster_seed_preflight_acl_target.pg_cluster_seed_preflight_path | default('') }}"
+  loop: "{{ pg_cluster_seed_preflight_stats.results }}"
+  loop_control:
+    loop_var: pg_cluster_seed_preflight_acl_target
+  when: pg_cluster_seed_preflight_acl_target.stat.exists | default(false)
+  register: pg_cluster_seed_preflight_acls
+  changed_when: false
+  failed_when: false
+  become: true
+  become_user: "root"
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+
+- name: "Rejecting unsafe cluster PKI metadata and ACLs"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_preflight_acl_result.skipped | default(false) or pg_cluster_preflight_acl_result.rc | default(-1) == 0
+      - (pg_cluster_preflight_acl_result.stdout | default('')) is not search('^default:', multiline=true)
+      - (pg_cluster_preflight_acl_result.stdout | default('')) is not search('^user:[^:]+:', multiline=true)
+      - (pg_cluster_preflight_acl_result.stdout | default('')) is not search('^group:[^:]+:', multiline=true)
+  loop: "{{ pg_cluster_preflight_acls.results | default([]) }}"
+  loop_control:
+    loop_var: pg_cluster_preflight_acl_result
+
+- name: "Rejecting unsafe seed-host cluster PKI metadata and ACLs"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_seed_preflight_acl_result.skipped | default(false) or pg_cluster_seed_preflight_acl_result.rc | default(-1) == 0
+      - (pg_cluster_seed_preflight_acl_result.stdout | default('')) is not search('^default:', multiline=true)
+      - (pg_cluster_seed_preflight_acl_result.stdout | default('')) is not search('^user:[^:]+:', multiline=true)
+      - (pg_cluster_seed_preflight_acl_result.stdout | default('')) is not search('^group:[^:]+:', multiline=true)
+    fail_msg: "Cluster seed paths must have safe metadata and ACLs on the seed host"
+  loop: "{{ pg_cluster_seed_preflight_acls.results | default([]) }}"
+  loop_control:
+    loop_var: pg_cluster_seed_preflight_acl_result
+
+- name: "Checking cluster PKI seed directory before orphan scan"
+  ansible.builtin.stat:
+    path: "{{ pg_cluster_certificate_seed_directory }}"
+    follow: false
+  register: pg_cluster_certificate_seed_directory_stat
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  become: true
+  become_user: "root"
+
+- name: "Rejecting uninspectable cluster PKI seed directory"
+  ansible.builtin.assert:
+    that:
+      - pg_cluster_certificate_seed_directory_stat.failed | default(false) | bool is false
+      - pg_cluster_certificate_seed_directory_stat.stat | default({}) is mapping
+      - pg_cluster_certificate_seed_directory_stat.stat.exists is defined
+      - not pg_cluster_certificate_seed_directory_stat.stat.exists or
+        (pg_cluster_certificate_seed_directory_stat.stat.isdir | default(false) and
+         not pg_cluster_certificate_seed_directory_stat.stat.islnk | default(false))
+    fail_msg: "The cluster PKI seed directory could not be inspected safely"
+
+- name: "Checking for orphaned cluster PKI transaction artifacts"
+  ansible.builtin.find:
+    paths: "{{ pg_cluster_certificate_seed_directory }}"
+    recurse: true
+    hidden: true
+    file_type: any
+    patterns: [".stage.*", ".*.stage.*", "manifest", "journal", "*.new", "*.backup*", "backup.*"]
+  register: pg_cluster_orphan_artifacts
+  delegate_to: "{{ pg_cluster_certificate_seed_host }}"
+  become: true
+  become_user: "root"
+  when: pg_cluster_certificate_seed_directory_stat.stat.exists | default(false)
+
+- name: "Rejecting orphaned cluster PKI transaction artifacts"
+  ansible.builtin.assert:
+    that:
+      - not (pg_cluster_certificate_seed_directory_stat.stat.exists | default(false) | bool) or
+        (pg_cluster_orphan_artifacts.failed | default(false) | bool is false and
+         pg_cluster_orphan_artifacts.files | default([]) | length == 0)
+    fail_msg: "Orphaned cluster PKI transaction artifacts require operator recovery"
+
+- name: "PREFLIGHT COMPLETE - all cluster PKI paths are safe"
+  ansible.builtin.assert:
+    that: true

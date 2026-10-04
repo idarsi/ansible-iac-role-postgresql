@@ -1,0 +1,102 @@
+---
+- name: "Checking managed etcd member list"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_etcd_members is defined
+      - pg_validation_etcd_members | type_debug == 'list'
+    fail_msg: "Patroni dcs.etcd.members must be a list of mappings when present"
+
+- name: "Checking managed etcd member records"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_etcd_member | type_debug == 'dict'
+    fail_msg: "Each managed etcd member must be a mapping; malformed members cannot be validated"
+  loop: "{{ pg_validation_etcd_members }}"
+  loop_control:
+    loop_var: pg_validation_etcd_member
+
+- name: "Checking managed etcd member names are present and strings"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_etcd_member.name is defined
+      - pg_validation_etcd_member.name is string
+    fail_msg: "Each managed etcd member must define name as a string"
+  loop: "{{ pg_validation_etcd_members }}"
+  loop_control:
+    loop_var: pg_validation_etcd_member
+
+- name: "Checking managed etcd member hosts are present and strings"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_etcd_member.host is defined
+      - pg_validation_etcd_member.host is string
+    fail_msg: "Each managed etcd member must define host as a string"
+  loop: "{{ pg_validation_etcd_members }}"
+  loop_control:
+    loop_var: pg_validation_etcd_member
+
+- name: "Checking managed etcd peer URLs are present and strings"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_etcd_member.peer_url is defined
+      - pg_validation_etcd_member.peer_url is string
+    fail_msg: "Each managed etcd member must define peer_url as a string"
+  loop: "{{ pg_validation_etcd_members }}"
+  loop_control:
+    loop_var: pg_validation_etcd_member
+
+- name: "Checking managed etcd client URLs are present and strings"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_etcd_member.client_url is defined
+      - pg_validation_etcd_member.client_url is string
+    fail_msg: "Each managed etcd member must define client_url as a string"
+  loop: "{{ pg_validation_etcd_members }}"
+  loop_control:
+    loop_var: pg_validation_etcd_member
+
+- name: "Checking managed etcd member field formats and safety"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_etcd_member.name is match('^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$')
+      - pg_validation_etcd_member.host | length > 0
+      - >-
+        pg_validation_etcd_member.host is ansible.utils.ip_address
+        or (
+          pg_validation_etcd_member.host is match('^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$')
+          and pg_validation_etcd_member.host is not match('^[0-9.]+$')
+        )
+      - pg_validation_etcd_member.peer_url | length > 0
+      - pg_validation_etcd_member.peer_url is match('^https://')
+      - pg_validation_etcd_member.client_url | length > 0
+      - pg_validation_etcd_member.client_url is match('^https://')
+      - hostvars[pg_validation_etcd_member.host] is defined
+    fail_msg: >-
+      Each managed etcd member must define a safe identifier, an inventory host,
+      and complete HTTPS host:port peer and client URLs (ports 1-65535; no paths
+      or escapes)
+  loop: "{{ pg_validation_etcd_members }}"
+  loop_control:
+    loop_var: pg_validation_etcd_member
+
+- name: "Checking managed etcd member endpoint syntax"
+  ansible.builtin.include_tasks: normalize_etcd_member.yml
+  loop: "{{ pg_validation_etcd_members }}"
+  loop_control:
+    loop_var: pg_validation_etcd_member
+
+- name: "Checking managed etcd member names are unique"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (pg_validation_etcd_members | map(attribute='name') | list | unique | length)
+        == (pg_validation_etcd_members | length)
+    fail_msg: "Managed etcd member names must be unique"
+
+- name: "Checking managed etcd member hosts are unique"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (pg_validation_etcd_members | map(attribute='host') | list | unique | length)
+        == (pg_validation_etcd_members | length)
+    fail_msg: "Managed etcd member hosts must be unique"

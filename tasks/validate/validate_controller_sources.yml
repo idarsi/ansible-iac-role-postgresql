@@ -1,0 +1,306 @@
+---
+###############################################################################
+# Validate source files on the Ansible controller.  These checks deliberately
+# do not inspect the managed-host destination.
+###############################################################################
+
+- name: "Collecting controller-side PostgreSQL CA sources"
+  ansible.builtin.set_fact:
+    pg_validation_controller_ca_sources: []
+
+- name: "Collecting instance client CA sources"
+  ansible.builtin.set_fact:
+    pg_validation_controller_ca_sources: >-
+      {{ (pg_validation_controller_ca_sources +
+          [pg_validation_controller_instance.get('client_certificate_authority_src')])
+         | to_json | from_json }}
+  loop: >-
+    {{ (pg_versions | default([]))
+       | selectattr('instances', 'defined')
+       | map(attribute='instances') | flatten
+       | selectattr('client_certificate_authority_src', 'defined') | list }}
+  loop_control:
+    loop_var: pg_validation_controller_instance
+  when: pg_validation_controller_instance.get('client_certificate_authority_src') is not none
+
+- name: "Collecting replication CA sources"
+  ansible.builtin.set_fact:
+    pg_validation_controller_ca_sources: >-
+      {{ (pg_validation_controller_ca_sources +
+          [pg_validation_controller_instance.get('replication', {}).get('sslrootcert_src')])
+         | to_json | from_json }}
+  loop: >-
+    {{ (pg_versions | default([]))
+       | selectattr('instances', 'defined')
+       | map(attribute='instances') | flatten | list }}
+  loop_control:
+    loop_var: pg_validation_controller_instance
+  when:
+    - pg_validation_controller_instance.get('replication', {}) is mapping
+    - pg_validation_controller_instance.get('replication', {}).get('sslrootcert_src') is not none
+
+- name: "Removing duplicate controller-side PostgreSQL CA sources"
+  ansible.builtin.set_fact:
+    pg_validation_controller_ca_sources: "{{ pg_validation_controller_ca_sources | unique | list | to_json | from_json }}"
+
+- name: "Validate controller-side PostgreSQL CA source list type"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_controller_ca_sources | type_debug == 'list'
+    fail_msg: "Controller-side PostgreSQL CA sources must remain a native list"
+
+- name: "Validate controller-side PostgreSQL CA source value types"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_controller_ca_source is string
+    fail_msg: >-
+      Every controller-side PostgreSQL CA source must be a string; refusing to
+      inspect non-string controller input.
+  loop: "{{ pg_validation_controller_ca_sources }}"
+  loop_control:
+    loop_var: pg_validation_controller_ca_source
+
+- name: "Validate controller-side PostgreSQL CA source path safety"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_controller_ca_source is match('^/[^/]')
+      - pg_validation_controller_ca_source | length > 1
+      - pg_validation_controller_ca_source is not search('/$')
+      - pg_validation_controller_ca_source is not search('//')
+      - pg_validation_controller_ca_source is not search('(^|/)\\.{1,2}(/|$)')
+      - pg_validation_controller_ca_source is not search('\\\\')
+      - pg_validation_controller_ca_source is not search('[\\r\\n]')
+    fail_msg: >-
+      Controller-side PostgreSQL CA sources must be normalized absolute paths
+      without relative, traversal, or CWD-dependent components.
+  loop: "{{ pg_validation_controller_ca_sources }}"
+  loop_control:
+    loop_var: pg_validation_controller_ca_source
+
+- name: "Checking required controller CA inspection tools"
+  ansible.builtin.stat:
+    path: "{{ pg_validation_controller_ca_inspection_tool }}"
+    follow: false
+  loop:
+    - "/usr/bin/namei"
+    - "/usr/bin/getfacl"
+  loop_control:
+    loop_var: pg_validation_controller_ca_inspection_tool
+  delegate_to: localhost
+  become: false
+  register: pg_validation_controller_ca_inspection_tools
+  when: pg_validation_controller_ca_sources | length > 0
+
+- name: "Requiring controller CA inspection tools"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_controller_ca_tool_result.item is string
+      - pg_validation_controller_ca_tool_result.item | length > 0
+      - pg_validation_controller_ca_tool_result.stat | default({}) is mapping
+      - pg_validation_controller_ca_tool_result.stat.exists | default(false)
+      - pg_validation_controller_ca_tool_result.stat.isreg | default(false)
+      - not (pg_validation_controller_ca_tool_result.stat.islnk | default(false))
+      - pg_validation_controller_ca_tool_result.stat.executable | default(false)
+    fail_msg: >-
+      Controller CA source validation requires the executable '{{ pg_validation_controller_ca_tool_result.item | default('missing') }}'
+      on localhost. Provision namei and getfacl in the AWX, CI, or remote
+      execution environment; this role never installs controller packages or
+      changes PATH.
+  loop: "{{ pg_validation_controller_ca_inspection_tools.results | default([]) }}"
+  loop_control:
+    loop_var: pg_validation_controller_ca_tool_result
+  when: pg_validation_controller_ca_sources | length > 0
+
+- name: "Deriving controller-side PostgreSQL CA source ancestors"
+  ansible.builtin.set_fact:
+    pg_validation_controller_ca_source_ancestors_json: >-
+      {% set ns = namespace(paths=[]) %}
+      {% for path in pg_validation_controller_ca_sources %}
+      {% set components = path.split('/') %}
+      {% for index in range(1, components | length - 1) %}
+      {% set ancestor = '/' ~ (components[1:index + 1] | join('/')) %}
+      {% if ancestor not in ns.paths %}{% set ns.paths = ns.paths + [ancestor] %}{% endif %}
+      {% endfor %}
+      {% endfor %}{{ ns.paths | to_json }}
+
+- name: "Normalizing controller-side PostgreSQL CA source ancestors"
+  ansible.builtin.set_fact:
+    pg_validation_controller_ca_source_ancestors: "{{ pg_validation_controller_ca_source_ancestors_json | from_json }}"
+
+- name: "Validate controller-side PostgreSQL CA source ancestor list type"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_controller_ca_source_ancestors | type_debug == 'list'
+    fail_msg: "Controller-side PostgreSQL CA source ancestors must be a native list"
+
+- name: "Inspecting controller-side PostgreSQL CA source ancestors"
+  ansible.builtin.stat:
+    path: "{{ pg_validation_controller_ca_source_ancestor }}"
+    follow: false
+  loop: "{{ pg_validation_controller_ca_source_ancestors }}"
+  loop_control:
+    loop_var: pg_validation_controller_ca_source_ancestor
+  delegate_to: localhost
+  become: false
+  register: pg_validation_controller_ca_source_ancestor_stats
+
+- name: "Checking controller-side PostgreSQL CA sources before namei inspection"
+  ansible.builtin.stat:
+    path: "{{ pg_validation_controller_ca_source }}"
+    follow: false
+  loop: "{{ pg_validation_controller_ca_sources }}"
+  loop_control:
+    loop_var: pg_validation_controller_ca_source
+  delegate_to: localhost
+  become: false
+  register: pg_validation_controller_ca_source_namei_stats
+  when: pg_validation_controller_ca_sources | length > 0
+
+- name: "Inspecting controller-side PostgreSQL CA source ancestor components"
+  ansible.builtin.command:
+    argv: ["/usr/bin/namei", "-mo", "{{ pg_validation_controller_ca_source }}"]
+  loop: "{{ pg_validation_controller_ca_sources }}"
+  loop_control:
+    loop_var: pg_validation_controller_ca_source
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  failed_when: false
+  register: pg_validation_controller_ca_source_namei
+  when: pg_validation_controller_ca_sources | length > 0
+
+- name: "Inspecting controller-side PostgreSQL CA source ACLs"
+  ansible.builtin.command:
+    argv: ["/usr/bin/getfacl", "--absolute-names", "--", "{{ pg_validation_controller_ca_source_ancestor }}"]
+  loop: "{{ pg_validation_controller_ca_source_ancestors }}"
+  loop_control:
+    loop_var: pg_validation_controller_ca_source_ancestor
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  failed_when: false
+  register: pg_validation_controller_ca_source_ancestor_acls
+  when: pg_validation_controller_ca_sources | length > 0
+
+- name: "Inspecting final controller-side PostgreSQL CA source ACLs"
+  ansible.builtin.command:
+    argv: ["/usr/bin/getfacl", "--absolute-names", "--", "{{ pg_validation_controller_ca_source }}"]
+  loop: "{{ pg_validation_controller_ca_sources }}"
+  loop_control:
+    loop_var: pg_validation_controller_ca_source
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  failed_when: false
+  register: pg_validation_controller_ca_source_acls
+  when: pg_validation_controller_ca_sources | length > 0
+
+- name: "Checking PostgreSQL CA sources on the Ansible controller"
+  ansible.builtin.stat:
+    path: "{{ pg_validation_controller_ca_source }}"
+    follow: false
+  loop: "{{ pg_validation_controller_ca_sources }}"
+  loop_control:
+    loop_var: pg_validation_controller_ca_source
+  delegate_to: localhost
+  become: false
+  register: pg_validation_controller_ca_source_stats
+
+- name: "Rejecting unsafe controller-side PostgreSQL CA source components"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_controller_ca_source_namei_result.failed | default(false) | bool is false
+      - >-
+        pg_validation_controller_ca_source_namei_result.rc | default(-1) == 0 or
+        (pg_validation_controller_ca_source_namei_result.rc | default(-1) == 1 and
+        (pg_validation_controller_ca_source_namei_stats.results |
+         selectattr('item', 'equalto', pg_validation_controller_ca_source_namei_result.item) |
+         list | length == 1) and
+        (((pg_validation_controller_ca_source_namei_stats.results |
+           selectattr('item', 'equalto', pg_validation_controller_ca_source_namei_result.item) |
+           first).failed | default(false) | bool) is false) and
+        ((pg_validation_controller_ca_source_namei_stats.results |
+          selectattr('item', 'equalto', pg_validation_controller_ca_source_namei_result.item) |
+          first).stat.exists is defined) and
+        (((pg_validation_controller_ca_source_namei_stats.results |
+           selectattr('item', 'equalto', pg_validation_controller_ca_source_namei_result.item) |
+           first).stat.exists | bool) is false))
+      - (pg_validation_controller_ca_source_namei_result.stdout | default('')) is not search(' -> ')
+      - (pg_validation_controller_ca_source_namei_result.stderr | default('')) is not search('Permission denied')
+    fail_msg: >-
+      Every controller-side PostgreSQL CA source component must be inspectable and
+      non-symlinked; the role will not mutate controller files.
+  loop: "{{ pg_validation_controller_ca_source_namei.results | default([]) }}"
+  loop_control:
+    loop_var: pg_validation_controller_ca_source_namei_result
+
+- name: "Rejecting unsafe controller-side PostgreSQL CA source ancestors"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_controller_ca_source_ancestor_result.item is string
+      - pg_validation_controller_ca_source_ancestor_result.item | length > 1
+      - pg_validation_controller_ca_source_ancestor_result.stat | default({}) is mapping
+      - pg_validation_controller_ca_source_ancestor_result.stat.exists | default(false)
+      - pg_validation_controller_ca_source_ancestor_result.stat.isdir | default(false)
+      - not (pg_validation_controller_ca_source_ancestor_result.stat.islnk | default(false))
+      - pg_validation_controller_ca_source_ancestor_result.stat.uid | default(-1) == 0
+      - pg_validation_controller_ca_source_ancestor_result.stat.gid | default(-1) == 0
+      - (pg_validation_controller_ca_source_ancestor_result.stat.mode | default('0000')) is match('^0[0-7][0145][0145]$')
+    fail_msg: >-
+      Every controller-side PostgreSQL CA source ancestor must be an existing,
+      root-owned, non-symlink directory without group or other write access.
+  loop: "{{ pg_validation_controller_ca_source_ancestor_stats.results | default([]) }}"
+  loop_control:
+    loop_var: pg_validation_controller_ca_source_ancestor_result
+
+- name: "Rejecting unsafe ACLs on controller-side PostgreSQL CA source ancestors"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_controller_ca_source_ancestor_acl_result.rc | default(-1) == 0
+      - (pg_validation_controller_ca_source_ancestor_acl_result.stdout | default('')) is not search('^default:', multiline=true)
+      - (pg_validation_controller_ca_source_ancestor_acl_result.stdout | default('')) is not search('^user:[^:]+:', multiline=true)
+      - (pg_validation_controller_ca_source_ancestor_acl_result.stdout | default('')) is not search('^group:[^:]+:', multiline=true)
+      - (pg_validation_controller_ca_source_ancestor_acl_result.stdout | default('')) is not search('^group::[^-]*w', multiline=true)
+      - (pg_validation_controller_ca_source_ancestor_acl_result.stdout | default('')) is not search('^other::[^-]*w', multiline=true)
+    fail_msg: >-
+      Controller-side PostgreSQL CA source ancestors must have no named/default
+      ACLs and must not grant group or other write access.
+  loop: "{{ pg_validation_controller_ca_source_ancestor_acls.results | default([]) }}"
+  loop_control:
+    loop_var: pg_validation_controller_ca_source_ancestor_acl_result
+
+- name: "Rejecting unsafe final controller-side PostgreSQL CA source ACLs"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_controller_ca_source_acl_result.rc | default(-1) == 0
+      - (pg_validation_controller_ca_source_acl_result.stdout | default('')) is not search('^default:', multiline=true)
+      - (pg_validation_controller_ca_source_acl_result.stdout | default('')) is not search('^user:[^:]+:', multiline=true)
+      - (pg_validation_controller_ca_source_acl_result.stdout | default('')) is not search('^group:[^:]+:', multiline=true)
+      - (pg_validation_controller_ca_source_acl_result.stdout | default('')) is not search('^group::[^-]*w', multiline=true)
+      - (pg_validation_controller_ca_source_acl_result.stdout | default('')) is not search('^other::[^-]*w', multiline=true)
+    fail_msg: >-
+      Final controller-side PostgreSQL CA sources must have no named/default
+      ACLs and must not grant group or other write access.
+  loop: "{{ pg_validation_controller_ca_source_acls.results | default([]) }}"
+  loop_control:
+    loop_var: pg_validation_controller_ca_source_acl_result
+
+- name: "Validating PostgreSQL CA source files"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_controller_ca_source_result.item is string
+      - pg_validation_controller_ca_source_result.item | length > 0
+      - pg_validation_controller_ca_source_result.stat | default({}) is mapping
+      - pg_validation_controller_ca_source_result.stat.exists | default(false)
+      - pg_validation_controller_ca_source_result.stat.isreg | default(false)
+      - not (pg_validation_controller_ca_source_result.stat.islnk | default(false))
+      - pg_validation_controller_ca_source_result.stat.uid | default(-1) == 0
+      - pg_validation_controller_ca_source_result.stat.gid | default(-1) == 0
+      - (pg_validation_controller_ca_source_result.stat.mode | default('')) is match(pg_secure_source_mode_regex)
+    fail_msg: >-
+      PostgreSQL CA source '{{ pg_validation_controller_ca_source_result.item | default('missing') }}'
+      must be an existing, owner-readable, regular non-symlink file owned by
+      root with restrictive permissions
+  loop: "{{ pg_validation_controller_ca_source_stats.results | default([]) }}"
+  loop_control:
+    loop_var: pg_validation_controller_ca_source_result

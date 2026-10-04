@@ -44,7 +44,11 @@
         plpython_package: "postgresql18-plpython3"
   tasks:
     - name: "Checking PostgreSQL operating system user"
-      ansible.builtin.command: "getent passwd postgres"
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_facts['python']['executable'] }}"
+          - "-c"
+          - "import pwd; pwd.getpwnam('postgres')"
       register: pg_os_user_check
       changed_when: false
 
@@ -81,12 +85,35 @@
       loop: "{{ pg_molecule_versions }}"
       register: pg_service_checks
       changed_when: false
+      failed_when: false
 
     - name: "Checking PostgreSQL services are enabled"
       ansible.builtin.command: "systemctl is-enabled postgresql-{{ item.version }}-{{ item.instance }}.service"
       loop: "{{ pg_molecule_versions }}"
       register: pg_service_enabled_checks
       changed_when: false
+      failed_when: false
+
+    - name: "Emit PostgreSQL journal diagnostics for inactive or disabled services"
+      ansible.builtin.command: "journalctl -u postgresql-{{ item.0.item.version }}-{{ item.0.item.instance }}.service --no-pager -n 80"
+      loop: "{{ pg_service_checks.results | zip(pg_service_enabled_checks.results) | list }}"
+      when: item.0.rc != 0 or item.1.rc != 0
+      changed_when: false
+      failed_when: false
+
+    - name: "Require PostgreSQL services to be active"
+      ansible.builtin.assert:
+        that:
+          - pg_service_checks.results | map(attribute='rc') | list == ([0] * (pg_molecule_versions | length))
+          - pg_service_checks.results | map(attribute='stdout') | map('trim') | list == (["active"] * (pg_molecule_versions | length))
+        fail_msg: "One or more PostgreSQL services are not active"
+
+    - name: "Require PostgreSQL services to be enabled"
+      ansible.builtin.assert:
+        that:
+          - pg_service_enabled_checks.results | map(attribute='rc') | list == ([0] * (pg_molecule_versions | length))
+          - pg_service_enabled_checks.results | map(attribute='stdout') | map('trim') | list == (["enabled"] * (pg_molecule_versions | length))
+        fail_msg: "One or more PostgreSQL services are not enabled"
 
     - name: "Checking managed directories"
       ansible.builtin.stat:

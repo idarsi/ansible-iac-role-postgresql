@@ -1,0 +1,66 @@
+---
+# These cases deliberately distinguish omitted values from values that would
+# otherwise be supplied by replication_present task defaults.
+primary:
+  message: "Primary replication requires replication_user, replication_password, and allowed_standby_addresses"
+  cases:
+    - name: "missing replication_user"
+      record:
+        role: "primary"
+        replication_password: "secret"
+        allowed_standby_addresses: ["192.0.2.10/32"]
+    - name: "empty replication_user"
+      record:
+        role: "primary"
+        replication_user: ""
+        replication_password: "secret"
+        allowed_standby_addresses: ["192.0.2.10/32"]
+    - name: "missing replication_password"
+      record:
+        role: "primary"
+        replication_user: "replicator"
+        allowed_standby_addresses: ["192.0.2.10/32"]
+    - name: "empty replication_password"
+      record:
+        role: "primary"
+        replication_user: "replicator"
+        replication_password: ""
+        allowed_standby_addresses: ["192.0.2.10/32"]
+    - name: "missing allowed_standby_addresses"
+      record:
+        role: "primary"
+        replication_user: "replicator"
+        replication_password: "secret"
+    - name: "empty allowed_standby_addresses"
+      record:
+        role: "primary"
+        replication_user: "replicator"
+        replication_password: "secret"
+        allowed_standby_addresses: []
+    - name: "missing replication_user with invalid allow_broad_hba"
+      record:
+        role: "primary"
+        replication_password: "secret"
+        allowed_standby_addresses: ["192.0.2.10/32"]
+        allow_broad_hba: "true"
+standby:
+  message: "Standby replication requires primary_host, primary_port, replication_user, and replication_password"
+  cases:
+    - name: "missing primary_host"
+      record: {role: "standby", primary_port: 5432, replication_user: "replicator", replication_password: "secret"}
+    - name: "empty primary_host"
+      record: {role: "standby", primary_host: "", primary_port: 5432, replication_user: "replicator", replication_password: "secret"}
+    - name: "missing primary_port"
+      record: {role: "standby", primary_host: "primary.example.org", replication_user: "replicator", replication_password: "secret"}
+    - name: "empty primary_port"
+      record: {role: "standby", primary_host: "primary.example.org", primary_port: "", replication_user: "replicator", replication_password: "secret"}
+    - name: "missing replication_user"
+      record: {role: "standby", primary_host: "primary.example.org", primary_port: 5432, replication_password: "secret"}
+    - name: "empty replication_user"
+      record: {role: "standby", primary_host: "primary.example.org", primary_port: 5432, replication_user: "", replication_password: "secret"}
+    - name: "missing replication_password"
+      record: {role: "standby", primary_host: "primary.example.org", primary_port: 5432, replication_user: "replicator"}
+    - name: "empty replication_password"
+      record: {role: "standby", primary_host: "primary.example.org", primary_port: 5432, replication_user: "replicator", replication_password: ""}
+    - name: "quoted primary_port"
+      record: {role: "standby", primary_host: "primary.example.org", primary_port: "5432", replication_user: "replicator", replication_password: "secret"}

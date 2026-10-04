@@ -1,0 +1,14 @@
+---
+- name: "Normalizing DCS proxy"
+  ansible.builtin.include_tasks: ../endpoint_normalize.yml
+  vars:
+    pg_endpoint_normalize_input: "{{ pg_validation_dcs_proxy }}"
+    pg_endpoint_normalize_result_fact: "pg_dcs_proxy_model"
+    pg_endpoint_normalize_default_scheme: "{{ pg_validation_dcs_effective_scheme }}"
+    pg_endpoint_normalize_expected_scheme: "{{ pg_validation_dcs_effective_scheme }}"
+    pg_endpoint_normalize_render_scheme: true
+    pg_endpoint_normalize_label: "DCS proxy"
+
+- name: "Publishing DCS proxy model"
+  ansible.builtin.set_fact:
+    pg_dcs_proxy_model: "{{ pg_dcs_proxy_model | combine({'provider': pg_validation_cluster_record.dcs.provider, 'is_proxy': true}) }}"

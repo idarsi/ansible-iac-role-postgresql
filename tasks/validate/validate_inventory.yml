@@ -42,12 +42,16 @@
 - name: "Initializing TimescaleDB validation records"
   ansible.builtin.set_fact:
     pg_validation_timescaledb_requests: []
+    pg_validation_cluster_models: []
 
 - name: "Validating PostgreSQL version records"
   ansible.builtin.include_tasks: validate_version.yml
   loop: "{{ pg_versions }}"
   loop_control:
     loop_var: pg_validation_version_record
+
+- name: "Validating managed etcd host and data directory isolation"
+  ansible.builtin.include_tasks: validate_managed_etcd.yml
 
 - name: "Collecting PostgreSQL versions that use TimescaleDB"
   ansible.builtin.set_fact:
@@ -58,6 +62,46 @@
         | unique
         | list
       }}
+
+- name: "Collecting all Patroni member endpoints for host-wide validation"
+  ansible.builtin.set_fact:
+    pg_validation_patroni_endpoint_records: []
+
+- name: "Collecting Patroni endpoint records by cluster"
+  ansible.builtin.include_tasks: collect_patroni_endpoint_records.yml
+  loop: "{{ pg_validation_cluster_models }}"
+  loop_control:
+    loop_var: pg_validation_cluster_model
+
+- name: "Validating host-wide Patroni endpoint uniqueness"
+  ansible.builtin.include_tasks: normalize_patroni_endpoint_index.yml
+
+- name: "Publishing the host-wide etcd endpoint index"
+  ansible.builtin.include_tasks: publish_etcd_endpoint_index.yml
+
+- name: "Checking the host-wide etcd endpoint index schema and uniqueness"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_etcd_endpoint_index | type_debug == 'list'
+      - pg_validation_etcd_endpoint_index_record.keys() | list | sort ==
+        ['canonical_endpoint', 'canonical_host', 'client_url', 'cluster', 'has_scheme',
+         'host', 'host_is_ipv6', 'key', 'member', 'name', 'path', 'peer_url',
+         'protocol', 'rendered_endpoint', 'rendered_host', 'san_identities', 'scheme',
+         'scheme_free_endpoint', 'uri', 'version']
+      - pg_validation_etcd_endpoint_index_record.key ==
+        pg_validation_etcd_endpoint_index_record.version ~ ':' ~
+        pg_validation_etcd_endpoint_index_record.cluster ~ ':' ~
+        pg_validation_etcd_endpoint_index_record.member
+  loop: "{{ pg_validation_etcd_endpoint_index }}"
+  loop_control:
+    loop_var: pg_validation_etcd_endpoint_index_record
+
+- name: "Checking host-wide etcd endpoint composite key uniqueness"
+  ansible.builtin.assert:
+    that:
+      - (pg_validation_etcd_endpoint_index | map(attribute='key') | list | unique | length) ==
+        pg_validation_etcd_endpoint_index | length
+    fail_msg: "Managed etcd endpoint index composite keys must be unique"
 
 - name: "Validating TimescaleDB source consistency per PostgreSQL version"
   ansible.builtin.include_tasks: validate_timescaledb_sources.yml

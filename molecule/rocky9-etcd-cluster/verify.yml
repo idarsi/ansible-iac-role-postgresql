@@ -48,8 +48,8 @@
           - etcdctl
           - --endpoints=https://etcd01:2379,https://etcd02:2379,https://etcd03:2379
           - --cacert=/etc/etcd/pki/ca.crt
-          - --cert=/etc/etcd/pki/etcd.crt
-          - --key=/etc/etcd/pki/etcd.key
+          - --cert=/etc/etcd/pki/etcd-client.crt
+          - --key=/etc/etcd/pki/etcd-client.key
           - endpoint
           - health
       environment:
@@ -66,8 +66,8 @@
           - etcdctl
           - --endpoints=https://etcd01:2379,https://etcd02:2379,https://etcd03:2379
           - --cacert=/etc/etcd/pki/ca.crt
-          - --cert=/etc/etcd/pki/etcd.crt
-          - --key=/etc/etcd/pki/etcd.key
+          - --cert=/etc/etcd/pki/etcd-client.crt
+          - --key=/etc/etcd/pki/etcd-client.key
           - member
           - list
       environment:
@@ -86,8 +86,8 @@
           - etcdctl
           - --endpoints=https://etcd01:2379,https://etcd02:2379,https://etcd03:2379
           - --cacert=/etc/etcd/pki/ca.crt
-          - --cert=/etc/etcd/pki/etcd.crt
-          - --key=/etc/etcd/pki/etcd.key
+          - --cert=/etc/etcd/pki/etcd-client.crt
+          - --key=/etc/etcd/pki/etcd-client.key
           - put
           - /molecule/etcd-server-test
           - managed-by-postgresql-role
@@ -105,8 +105,8 @@
           - etcdctl
           - --endpoints=https://etcd01:2379,https://etcd02:2379,https://etcd03:2379
           - --cacert=/etc/etcd/pki/ca.crt
-          - --cert=/etc/etcd/pki/etcd.crt
-          - --key=/etc/etcd/pki/etcd.key
+          - --cert=/etc/etcd/pki/etcd-client.crt
+          - --key=/etc/etcd/pki/etcd-client.key
           - get
           - /molecule/etcd-server-test
       environment:
@@ -122,7 +122,11 @@
 
     - name: "Check the local Patroni API"
       ansible.builtin.uri:
-        url: http://127.0.0.1:8008/patroni
+        url: https://127.0.0.1:8008/patroni
+        ca_path: /etc/patroni/pki/ca.crt
+        url_username: "patroni"
+        url_password: "patroni_password"
+        force_basic_auth: true
         status_code: 200
       register: patroni_health
       retries: 60
@@ -131,7 +135,11 @@
 
     - name: "Wait for a stable Patroni cluster state"
       ansible.builtin.uri:
-        url: http://127.0.0.1:8008/cluster
+        url: https://127.0.0.1:8008/cluster
+        ca_path: /etc/patroni/pki/ca.crt
+        url_username: "patroni"
+        url_password: "patroni_password"
+        force_basic_auth: true
         status_code: 200
       register: patroni_cluster
       retries: 60
@@ -187,8 +195,8 @@
           - etcdctl
           - --endpoints=https://etcd01:2379,https://etcd02:2379
           - --cacert=/etc/etcd/pki/ca.crt
-          - --cert=/etc/etcd/pki/etcd.crt
-          - --key=/etc/etcd/pki/etcd.key
+          - --cert=/etc/etcd/pki/etcd-client.crt
+          - --key=/etc/etcd/pki/etcd-client.key
           - endpoint
           - health
       environment:
@@ -205,8 +213,8 @@
           - etcdctl
           - --endpoints=https://etcd01:2379,https://etcd02:2379
           - --cacert=/etc/etcd/pki/ca.crt
-          - --cert=/etc/etcd/pki/etcd.crt
-          - --key=/etc/etcd/pki/etcd.key
+          - --cert=/etc/etcd/pki/etcd-client.crt
+          - --key=/etc/etcd/pki/etcd-client.key
           - put
           - /molecule/etcd-quorum-test
           - quorum-survived
@@ -226,8 +234,8 @@
           - etcdctl
           - --endpoints=https://etcd01:2379,https://etcd02:2379,https://etcd03:2379
           - --cacert=/etc/etcd/pki/ca.crt
-          - --cert=/etc/etcd/pki/etcd.crt
-          - --key=/etc/etcd/pki/etcd.key
+          - --cert=/etc/etcd/pki/etcd-client.crt
+          - --key=/etc/etcd/pki/etcd-client.key
           - endpoint
           - health
       environment:
@@ -244,8 +252,8 @@
           - etcdctl
           - --endpoints=https://etcd01:2379,https://etcd02:2379,https://etcd03:2379
           - --cacert=/etc/etcd/pki/ca.crt
-          - --cert=/etc/etcd/pki/etcd.crt
-          - --key=/etc/etcd/pki/etcd.key
+          - --cert=/etc/etcd/pki/etcd-client.crt
+          - --key=/etc/etcd/pki/etcd-client.key
           - get
           - /molecule/etcd-quorum-test
       environment:
@@ -265,7 +273,11 @@
   tasks:
     - name: "Read the current Patroni cluster state"
       ansible.builtin.uri:
-        url: http://etcd02:8008/cluster
+        url: https://etcd02:8008/cluster
+        ca_path: /etc/patroni/pki/ca.crt
+        url_username: "patroni"
+        url_password: "patroni_password"
+        force_basic_auth: true
         status_code: 200
       register: failover_cluster
 
@@ -284,7 +296,11 @@
 
     - name: "Wait for Patroni to elect a replacement leader"
       ansible.builtin.uri:
-        url: http://etcd02:8008/cluster
+        url: https://etcd02:8008/cluster
+        ca_path: /etc/patroni/pki/ca.crt
+        url_username: "patroni"
+        url_password: "patroni_password"
+        force_basic_auth: true
         status_code: 200
         return_content: true
       register: failover_result
@@ -302,7 +318,11 @@
 
     - name: "Wait for all Patroni members after failover recovery"
       ansible.builtin.uri:
-        url: http://etcd01:8008/cluster
+        url: https://etcd01:8008/cluster
+        ca_path: /etc/patroni/pki/ca.crt
+        url_username: "patroni"
+        url_password: "patroni_password"
+        force_basic_auth: true
         status_code: 200
         return_content: true
       register: recovered_patroni_cluster

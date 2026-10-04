@@ -1,0 +1,118 @@
+---
+- name: "Checking direct Patroni endpoint pair contract fixtures"
+  ansible.builtin.include_tasks: test_patroni_endpoint_pair_case.yml
+  loop:
+    - name: "wildcard then specific IPv4"
+      expected: false
+      prior:
+        host_scope: "node"
+        listen_port: 8008
+        listen_address_family: "ipv4"
+        listen_is_wildcard: true
+        listen_collision_key: "node:0.0.0.0:8008"
+        connect_collision_key: "node:a.example:8008"
+      current:
+        host_scope: "node"
+        listen_port: 8008
+        listen_address_family: "ipv4"
+        listen_is_wildcard: false
+        listen_collision_key: "node:127.0.0.1:8008"
+        connect_collision_key: "node:b.example:8008"
+    - name: "specific IPv4 then wildcard IPv4 (reverse order)"
+      expected: false
+      prior:
+        host_scope: "node"
+        listen_port: 8008
+        listen_address_family: "ipv4"
+        listen_is_wildcard: false
+        listen_collision_key: "node:127.0.0.1:8008"
+        connect_collision_key: "node:a.example:8008"
+      current:
+        host_scope: "node"
+        listen_port: 8008
+        listen_address_family: "ipv4"
+        listen_is_wildcard: true
+        listen_collision_key: "node:0.0.0.0:8008"
+        connect_collision_key: "node:b.example:8008"
+    - name: "different ports"
+      expected: true
+      prior:
+        host_scope: "node"
+        listen_port: 8008
+        listen_address_family: "ipv4"
+        listen_is_wildcard: false
+        listen_collision_key: "node:127.0.0.1:8008"
+        connect_collision_key: "node:a.example:8008"
+      current:
+        host_scope: "node"
+        listen_port: 8009
+        listen_address_family: "ipv4"
+        listen_is_wildcard: false
+        listen_collision_key: "node:127.0.0.1:8009"
+        connect_collision_key: "node:b.example:8009"
+    - name: "distinct hosts"
+      expected: true
+      prior:
+        host_scope: "node-a"
+        listen_port: 8008
+        listen_address_family: "ipv4"
+        listen_is_wildcard: true
+        listen_collision_key: "node-a:0.0.0.0:8008"
+        connect_collision_key: "node-a:a.example:8008"
+      current:
+        host_scope: "node-b"
+        listen_port: 8008
+        listen_address_family: "ipv4"
+        listen_is_wildcard: true
+        listen_collision_key: "node-b:0.0.0.0:8008"
+        connect_collision_key: "node-b:b.example:8008"
+    - name: "specific IPv4 and IPv6"
+      expected: true
+      prior:
+        host_scope: "node"
+        listen_port: 8008
+        listen_address_family: "ipv4"
+        listen_is_wildcard: false
+        listen_collision_key: "node:127.0.0.1:8008"
+        connect_collision_key: "node:a.example:8008"
+      current:
+        host_scope: "node"
+        listen_port: 8008
+        listen_address_family: "ipv6"
+        listen_is_wildcard: false
+        listen_collision_key: "node:::1:8008"
+        connect_collision_key: "node:b.example:8008"
+    - name: "cross-family wildcards same port"
+      expected: false
+      prior:
+        host_scope: "node"
+        listen_port: 8008
+        listen_address_family: "ipv4"
+        listen_is_wildcard: true
+        listen_collision_key: "node:0.0.0.0:8008"
+        connect_collision_key: "node:a.example:8008"
+      current:
+        host_scope: "node"
+        listen_port: 8008
+        listen_address_family: "ipv6"
+        listen_is_wildcard: true
+        listen_collision_key: "node:[::]:8008"
+        connect_collision_key: "node:b.example:8008"
+    - name: "expanded IPv6 wildcard"
+      expected: false
+      prior:
+        host_scope: "node"
+        listen_port: 8008
+        listen_address_family: "ipv6"
+        listen_input: "[0:0:0:0:0:0:0:0]:8008"
+        listen_collision_key: "node:[0:0:0:0:0:0:0:0]:8008"
+        connect_collision_key: "node:a.example:8008"
+      current:
+        host_scope: "node"
+        listen_port: 8008
+        listen_address_family: "ipv4"
+        listen_is_wildcard: false
+        listen_collision_key: "node:127.0.0.1:8008"
+        connect_collision_key: "node:b.example:8008"
+  loop_control:
+    loop_var: pg_patroni_pair_fixture

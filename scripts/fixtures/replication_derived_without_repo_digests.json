@@ -1,0 +1,1 @@
+{"Id":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","Config":{"Labels":{"io.idarsi.replication.base-digest":"expected"}},"RootFS":{"Layers":["sha256:1111111111111111111111111111111111111111111111111111111111111111","sha256:3333333333333333333333333333333333333333333333333333333333333333"]}}

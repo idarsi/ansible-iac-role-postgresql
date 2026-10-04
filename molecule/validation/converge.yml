@@ -1,10 +1,11 @@
 ---
 - name: "Validate a valid PostgreSQL blueprint"
-  hosts: all
+  hosts: instance-idarsi-validation
   become: false
   vars:
     state: validate
     pg_etcd_bind_address: "192.0.2.10"
+    pg_patroni_restapi_endpoint_fallback_address: "patroni-validation.example.org"
     iac_blueprint:
       postgresql:
         - version: 16
@@ -25,30 +26,37 @@
               dcs:
                 provider: etcd3
                 endpoints:
-                  - https://etcd01.example.org:2379
-                  - https://etcd02.example.org:2379
+                  - "https://instance-idarsi-etcd:2379"
                 etcd:
                   enabled: true
                   initial_cluster_token: validation-dcs
-                  members:
-                    - name: etcd01
-                      host: etcd01.example.org
-                      peer_url: https://etcd01.example.org:2380
-                      client_url: https://etcd01.example.org:2379
-                    - name: etcd02
-                      host: etcd02.example.org
-                      peer_url: https://etcd02.example.org:2380
-                      client_url: https://etcd02.example.org:2379
                   tls:
                     enabled: true
                     auto_generate: true
+                    client:
+                      ca_file: "/etc/etcd/pki/client-ca.crt"
+                    peer:
+                      ca_file: "/etc/etcd/pki/peer-ca.crt"
+                  members:
+                    - name: etcd01
+                      host: instance-idarsi-etcd
+                      peer_url: "https://instance-idarsi-etcd:2380"
+                      client_url: "https://instance-idarsi-etcd:2379"
               patroni:
                 ttl: 30
                 loop_wait: 10
                 retry_timeout: 10
+                pg_hba:
+                  - "local all postgres peer"
+                  - "hostssl all all 192.0.2.0/24 scram-sha-256"
+                  - "hostssl all all 2001:db8::/64 scram-sha-256"
+                  - "hostssl all all samehost scram-sha-256"
+                  - "hostssl all all samenet scram-sha-256"
                 restapi:
                   listen: "[2001:db8::1]:8008"
+                  port: 8008
                   auto_generate: true
+                  verify_client: "optional"
                   authentication:
                     username: patroni
                     password: patroni_password
@@ -70,14 +78,1943 @@
       ansible.builtin.include_role:
         name: ansible-iac-role-postgresql
 
-    - name: "Writing valid blueprint marker"
-      ansible.builtin.copy:
-        dest: /tmp/postgresql-validation-valid.ok
-        content: "ok\n"
-        mode: "0644"
+    - name: "Checking generated TLS uses the canonical custom fallback"
+      ansible.builtin.assert:
+        that:
+          - >-
+            (pg_validation_patroni_endpoint_index
+             | selectattr('key', 'equalto', '17:validation-cluster:instance-idarsi-validation:community')
+             | first).advertised_connect == "https://patroni-validation.example.org:8008"
+        fail_msg: >-
+          Auto-generated Patroni TLS must use the canonical custom REST
+          connect endpoint in validation and readiness models
+
+    - name: "Checking bracketed IPv6 Patroni listen normalization"
+      ansible.builtin.assert:
+        that:
+          - pg_patroni_restapi_listen_host == "2001:db8::1"
+          - pg_patroni_restapi_listen_port == 8008
+          - "pg_patroni_restapi_listen_model.scheme_free_endpoint == '[2001:db8::1]:8008'"
+          - pg_patroni_restapi_listen_model.rendered_endpoint == "[2001:db8::1]:8008"
+          - pg_patroni_restapi_listen_model.uri == "https://[2001:db8::1]:8008"
+          - >-
+            (pg_validation_patroni_endpoint_index
+             | selectattr('key', 'equalto', '17:validation-cluster:instance-idarsi-validation:community')
+             | first).listen == "[2001:db8::1]:8008"
+          - pg_patroni_restapi_listen_model.san_identities == ["2001:db8::1"]
+          - pg_patroni_restapi_listen_model.rendered_endpoint is not search('\s')
+          - pg_patroni_restapi_listen_model.uri is not search('\s')
+          - pg_patroni_restapi_listen_model.san_identities | select('search', '\s') | list | length == 0
+        fail_msg: >-
+           Bracketed IPv6 Patroni listen endpoint was not normalized and rendered
+           correctly
+
+    - name: "Checking divergent generated etcd CA destinations are normalized"
+      ansible.builtin.assert:
+        that:
+          - pg_validation_etcd_members | length == 1
+          - pg_validation_etcd_members[0].name == "etcd01"
+          - pg_validation_etcd_tls_effective.client.ca_file == "/etc/etcd/pki/client-ca.crt"
+          - pg_validation_etcd_tls_effective.peer.ca_file == "/etc/etcd/pki/peer-ca.crt"
+          - pg_validation_etcd_members_normalized[0].host == "instance-idarsi-etcd"
+          - pg_validation_etcd_members_normalized[0].peer_url == "https://instance-idarsi-etcd:2380"
+          - pg_validation_etcd_members_normalized[0].client_url == "https://instance-idarsi-etcd:2379"
+        fail_msg: "Divergent generated etcd client and peer CA destinations were not preserved"
+
+    - name: "Checking exact HTTPS DNS endpoint rendering"
+      ansible.builtin.assert:
+        that:
+          - pg_dcs_endpoint_model[0].rendered_endpoint == "https://instance-idarsi-etcd:2379"
+          - pg_dcs_endpoint_model[0].uri == "https://instance-idarsi-etcd:2379"
+          - pg_dcs_endpoint_model[0].scheme_free_endpoint == "instance-idarsi-etcd:2379"
+          - pg_dcs_endpoint_model[0].san_identities == ["instance-idarsi-etcd"]
+          - pg_dcs_endpoint_model[0].canonical_host == "instance-idarsi-etcd"
+          - pg_dcs_endpoint_model[0].path == ""
+          - pg_dcs_endpoint_model[0].port is integer
+          - pg_dcs_endpoint_model[0].rendered_endpoint is not search('\s')
+          - pg_dcs_endpoint_model[0].uri is not search('\s')
+        fail_msg: "HTTPS DNS endpoint rendering was not exact and whitespace-free"
+
+- name: "Exercise endpoint normalization helper contracts"
+  hosts: all
+  become: false
+  tasks:
+    - name: "Normalize valid endpoint contract"
+      ansible.builtin.include_tasks: ../../tasks/validate/test_endpoint_contract.yml
+      loop:
+        - {input: "192.0.2.1:443", default_scheme: "http", scheme: "http", host: "192.0.2.1", canonical: "192.0.2.1", has_scheme: false}
+        - {input: "http://Example.Org.:80", default_scheme: "https", scheme: "http", host: "Example.Org.", canonical: "example.org", has_scheme: true}
+        - {input: "https://example.org:443/", default_scheme: "http", scheme: "https", host: "example.org", canonical: "example.org", has_scheme: true}
+        - {input: "[2001:0db8:0:0::1]:8443", default_scheme: "http", scheme: "http", host: "2001:0db8:0:0::1", canonical: "2001:db8::1", has_scheme: false}
+        - {input: "https://[2001:0db8::2]:8443", default_scheme: "http", scheme: "https", host: "2001:0db8::2", canonical: "2001:db8::2", has_scheme: true}
+      loop_control:
+        loop_var: pg_endpoint_contract
+
+    - name: "Construct valid host and port helper contracts"
+      ansible.builtin.include_tasks: ../../tasks/validate/test_host_port_contract.yml
+      loop:
+        - {host: "192.0.2.1", port: 443, expected: "192.0.2.1:443"}
+        - {host: "example.org", port: 80, expected: "example.org:80"}
+        - {host: "2001:db8::1", port: 443, expected: "[2001:db8::1]:443"}
+        - {host: "[2001:db8::2]", port: 8443, expected: "[2001:db8::2]:8443"}
+      loop_control:
+        loop_var: pg_host_port_contract
+
+    - name: "Reject invalid host and port helper contracts"
+      ansible.builtin.include_tasks: ../../tasks/validate/test_host_port_invalid_contract.yml
+      loop:
+        - {host: "[example.org]", port: 443}
+        - {host: "[2001:db8::1", port: 443}
+        - {host: "2001:db8::1", port: "443"}
+        - {host: "example.org", port: 0}
+        - {host: "example.org", port: 65536}
+      loop_control:
+        loop_var: pg_host_port_invalid_contract
+
+- name: "Reject invalid structured HBA without mutation"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    pg_validation_expected_collision_message: "Patroni listen endpoint collision"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: invalid-hba
+              global_access:
+                - name: invalid-host
+                  type: "host"
+                  method: "scram-sha-256"
+  tasks:
+    - name: "Checking invalid structured HBA fails before state changes"
+      block:
+        - name: "Applying invalid structured HBA blueprint"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if invalid structured HBA was accepted"
+          ansible.builtin.fail:
+            msg: "Invalid structured HBA was accepted"
+      rescue:
+        - name: "Checking structured HBA failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("invalid address usage for type 'host'")
+            fail_msg: "Expected structured HBA validation failure was not raised"
+
+- name: "Validate an HTTPS IPv4 DCS proxy"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: https-ipv4-proxy
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: ["https://dcs.example.org:2379"]
+                proxy: "https://192.0.2.20:2379"
+                etcd: {tls: {enabled: true}}
+              patroni:
+                restapi:
+                  listen: "127.0.0.1:8008"
+                  connect_address: "127.0.0.1:8008"
+                  authentication: {username: patroni, password: password}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: https-ipv4-proxy}]
+  tasks:
+    - name: "Running IPv4 proxy validation"
+      ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+    - name: "Checking normalized IPv4 proxy model"
+      ansible.builtin.assert:
+        that:
+          - pg_dcs_proxy_model.host == "192.0.2.20"
+          - pg_dcs_proxy_model.san_identities == ["192.0.2.20"]
+          - pg_dcs_proxy_model.port == 2379
+          - pg_dcs_proxy_model.scheme == "https"
+          - pg_dcs_proxy_model.rendered_endpoint == "https://192.0.2.20:2379"
+          - pg_dcs_proxy_model.uri == "https://192.0.2.20:2379"
+          - pg_dcs_proxy_model.scheme_free_endpoint == "192.0.2.20:2379"
+          - pg_dcs_proxy_model.rendered_host == "192.0.2.20"
+          - pg_dcs_proxy_model.uri is not search('\s')
+
+- name: "Validate an HTTPS bracketed IPv6 DCS proxy"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: https-ipv6-proxy
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: ["https://dcs.example.org:2379"]
+                proxy: "https://[2001:db8::20]:2379/"
+                etcd: {tls: {enabled: true}}
+              patroni:
+                restapi:
+                  listen: "127.0.0.1:8008"
+                  connect_address: "127.0.0.1:8008"
+                  authentication: {username: patroni, password: password}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: https-ipv6-proxy}]
+  tasks:
+    - name: "Running IPv6 proxy validation"
+      ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+    - name: "Checking normalized IPv6 proxy model"
+      ansible.builtin.assert:
+        that:
+          - pg_dcs_proxy_model.host == "2001:db8::20"
+          - pg_dcs_proxy_model.san_identities == ["2001:db8::20"]
+          - pg_dcs_proxy_model.port == 2379
+          - pg_dcs_proxy_model.rendered_endpoint == "https://[2001:db8::20]:2379"
+
+- name: "Validate a DNS DCS proxy identity"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: dns-proxy
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: ["https://dcs.example.org:2379"]
+                proxy: "https://proxy.example.org:2379"
+                etcd: {tls: {enabled: true}}
+              patroni:
+                restapi:
+                  listen: "127.0.0.1:8008"
+                  connect_address: "127.0.0.1:8008"
+                  authentication: {username: patroni, password: password}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: dns-proxy}]
+  tasks:
+    - name: "Run DNS proxy validation"
+      ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+    - name: "Check normalized DNS proxy SAN identity"
+      ansible.builtin.assert:
+        that:
+          - pg_dcs_proxy_model.host == "proxy.example.org"
+          - pg_dcs_proxy_model.san_identities == ["proxy.example.org"]
+
+- name: "Reject a malformed DCS proxy"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: malformed-dcs-proxy
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: ["http://dcs.example.org:2379"]
+                proxy: "https://2001:db8::20:2379"
+              patroni: {restapi: {authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: malformed-dcs-proxy}]
+  tasks:
+    - name: "Checking malformed proxy is rejected"
+      block:
+        - name: "Applying malformed DCS proxy"
+          ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - name: "Failing if malformed DCS proxy was accepted"
+          ansible.builtin.fail: {msg: "Malformed DCS proxy was accepted"}
+      rescue:
+        - name: "Checking malformed DCS proxy failure"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                'DCS proxy must be a host:port endpoint' in
+                (ansible_failed_result | to_nice_json)
+
+- name: "Reject bracketed non-IPv6 and non-canonical endpoint ports"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: invalid-endpoint-shape
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: ["[dns.example.org]:2379"]
+              patroni: {restapi: {authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: invalid-endpoint-shape}]
+  tasks:
+    - name: "Checking bracketed DNS endpoint is rejected"
+      block:
+        - name: "Applying bracketed DNS endpoint"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if bracketed DNS endpoint was accepted"
+          ansible.builtin.fail:
+            msg: "Bracketed DNS endpoint was accepted"
+      rescue:
+        - name: "Checking bracketed DNS endpoint failure"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'brackets are only valid around a valid IPv6 address' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject a leading-zero endpoint port"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: leading-zero-endpoint-port
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://dcs.example.org:02379"]}
+              patroni: {restapi: {authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: leading-zero-endpoint-port}]
+  tasks:
+    - name: "Checking leading-zero endpoint port is rejected"
+      block:
+        - name: "Applying leading-zero endpoint port"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if leading-zero endpoint port was accepted"
+          ansible.builtin.fail:
+            msg: "Leading-zero endpoint port was accepted"
+      rescue:
+        - name: "Checking leading-zero endpoint port failure"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'port must be canonical decimal digits without leading zeros' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject invalid endpoint port grammar and range"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: invalid-endpoint-port
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://dcs.example.org:65536"]}
+              patroni: {restapi: {authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: invalid-endpoint-port}]
+  tasks:
+    - name: "Checking out-of-range endpoint port is rejected"
+      block:
+        - name: "Applying out-of-range endpoint port"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if out-of-range endpoint port was accepted"
+          ansible.builtin.fail:
+            msg: "Out-of-range endpoint port was accepted"
+      rescue:
+        - name: "Checking out-of-range endpoint port failure"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'port must be 1-65535' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject a zero endpoint port"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: zero-endpoint-port
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://dcs.example.org:0"]}
+              patroni: {restapi: {authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: zero-endpoint-port}]
+  tasks:
+    - name: "Checking zero endpoint port is rejected"
+      block:
+        - name: "Applying zero endpoint port"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if zero endpoint port was accepted"
+          ansible.builtin.fail:
+            msg: "Zero endpoint port was accepted"
+      rescue:
+        - name: "Checking zero endpoint port failure"
+          ansible.builtin.assert:
+            that: >-
+              ansible_failed_result is defined and
+              'DCS endpoint has an invalid host or port (port must be 1-65535)' in
+              (ansible_failed_result | to_nice_json)
+
+- name: "Reject a non-digit endpoint port"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: non-digit-endpoint-port
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://dcs.example.org:12x"]}
+              patroni: {restapi: {authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: non-digit-endpoint-port}]
+  tasks:
+    - name: "Checking non-digit endpoint port is rejected"
+      block:
+        - name: "Applying non-digit endpoint port"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if non-digit endpoint port was accepted"
+          ansible.builtin.fail:
+            msg: "Non-digit endpoint port was accepted"
+      rescue:
+        - name: "Checking non-digit endpoint port failure"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'must be a host:port endpoint' in (ansible_failed_result | to_nice_json)"
+
+- name: "Validate two isolated Patroni cluster models"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: validation-cluster-a
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: ["http://etcd-a.example.org:2379"]
+              patroni:
+                restapi:
+                  port: 8010
+                  listen: "127.0.0.1:8010"
+                  connect_address: "127.0.0.1:8010"
+                  authentication: {username: "patroni-a", password: "password-a"}
+              members: [{host: "instance-idarsi-validation", instance: "cluster-a", name: "member-a"}]
+            - name: validation-cluster-b
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: ["http://etcd-b.example.org:3379"]
+              patroni:
+                restapi:
+                  port: 8011
+                  listen: "127.0.0.1:8011"
+                  connect_address: "127.0.0.1:8011"
+                  authentication: {username: "patroni-b", password: "password-b"}
+              members: [{host: "instance-idarsi-validation", instance: "cluster-b", name: "member-b"}]
+  tasks:
+    - name: "Run role validation for two clusters"
+      ansible.builtin.include_role:
+        name: ansible-iac-role-postgresql
+    - name: "Assert normalized DCS endpoint models remain isolated"
+      ansible.builtin.assert:
+        that:
+          - pg_dcs_models_by_cluster['17:validation-cluster-a'].servers[0].host == "etcd-a.example.org"
+          - pg_dcs_models_by_cluster['17:validation-cluster-a'].servers[0].port == 2379
+          - pg_dcs_models_by_cluster['17:validation-cluster-a'].servers[0].rendered_endpoint == "http://etcd-a.example.org:2379"
+          - pg_dcs_models_by_cluster['17:validation-cluster-a'].servers[0].uri == "http://etcd-a.example.org:2379"
+          - pg_dcs_models_by_cluster['17:validation-cluster-a'].servers[0].san_identities == ["etcd-a.example.org"]
+          - pg_dcs_models_by_cluster['17:validation-cluster-b'].servers[0].host == "etcd-b.example.org"
+          - pg_dcs_models_by_cluster['17:validation-cluster-b'].servers[0].port == 3379
+          - pg_dcs_models_by_cluster['17:validation-cluster-a'] != pg_dcs_models_by_cluster['17:validation-cluster-b']
+        fail_msg: "Normalized endpoint models from separate clusters must not overwrite one another"
+
+    - name: "Check the host-wide Patroni endpoint index for both members"
+      ansible.builtin.assert:
+        that:
+          - pg_validation_patroni_endpoint_index | length == 2
+          - >-
+            (pg_validation_patroni_endpoint_index
+             | selectattr('key', 'equalto', '17:validation-cluster-a:instance-idarsi-validation:cluster-a')
+             | first).listen == "127.0.0.1:8010"
+          - >-
+            (pg_validation_patroni_endpoint_index
+             | selectattr('key', 'equalto', '17:validation-cluster-b:instance-idarsi-validation:cluster-b')
+             | first).advertised_connect == "http://127.0.0.1:8011"
+          - >-
+            (pg_validation_patroni_endpoint_index | map(attribute='key') | list | unique | length) == 2
+        fail_msg: "Distinct Patroni endpoint models must persist in the host-wide index"
+
+    - name: "Invoke the normalization and index path a second time"
+      ansible.builtin.include_tasks: ../../tasks/validate/normalize_patroni_endpoint_index.yml
+
+    - name: "Check readiness lookups resolve both indexed Patroni models"
+      ansible.builtin.assert:
+        that:
+          - >-
+            pg_validation_patroni_endpoint_index
+            | selectattr('key', 'equalto', '17:validation-cluster-a:instance-idarsi-validation:cluster-a')
+            | list | length == 1
+          - >-
+            pg_validation_patroni_endpoint_index
+            | selectattr('key', 'equalto', '17:validation-cluster-b:instance-idarsi-validation:cluster-b')
+            | list | length == 1
+          - >-
+            (pg_validation_patroni_endpoint_index
+             | selectattr('key', 'equalto', '17:validation-cluster-a:instance-idarsi-validation:cluster-a')
+             | first).advertised_connect !=
+            (pg_validation_patroni_endpoint_index
+             | selectattr('key', 'equalto', '17:validation-cluster-b:instance-idarsi-validation:cluster-b')
+             | first).advertised_connect
+
+- name: "Prove managed etcd member normalization resets between enabled clusters"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    pg_validation_etcd_clusters:
+      - name: normalized-members-a
+        enabled: true
+        members:
+          - name: etcd-a
+            host: instance-idarsi-validation
+            peer_url: "https://etcd-a.example.org:2380/"
+            client_url: "https://etcd-a.example.org:2379/"
+      - name: normalized-members-b
+        enabled: true
+        members:
+          - name: etcd-b
+            host: instance-idarsi-validation
+            peer_url: "https://etcd-b.example.org:3380/"
+            client_url: "https://etcd-b.example.org:3379/"
+  tasks:
+    - name: "Checking isolated normalization fixtures are enabled clusters"
+      ansible.builtin.assert:
+        that:
+          - pg_validation_etcd_clusters | length == 2
+          - pg_validation_etcd_clusters | map(attribute='enabled') | list == [true, true]
+
+    - name: "Resetting isolated etcd member normalization"
+      ansible.builtin.set_fact:
+        pg_validation_etcd_members_normalized: []
+
+    - name: "Normalizing first isolated enabled etcd cluster members"
+      ansible.builtin.include_tasks: ../../tasks/validate/normalize_etcd_member.yml
+      loop: "{{ pg_validation_etcd_clusters[0].members }}"
+      loop_control:
+        loop_var: pg_validation_etcd_member
+
+    - name: "Capturing first isolated normalized member list"
+      ansible.builtin.set_fact:
+        pg_validation_first_etcd_members_normalized: "{{ pg_validation_etcd_members_normalized }}"
+
+    - name: "Resetting normalization before second isolated cluster"
+      ansible.builtin.set_fact:
+        pg_validation_etcd_members_normalized: []
+
+    - name: "Normalizing second isolated enabled etcd cluster members"
+      ansible.builtin.include_tasks: ../../tasks/validate/normalize_etcd_member.yml
+      loop: "{{ pg_validation_etcd_clusters[1].members }}"
+      loop_control:
+        loop_var: pg_validation_etcd_member
+
+    - name: "Checking normalized members do not leak into the second cluster"
+      ansible.builtin.assert:
+        that:
+          - pg_validation_first_etcd_members_normalized[0].name == "etcd-a"
+          - pg_validation_first_etcd_members_normalized[0].peer_url == "https://etcd-a.example.org:2380"
+          - pg_validation_etcd_members_normalized | length == 1
+          - pg_validation_etcd_members_normalized[0].name == "etcd-b"
+          - pg_validation_etcd_members_normalized[0].peer_url == "https://etcd-b.example.org:3380"
+          - pg_validation_etcd_members_normalized[0].client_url == "https://etcd-b.example.org:3379"
+          - pg_validation_etcd_members_normalized | selectattr('name', 'equalto', 'etcd-a') | list | length == 0
+        fail_msg: "Managed etcd normalized members leaked between isolated enabled cluster validations"
+
+- name: "Use effective TLS for omitted DCS endpoint and proxy schemes"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: omitted-tls-on
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: ["etcd-a.example.org:2379"]
+                proxy: "proxy.example.org:2379"
+                etcd: {tls: {enabled: true}}
+              patroni:
+                restapi: {port: 8010, listen: "127.0.0.1:8010", connect_address: "127.0.0.1:8010", authentication: {username: "patroni", password: "password"}}
+              members: [{host: "instance-idarsi-validation", instance: "tls-on", name: "tls-on-member"}]
+            - name: omitted-tls-off
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: ["etcd-b.example.org:2379"]
+                proxy: "proxy-b.example.org:2379"
+                etcd: {tls: {enabled: false}}
+              patroni:
+                restapi: {port: 8011, listen: "127.0.0.1:8011", connect_address: "127.0.0.1:8011", authentication: {username: "patroni", password: "password"}}
+              members: [{host: "instance-idarsi-validation", instance: "tls-off", name: "tls-off-member"}]
+  tasks:
+    - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+    - ansible.builtin.assert:
+        that:
+          - pg_dcs_models_by_cluster['17:omitted-tls-on'].protocol == "https"
+          - pg_dcs_models_by_cluster['17:omitted-tls-on'].servers[0].uri == "https://etcd-a.example.org:2379"
+          - pg_dcs_models_by_cluster['17:omitted-tls-on'].proxy.uri == "https://proxy.example.org:2379"
+          - pg_dcs_models_by_cluster['17:omitted-tls-off'].protocol == "http"
+          - pg_dcs_models_by_cluster['17:omitted-tls-off'].servers[0].uri == "http://etcd-b.example.org:2379"
+          - pg_dcs_models_by_cluster['17:omitted-tls-off'].proxy.uri == "http://proxy-b.example.org:2379"
+
+- name: "Reject HTTP DCS endpoint when etcd TLS is enabled"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: invalid-http-tls-on
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd-a.example.org:2379"], proxy: "http://proxy.example.org:2379", etcd: {tls: {enabled: true}}}
+              patroni: {restapi: {port: 8010, listen: "127.0.0.1:8010", connect_address: "127.0.0.1:8010", authentication: {username: "patroni", password: "password"}}}
+              members: [{host: "instance-idarsi-validation", instance: "invalid-http", name: "invalid-http-member"}]
+  tasks:
+    - name: "Check HTTP DCS endpoint fails when TLS is enabled"
+      block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "HTTP DCS endpoint was accepted with etcd TLS enabled"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                'DCS endpoint must use https when its provider TLS setting is
+                effective'
+                in (ansible_failed_result | to_nice_json)
+
+- name: "Reject HTTPS DCS endpoint when etcd TLS is disabled"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: invalid-https-tls-off
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["https://etcd-b.example.org:2379"], proxy: "https://proxy-b.example.org:2379", etcd: {tls: {enabled: false}}}
+              patroni: {restapi: {port: 8011, listen: "127.0.0.1:8011", connect_address: "127.0.0.1:8011", authentication: {username: "patroni", password: "password"}}}
+              members: [{host: "instance-idarsi-validation", instance: "invalid-https", name: "invalid-https-member"}]
+  tasks:
+    - name: "Check HTTPS DCS endpoint fails when TLS is disabled"
+      block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "HTTPS DCS endpoint was accepted with etcd TLS disabled"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                'DCS endpoint must use http when its provider TLS setting is
+                effective'
+                in (ansible_failed_result | to_nice_json)
+
+- name: "Reject canonical-equivalent Patroni endpoints before mutation"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: collision-a
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd-a.example.org:2379"]}
+              patroni:
+                restapi:
+                  port: 8020
+                  listen: "[2001:0db8::1]:8020"
+                  connect_address: "collision-a.example.org:8020"
+                  auto_generate: true
+                  authentication: {username: "patroni", password: "password"}
+              members: [{host: "instance-idarsi-validation", instance: "collision-a", name: "collision-a-member"}]
+            - name: collision-b
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd-b.example.org:3379"]}
+              patroni:
+                restapi:
+                  port: 8020
+                  listen: "[2001:db8:0:0:0:0:0:1]:8020"
+                  connect_address: "COLLISION-A.EXAMPLE.ORG.:8020"
+                  auto_generate: true
+                  authentication: {username: "patroni", password: "password"}
+              members: [{host: "instance-idarsi-validation", instance: "collision-b", name: "collision-b-member"}]
+  tasks:
+    - name: "Checking canonical endpoint collision fails before mutation"
+      block:
+        - name: "Applying colliding Patroni blueprint"
+          ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - name: "Failing if endpoint collision was accepted"
+          ansible.builtin.fail: {msg: "Canonical Patroni endpoint collision was accepted"}
+      rescue:
+        - name: "Checking actionable endpoint collision failure"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                pg_validation_expected_collision_message in
+                ((ansible_failed_result | default({})).msg | default(''))
+              - >-
+                "2001:db8::1" in
+                ((ansible_failed_result | default({})).msg | default(''))
+
+- name: "Reject wildcard Patroni listen overlap before mutation"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    pg_validation_patroni_endpoint_records:
+      - key: "loopback-listen"
+        host_scope: "instance-idarsi-validation"
+        listen: "127.0.0.1:8030"
+        connect: "loopback-listen.example.org:8030"
+        tls_enabled: false
+      - key: "wildcard-listen"
+        host_scope: "instance-idarsi-validation"
+        listen: "0.0.0.0:8030"
+        connect: "wildcard-listen.example.org:8030"
+        tls_enabled: false
+  tasks:
+    - name: "Checking focused wildcard and loopback index validation"
+      block:
+        - name: "Applying overlapping Patroni listen endpoint records"
+          ansible.builtin.include_tasks: ../../tasks/validate/normalize_patroni_endpoint_index.yml
+        - name: "Failing if wildcard listen overlap was accepted"
+          ansible.builtin.fail: {msg: "Wildcard Patroni listen overlap was accepted"}
+      rescue:
+        - name: "Checking wildcard listen overlap failure"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'Patroni listen endpoint collision' in (ansible_failed_result | to_nice_json)"
+              - "'including wildcard/listen overlap' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject invalid Patroni endpoint without publishing an index record"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    pg_validation_patroni_endpoint_records:
+      - key: "invalid-endpoint"
+        host_scope: "instance-idarsi-validation"
+        listen: "2001:db8::1:8031"
+        connect: "invalid.example.org:8031"
+        tls_enabled: false
+  tasks:
+    - name: "Checking invalid endpoint publication guardrail"
+      block:
+        - name: "Applying invalid Patroni endpoint records"
+          ansible.builtin.include_tasks: ../../tasks/validate/normalize_patroni_endpoint_index.yml
+        - name: "Failing if invalid Patroni endpoint was accepted"
+          ansible.builtin.fail:
+            msg: "Invalid Patroni endpoint was accepted"
+      rescue:
+        - name: "Checking invalid endpoint publication guardrail"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - pg_validation_patroni_endpoint_index | length == 0
+              - "'Patroni member listen' in (ansible_failed_result | to_nice_json)"
+            fail_msg: >-
+              Invalid Patroni endpoint was published before validation completed
+
+- name: "Check direct Patroni endpoint pair validator outcomes"
+  hosts: instance-idarsi-validation
+  become: false
+  tasks:
+    - name: "Running direct endpoint pair fixtures"
+      ansible.builtin.include_tasks: ../../tasks/validate/test_patroni_endpoint_pair_contract.yml
+
+- name: "Check certificate destination collision contracts"
+  hosts: instance-idarsi-validation
+  become: false
+  tasks:
+    - name: "Run certificate path collision fixtures"
+      ansible.builtin.include_tasks: ../../tasks/validate/test_certificate_path_contract.yml
+      loop:
+        - name: "empty path collections"
+          generated: []
+          managed: []
+          ssl_paths: []
+          expected_valid: true
+        - name: "single-value path collections"
+          generated: "/var/lib/postgresql/17/main/ssl/server.key"
+          managed: "/var/lib/postgresql/17/main/ssl"
+          ssl_paths: "/var/lib/postgresql/17/main/ssl"
+          expected_valid: true
+        - name: "distinct key certificate and CA paths"
+          generated: ["/var/lib/postgresql/17/main/ssl/server.key", "/var/lib/postgresql/17/main/ssl/server.crt", "/var/lib/postgresql/17/main/ssl/client-ca.crt"]
+          managed: ["/var/lib/postgresql/17/main/ssl", "/var/lib/postgresql-pki", "/var/lib/postgresql-pki/locks", "/var/lib/postgresql-pki/postgresql-17-main.serials", "/var/lib/postgresql-pki/locks/postgresql-17-main.lock"]
+          ssl_paths: ["/", "/var", "/var/lib", "/var/lib/postgresql", "/var/lib/postgresql/17", "/var/lib/postgresql/17/main", "/var/lib/postgresql/17/main/ssl", "/var/lib/postgresql/17/main/ssl/server.key", "/var/lib/postgresql/17/main/ssl/server.crt", "/var/lib/postgresql/17/main/ssl/client-ca.crt"]
+          expected_valid: true
+        - name: "duplicate generated destination"
+          generated: ["/var/lib/postgresql/17/main/ssl/server.key", "/var/lib/postgresql/17/main/ssl/server.key", "/var/lib/postgresql/17/main/ssl/client-ca.crt"]
+          managed: ["/var/lib/postgresql/17/main/ssl", "/var/lib/postgresql-pki", "/var/lib/postgresql-pki/locks", "/var/lib/postgresql-pki/postgresql-17-main.serials", "/var/lib/postgresql-pki/locks/postgresql-17-main.lock"]
+          ssl_paths: ["/", "/var", "/var/lib", "/var/lib/postgresql", "/var/lib/postgresql/17", "/var/lib/postgresql/17/main", "/var/lib/postgresql/17/main/ssl", "/var/lib/postgresql/17/main/ssl/server.key", "/var/lib/postgresql/17/main/ssl/client-ca.crt"]
+          expected_valid: false
+        - name: "separator and dot aliases collide"
+          generated: ["/var/lib/postgresql/17/main/ssl/server.key", "/var//lib/postgresql/17/./main/ssl/server.key", "/var/lib/postgresql/17/main/ssl/client-ca.crt"]
+          managed: ["/var/lib/postgresql/17/main/ssl", "/var/lib/postgresql-pki", "/var/lib/postgresql-pki/locks", "/var/lib/postgresql-pki/postgresql-17-main.serials", "/var/lib/postgresql-pki/locks/postgresql-17-main.lock"]
+          ssl_paths: []
+          expected_valid: false
+        - name: "managed CA collision"
+          generated: ["/var/lib/postgresql/17/main/ssl/server.key", "/var/lib/postgresql-pki", "/var/lib/postgresql/17/main/ssl/client-ca.crt"]
+          managed: ["/var/lib/postgresql/17/main/ssl", "/var/lib/postgresql-pki", "/var/lib/postgresql-pki/locks"]
+          ssl_paths: []
+          expected_valid: false
+        - name: "lock collision"
+          generated: ["/var/lib/postgresql/17/main/ssl/server.key", "/var/lib/postgresql-pki/locks/postgresql-17-main.lock", "/var/lib/postgresql/17/main/ssl/client-ca.crt"]
+          managed: ["/var/lib/postgresql/17/main/ssl", "/var/lib/postgresql-pki", "/var/lib/postgresql-pki/locks", "/var/lib/postgresql-pki/postgresql-17-main.serials", "/var/lib/postgresql-pki/locks/postgresql-17-main.lock"]
+          ssl_paths: []
+          expected_valid: false
+        - name: "valid non-colliding generated path"
+          generated: ["/var/lib/postgresql/17/main/ssl/server.key", "/var/lib/postgresql/17/main/ssl/server.crt", "/var/lib/postgresql/17/main/ssl/client-ca.crt", "/var/lib/postgresql-pki/other.serials"]
+          managed: ["/var/lib/postgresql/17/main/ssl", "/var/lib/postgresql-pki", "/var/lib/postgresql-pki/locks", "/var/lib/postgresql-pki/postgresql-17-main.serials", "/var/lib/postgresql-pki/locks/postgresql-17-main.lock"]
+          ssl_paths: []
+          expected_valid: true
+        - name: "registry collision"
+          generated: ["/var/lib/postgresql/17/main/ssl/server.key", "/var/lib/postgresql-pki/postgresql-17-main.serials", "/var/lib/postgresql/17/main/ssl/client-ca.crt"]
+          managed: ["/var/lib/postgresql/17/main/ssl", "/var/lib/postgresql-pki", "/var/lib/postgresql-pki/locks", "/var/lib/postgresql-pki/postgresql-17-main.serials", "/var/lib/postgresql-pki/locks/postgresql-17-main.lock"]
+          ssl_paths: ["/", "/var", "/var/lib", "/var/lib/postgresql", "/var/lib/postgresql/17", "/var/lib/postgresql/17/main", "/var/lib/postgresql/17/main/ssl", "/var/lib/postgresql/17/main/ssl/server.key", "/var/lib/postgresql-pki/postgresql-17-main.serials", "/var/lib/postgresql/17/main/ssl/client-ca.crt"]
+          expected_valid: false
+      loop_control:
+        loop_var: pg_certificate_path_contract
+
+- name: "Reject a shared etcd data directory root"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: validate
+    pg_etcd_bind_address: "192.0.2.10"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: unsafe-etcd-root
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: ["https://instance-idarsi-validation:2379"]
+                etcd:
+                  enabled: true
+                  data_dir: "/var/lib"
+                  initial_cluster_token: unsafe-root
+                  tls: {enabled: true, auto_generate: true}
+                  members:
+                    - {name: etcd01, host: "instance-idarsi-validation", peer_url: "https://instance-idarsi-validation:2380", client_url: "https://instance-idarsi-validation:2379"}
+              patroni:
+                restapi:
+                  port: 8012
+                  listen: "127.0.0.1:8012"
+                  connect_address: "127.0.0.1:8012"
+                  authentication: {username: "patroni", password: "password"}
+              members: [{host: "instance-idarsi-validation", instance: "unsafe", name: "unsafe-member"}]
+  tasks:
+    - block:
+        - ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if shared etcd data directory root was accepted"
+          ansible.builtin.fail:
+            msg: "Shared etcd data directory root was accepted"
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'safe data_dir' in (ansible_failed_result.msg | default(''))"
+            fail_msg: "Validation must reject /var/lib as an etcd data directory"
+
+- name: "Reject two managed etcd clusters on one host and version"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: validate
+    pg_etcd_bind_address: "192.0.2.10"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: managed-etcd-a
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: ["https://etcd-a.example.org:2379"]
+                etcd:
+                  enabled: true
+                  data_dir: "/var/lib/etcd/cluster-a"
+                  initial_cluster_token: cluster-a
+                  tls: {enabled: true, auto_generate: true}
+                  members: [{name: etcd-a, host: instance-idarsi-validation, peer_url: "https://instance-idarsi-validation:2380", client_url: "https://instance-idarsi-validation:2379"}]
+              patroni: {restapi: {port: 8014, listen: "127.0.0.1:8014", connect_address: "127.0.0.1:8014", authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: a, name: member-a}]
+            - name: managed-etcd-b
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: ["https://etcd-b.example.org:2379"]
+                etcd:
+                  enabled: true
+                  data_dir: "/var/lib/etcd/cluster-b"
+                  initial_cluster_token: cluster-b
+                  tls: {enabled: true, auto_generate: true}
+                  members: [{name: etcd-b, host: instance-idarsi-validation, peer_url: "https://instance-idarsi-validation:2380", client_url: "https://instance-idarsi-validation:2379"}]
+              patroni: {restapi: {port: 8015, listen: "127.0.0.1:8015", connect_address: "127.0.0.1:8015", authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: b, name: member-b}]
+  tasks:
+    - block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "Two managed etcd clusters were accepted"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'more than one cluster' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject duplicate managed etcd data directories"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: validate
+    pg_etcd_bind_address: "192.0.2.10"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: duplicate-data-a
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["https://etcd-a.example.org:2379"], etcd: {enabled: true, data_dir: "/var/lib/etcd/shared", initial_cluster_token: duplicate-a, tls: {enabled: true, auto_generate: true}, members: [{name: etcd-a, host: instance-idarsi-validation, peer_url: "https://instance-idarsi-validation:2380", client_url: "https://instance-idarsi-validation:2379"}]}}
+              patroni: {restapi: {port: 8016, listen: "127.0.0.1:8016", connect_address: "127.0.0.1:8016", authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: a, name: member-a}]
+            - name: duplicate-data-b
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["https://etcd-b.example.org:2379"], etcd: {enabled: true, data_dir: "/var/lib/etcd/shared", initial_cluster_token: duplicate-b, tls: {enabled: true, auto_generate: true}, members: [{name: etcd-b, host: instance-idarsi-validation, peer_url: "https://instance-idarsi-validation:2380", client_url: "https://instance-idarsi-validation:2379"}]}}
+              patroni: {restapi: {port: 8017, listen: "127.0.0.1:8017", connect_address: "127.0.0.1:8017", authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: b, name: member-b}]
+  tasks:
+    - block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "Duplicate managed etcd data directories were accepted"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'data_dir values must be dedicated' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject the same managed etcd cluster and host across PostgreSQL versions"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: validate
+    pg_etcd_bind_address: "192.0.2.10"
+    iac_blueprint:
+      postgresql:
+        - version: 16
+          clusters:
+            - name: cross-version-etcd
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: ["https://etcd.example.org:2379"]
+                etcd:
+                  enabled: true
+                  initial_cluster_token: cross-version-16
+                  tls: {enabled: true, auto_generate: true}
+                  members: [{name: etcd16, host: instance-idarsi-validation, peer_url: "https://instance-idarsi-validation:2380", client_url: "https://instance-idarsi-validation:2379"}]
+              patroni: {restapi: {authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: v16, name: member-16}]
+        - version: 17
+          clusters:
+            - name: cross-version-etcd
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: ["https://etcd.example.org:2379"]
+                etcd:
+                  enabled: true
+                  initial_cluster_token: cross-version-17
+                  tls: {enabled: true, auto_generate: true}
+                  members: [{name: etcd17, host: instance-idarsi-validation, peer_url: "https://instance-idarsi-validation:2380", client_url: "https://instance-idarsi-validation:2379"}]
+              patroni: {restapi: {authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: v17, name: member-17}]
+  tasks:
+    - block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "The same managed etcd cluster was accepted across PostgreSQL versions"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - '"multiple PostgreSQL versions" in (ansible_failed_result | to_nice_json)'
+              - '"global /etc/etcd/etcd.conf" in (ansible_failed_result | to_nice_json)'
+            fail_msg: "Cross-version managed etcd reuse must be rejected with an actionable conflict"
+
+- name: "Reject ancestor managed etcd data directories"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: validate
+    pg_etcd_bind_address: "192.0.2.10"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: ancestor-data-a
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["https://etcd-a.example.org:2379"], etcd: {enabled: true, data_dir: "/var/lib/etcd/shared", initial_cluster_token: ancestor-a, tls: {enabled: true, auto_generate: true}, members: [{name: etcd-a, host: instance-idarsi-validation, peer_url: "https://instance-idarsi-validation:2380", client_url: "https://instance-idarsi-validation:2379"}]}}
+              patroni: {restapi: {port: 8018, listen: "127.0.0.1:8018", connect_address: "127.0.0.1:8018", authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: a, name: member-a}]
+            - name: ancestor-data-b
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["https://etcd-b.example.org:2379"], etcd: {enabled: true, data_dir: "/var/lib/etcd/shared/child", initial_cluster_token: ancestor-b, tls: {enabled: true, auto_generate: true}, members: [{name: etcd-b, host: instance-idarsi-validation, peer_url: "https://instance-idarsi-validation:2380", client_url: "https://instance-idarsi-validation:2379"}]}}
+              patroni: {restapi: {port: 8019, listen: "127.0.0.1:8019", connect_address: "127.0.0.1:8019", authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: b, name: member-b}]
+  tasks:
+    - block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "Ancestor managed etcd data directories were accepted"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'data_dir values must be dedicated' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject a malformed Patroni REST API listen endpoint"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: malformed-restapi-listen
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: ["http://etcd01.example.org:2379"]
+                etcd:
+                  enabled: false
+                  tls:
+                    enabled: false
+              patroni:
+                restapi:
+                  listen: "[2001:db8::1:8008"
+                  authentication: {username: "patroni", password: "patroni_password"}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: malformed-restapi-listen}]
+  tasks:
+    - name: "Running validation expecting malformed listen failure"
+      block:
+        - name: "Applying malformed Patroni REST API listen endpoint"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if malformed listen endpoint was accepted"
+          ansible.builtin.fail:
+            msg: "Malformed Patroni REST API listen endpoint was accepted"
+      rescue:
+        - name: "Checking malformed listen failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                'Patroni REST API listen must be a host:port endpoint' in
+                (ansible_failed_result | to_nice_json)
+- name: "Accept Patroni REST API defaults with an effective port"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: validate
+    pg_patroni_restapi_port: 8010
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: restapi-defaults
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd01.example.org:2379"]}
+              patroni:
+                restapi:
+                  authentication: {username: patroni, password: patroni_password}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: restapi-defaults}]
+  tasks:
+    - name: "Running validation for REST API defaults"
+      ansible.builtin.include_role:
+        name: ansible-iac-role-postgresql
+
+- name: "Accept an explicitly routable Patroni TLS endpoint"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: explicit-routable-restapi
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd01.example.org:2379"]}
+              patroni:
+                restapi:
+                  port: 8013
+                  listen: "127.0.0.1:8013"
+                  connect_address: "https://patroni.example.org:8013"
+                  auto_generate: true
+                  authentication: {username: patroni, password: password}
+              # Cluster membership belongs to the version-scoped cluster
+              # record, alongside provider/patroni, not inside patroni.
+              members:
+                - host: instance-idarsi-validation
+                  instance: main
+                  name: member
+          instances: [{name: main, cluster: explicit-routable-restapi}]
+  tasks:
+    - name: "Running validation for the explicit routable TLS endpoint"
+      ansible.builtin.include_role:
+        name: ansible-iac-role-postgresql
+    - name: "Checking the explicit routable TLS endpoint remains canonical"
+      ansible.builtin.assert:
+        that:
+          - >-
+            (pg_validation_cluster_models
+             | selectattr('key', 'equalto', '17:explicit-routable-restapi')
+             | first).record.members[0].host == "instance-idarsi-validation"
+          - >-
+            (pg_validation_cluster_models
+             | selectattr('key', 'equalto', '17:explicit-routable-restapi')
+             | first).record.members[0].instance == "main"
+          - pg_patroni_restapi_connect_value == "https://patroni.example.org:8013"
+          - pg_patroni_restapi_connect_host == "patroni.example.org"
+          - pg_patroni_restapi_connect_port == 8013
+          - not (pg_patroni_restapi_connect_is_loopback | bool)
+        fail_msg: "An explicit routable Patroni TLS endpoint must remain unchanged"
+
+- name: "Reject mixed effective security SSL values in one cluster"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: mixed-security-ssl
+              provider: "standalone"
+              members:
+                - {host: "instance-idarsi-validation", instance: one, name: one}
+                - {host: "instance-idarsi-validation", instance: two, name: two}
+          instances:
+            - {name: one, cluster: mixed-security-ssl, security_ssl: "safe"}
+            - {name: two, cluster: mixed-security-ssl, security_ssl: "off"}
+  tasks:
+    - name: "Checking mixed security SSL is rejected"
+      block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "Mixed cluster security_ssl values were accepted"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'effective security_ssl value' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject safe security profile with SSL disabled"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: safe-without-ssl
+              provider: "standalone"
+              members:
+                - {host: "instance-idarsi-validation", instance: "main", name: "main"}
+          instances:
+            - name: main
+              cluster: safe-without-ssl
+              security_profile: "safe"
+              security_ssl: "off"
+  tasks:
+    - name: "Checking safe profile and disabled SSL is rejected"
+      block:
+        - name: "Applying safe profile with disabled SSL"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if safe profile with disabled SSL was accepted"
+          ansible.builtin.fail:
+            msg: "safe security_profile with off security_ssl was accepted"
+      rescue:
+        - name: "Checking safe profile and disabled SSL failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'security_profile: safe with security_ssl: off' in (ansible_failed_result | to_nice_json)"
+
+- name: "Accept coherent security profile and SSL combinations"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: safe-with-ssl
+              provider: "standalone"
+              members: [{host: "instance-idarsi-validation", instance: "safe", name: "safe"}]
+            - name: off-without-ssl
+              provider: "standalone"
+              members: [{host: "instance-idarsi-validation", instance: "off", name: "off"}]
+            - name: off-with-ssl
+              provider: "standalone"
+              members: [{host: "instance-idarsi-validation", instance: "mixed", name: "mixed"}]
+          instances:
+            - {name: "safe", cluster: "safe-with-ssl", security_profile: "safe", security_ssl: "safe"}
+            - {name: "off", cluster: "off-without-ssl", security_profile: "off", security_ssl: "off"}
+            - {name: "mixed", cluster: "off-with-ssl", security_profile: "off", security_ssl: "safe"}
+  tasks:
+    - name: "Checking coherent security combinations are accepted"
+      ansible.builtin.include_role:
+        name: ansible-iac-role-postgresql
+
+- name: "Enforce native security_profile and security_ssl string types"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    pg_security_type_validation_cases:
+      - name: "ssl-boolean-false"
+        security_profile: "off"
+        security_ssl: false
+        profile_type: "string"
+        ssl_type: "boolean"
+        expected_failure: true
+      - name: "ssl-unquoted-off"
+        security_profile: "off"
+        security_ssl: off
+        profile_type: "string"
+        ssl_type: "boolean"
+        expected_failure: true
+      - name: "ssl-integer"
+        security_profile: "off"
+        security_ssl: 0
+        profile_type: "string"
+        ssl_type: "integer"
+        expected_failure: true
+      - name: "profile-boolean-false"
+        security_profile: false
+        security_ssl: "off"
+        profile_type: "boolean"
+        ssl_type: "string"
+        expected_failure: true
+      - name: "profile-unquoted-off"
+        security_profile: off
+        security_ssl: "off"
+        profile_type: "boolean"
+        ssl_type: "string"
+        expected_failure: true
+      - name: "profile-integer"
+        security_profile: 0
+        security_ssl: "off"
+        profile_type: "integer"
+        ssl_type: "string"
+        expected_failure: true
+      - name: "quoted-safe-and-safe"
+        security_profile: "safe"
+        security_ssl: "safe"
+        profile_type: "string"
+        ssl_type: "string"
+        expected_failure: false
+      - name: "quoted-off-and-safe"
+        security_profile: "off"
+        security_ssl: "safe"
+        profile_type: "string"
+        ssl_type: "string"
+        expected_failure: false
+  tasks:
+    - name: "Exercise independent native security type cases"
+      ansible.builtin.include_tasks: security_type_validation_case.yml
+      loop: "{{ pg_security_type_validation_cases }}"
+      loop_control:
+        loop_var: pg_security_type_case
+
+- name: "Accept absent and disabled Patroni etcd configuration"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: etcd-optional
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: ["http://etcd.example.org:2379"]
+              patroni: {restapi: {port: 8021, listen: "127.0.0.1:8021", connect_address: "127.0.0.1:8021", authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+            - name: etcd-disabled
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints:
+                  - "http://etcd.example.org:2379"
+                etcd: {enabled: false}
+              patroni: {restapi: {port: 8022, listen: "127.0.0.1:8022", connect_address: "127.0.0.1:8022", authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: disabled, name: disabled-member}]
+          instances:
+            - {name: main, cluster: etcd-optional}
+            - {name: disabled, cluster: etcd-disabled}
+  tasks:
+    - name: "Running validation for optional etcd configurations"
+      ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+    - name: "Checking absent and disabled etcd use HTTP without etcd TLS"
+      ansible.builtin.assert:
+        that:
+          - pg_optional_dcs_model.protocol == "http"
+          - pg_optional_dcs_model.servers[0].scheme == "http"
+          - >-
+            pg_optional_dcs_model.servers[0].uri
+            == "http://etcd.example.org:2379"
+          - pg_disabled_dcs_model.protocol == "http"
+          - pg_disabled_dcs_model.servers[0].scheme == "http"
+          - >-
+            pg_disabled_dcs_model.servers[0].uri
+            == "http://etcd.example.org:2379"
+        fail_msg: >-
+          Absent and disabled etcd must use HTTP DCS endpoints without etcd TLS
+      vars:
+        pg_optional_dcs_model: >-
+          {{ pg_dcs_models_by_cluster['17:etcd-optional'] }}
+        pg_disabled_dcs_model: >-
+          {{ pg_dcs_models_by_cluster['17:etcd-disabled'] }}
+
+- name: "Reject malformed disabled etcd members"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: malformed-disabled-etcd-members
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: ["http://etcd.example.org:2379"]
+                etcd:
+                  enabled: false
+                  members:
+                    - name: "bad/name"
+                      host: "bad host"
+                      peer_url: "https://etcd.example.org/not-a-port"
+                      client_url: "https://etcd.example.org:0"
+              patroni: {restapi: {authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: malformed-disabled-etcd-members}]
+  tasks:
+    - name: "Checking malformed disabled etcd members fail validation"
+      block:
+        - name: "Applying malformed disabled etcd member blueprint"
+          ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - name: "Failing if malformed disabled etcd members were accepted"
+          ansible.builtin.fail: {msg: "Malformed disabled etcd members were accepted"}
+      rescue:
+        - name: "Checking actionable disabled etcd member failure"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                "safe identifier" in (ansible_failed_result | to_nice_json)
+              - >-
+                "HTTPS host:port peer and client URLs" in
+                (ansible_failed_result | to_nice_json)
+            fail_msg: "Disabled etcd member validation did not report actionable field requirements"
+
+- name: "Reject invalid managed etcd member fields independently"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    pg_etcd_member_cases:
+      - name: "missing name"
+        member: {host: "instance-idarsi-etcd", peer_url: "https://instance-idarsi-etcd:2380", client_url: "https://instance-idarsi-etcd:2379"}
+        expected: "define name as a string"
+        # This is the include_tasks wrapper metadata, not a failed task msg.
+        forbidden: "One or more items failed"
+      - name: "wrong typed name"
+        member: {name: 7, host: "instance-idarsi-etcd", peer_url: "https://instance-idarsi-etcd:2380", client_url: "https://instance-idarsi-etcd:2379"}
+        expected: "define name as a string"
+      - name: "missing host"
+        member: {name: "member", peer_url: "https://instance-idarsi-etcd:2380", client_url: "https://instance-idarsi-etcd:2379"}
+        expected: "define host as a string"
+      - name: "wrong typed host"
+        member: {name: "member", host: 7, peer_url: "https://instance-idarsi-etcd:2380", client_url: "https://instance-idarsi-etcd:2379"}
+        expected: "define host as a string"
+      - name: "missing peer_url"
+        member: {name: "member", host: "instance-idarsi-etcd", client_url: "https://instance-idarsi-etcd:2379"}
+        expected: "define peer_url as a string"
+      - name: "wrong typed peer_url"
+        member: {name: "member", host: "instance-idarsi-etcd", peer_url: 7, client_url: "https://instance-idarsi-etcd:2379"}
+        expected: "define peer_url as a string"
+      - name: "missing client_url"
+        member: {name: "member", host: "instance-idarsi-etcd", peer_url: "https://instance-idarsi-etcd:2380"}
+        expected: "define client_url as a string"
+      - name: "wrong typed client_url"
+        member: {name: "member", host: "instance-idarsi-etcd", peer_url: "https://instance-idarsi-etcd:2380", client_url: 7}
+        expected: "define client_url as a string"
+      - name: "malformed peer_url"
+        member:
+          name: "member"
+          host: "instance-idarsi-etcd"
+          peer_url: "https://instance-idarsi-etcd/not-a-port"
+          client_url: "https://instance-idarsi-etcd:2379"
+        expected: "managed etcd peer_url must be a host:port endpoint"
+        expected_exact: >-
+          managed etcd peer_url must be a host:port endpoint: use a non-empty
+          DNS/IPv4 host:port or bracketed IPv6 [address]:port; unbracketed IPv6,
+          missing ports, empty hosts, schemes other than HTTP(S), and malformed
+          values are invalid
+      - name: "malformed client_url"
+        member:
+          name: "member"
+          host: "instance-idarsi-etcd"
+          peer_url: "https://instance-idarsi-etcd:2380"
+          client_url: "https://instance-idarsi-etcd:0"
+        expected: "managed etcd client_url has an invalid host or port (port must be 1-65535)"
+        expected_exact: "managed etcd client_url has an invalid host or port (port must be 1-65535)"
+  tasks:
+    - name: "Running independent managed etcd member validation cases"
+      ansible.builtin.include_tasks: etcd_member_validation_cases.yml
+      loop: "{{ pg_etcd_member_cases }}"
+      loop_control:
+        loop_var: pg_etcd_member_case
+      vars:
+        iac_blueprint:
+          postgresql:
+            - version: 17
+              clusters:
+                - name: "member-validation"
+                  provider: "patroni"
+                  dcs:
+                    provider: "etcd3"
+                    endpoints: ["http://etcd.example.org:2379"]
+                    etcd:
+                      enabled: false
+                      members: ["{{ pg_etcd_member_case.member }}"]
+                  patroni: {restapi: {authentication: {username: "patroni", password: "password"}}}
+                  members: [{host: "instance-idarsi-validation", instance: "main", name: "member"}]
+              instances: [{name: "main", cluster: "member-validation"}]
+
+    - name: "Aggregating managed etcd member validation outcomes"
+      ansible.builtin.assert:
+        that:
+          - pg_etcd_member_validation_outcomes | default([]) | length == pg_etcd_member_cases | length
+          - >-
+            pg_etcd_member_validation_outcomes
+            | selectattr('failed', 'equalto', true) | list | length == pg_etcd_member_cases | length
+          - >-
+            pg_etcd_member_validation_outcomes
+            | selectattr('message_matches', 'equalto', true) | list | length == pg_etcd_member_cases | length
+          - >-
+            pg_etcd_member_validation_outcomes
+            | selectattr('exact_message_matches', 'equalto', true) | list | length == pg_etcd_member_cases | length
+          - >-
+            pg_etcd_member_validation_outcomes
+            | selectattr('forbidden_message_matches', 'equalto', true) | list | length == 0
+          - >-
+            pg_etcd_member_validation_outcomes
+            | selectattr('passed', 'equalto', false) | list | length == 0
+        fail_msg: >-
+          One or more managed etcd member validation cases did not fail with the
+          expected message substring: {{ pg_etcd_member_validation_outcomes | default([]) }}
+
+- name: "Reject malformed Patroni etcd configurations without mutation"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: malformed-etcd
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: ["http://etcd.example.org:2379"]
+                etcd: null
+              patroni: {restapi: {authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: malformed-etcd}]
+  tasks:
+    - name: "Checking malformed etcd fails cleanly"
+      block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "Malformed etcd was accepted"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'Patroni dcs.etcd, when present, must be a mapping' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject malformed managed etcd scalar inputs"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    pg_etcd_bind_address: ["192.0.2.10"]
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: malformed-etcd-scalars
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: ["https://etcd.example.org:2379"]
+                etcd:
+                  enabled: true
+                  initial_cluster_token: 123
+                  data_dir: "/var/lib/etcd/data"
+                  tls: {enabled: true, auto_generate: true}
+                  members: [{name: etcd01, host: instance-idarsi-validation, peer_url: "https://instance-idarsi-validation:2380", client_url: "https://instance-idarsi-validation:2379"}]
+              patroni: {restapi: {authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: malformed-etcd-scalars}]
+  tasks:
+    - name: "Checking malformed etcd scalar input fails with an assertion"
+      block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "Malformed etcd scalar input was accepted"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'initial_cluster_token, data_dir, pg_etcd_bind_address' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject non-mapping managed etcd TLS"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    pg_etcd_bind_address: "192.0.2.10"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: malformed-etcd-tls
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd.example.org:2379"], etcd: {enabled: true, initial_cluster_token: tls, tls: "enabled", members: [{name: etcd01, host: instance-idarsi-validation, peer_url: "https://instance-idarsi-validation:2380", client_url: "https://instance-idarsi-validation:2379"}]}}
+              patroni: {restapi: {authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: malformed-etcd-tls}]
+  tasks:
+    - name: "Checking non-mapping TLS fails with an actionable assertion"
+      block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "Non-mapping TLS was accepted"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'Managed etcd tls must be a mapping' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject boolean managed etcd TLS"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    pg_etcd_bind_address: "192.0.2.10"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: malformed-etcd-tls-boolean
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd.example.org:2379"], etcd: {enabled: true, initial_cluster_token: tls-boolean, tls: true, members: [{name: etcd01, host: instance-idarsi-validation, peer_url: "https://instance-idarsi-validation:2380", client_url: "https://instance-idarsi-validation:2379"}]}}
+              patroni: {restapi: {authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: malformed-etcd-tls-boolean}]
+  tasks:
+    - name: "Checking boolean TLS fails with an actionable assertion"
+      block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "Boolean TLS was accepted"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'Managed etcd tls must be a mapping' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject managed etcd without TLS configuration"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    pg_etcd_bind_address: "192.0.2.10"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: missing-etcd-tls
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd.example.org:2379"], etcd: {enabled: true, initial_cluster_token: missing-tls, members: [{name: etcd01, host: instance-idarsi-validation, peer_url: "https://instance-idarsi-validation:2380", client_url: "https://instance-idarsi-validation:2379"}]}}
+              patroni: {restapi: {authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: missing-etcd-tls}]
+  tasks:
+    - name: "Checking missing TLS fails with an actionable requirement"
+      block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "Managed etcd without TLS was accepted"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'tls.enabled: true' in (ansible_failed_result | to_nice_json)"
+              - "'define tls as a mapping' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject managed etcd TLS that is not enabled"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    pg_etcd_bind_address: "192.0.2.10"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: disabled-etcd-tls
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd.example.org:2379"], etcd: {enabled: true, initial_cluster_token: disabled-tls, tls: {enabled: false}, members: [{name: etcd01, host: instance-idarsi-validation, peer_url: "https://instance-idarsi-validation:2380", client_url: "https://instance-idarsi-validation:2379"}]}}
+              patroni: {restapi: {authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: disabled-etcd-tls}]
+  tasks:
+    - name: "Checking disabled TLS fails the managed etcd contract"
+      block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "Managed etcd with disabled TLS was accepted"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'tls.enabled: true' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject non-string managed etcd data directory"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    pg_etcd_bind_address: "192.0.2.10"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: malformed-etcd-data-dir
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["https://etcd.example.org:2379"], etcd: {enabled: true, initial_cluster_token: data-dir, data_dir: ["/var/lib/etcd/data"], tls: {enabled: true}, members: [{name: etcd01, host: instance-idarsi-validation, peer_url: "https://instance-idarsi-validation:2380", client_url: "https://instance-idarsi-validation:2379"}]}}
+              patroni: {restapi: {authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: malformed-etcd-data-dir}]
+  tasks:
+    - name: "Checking non-string data_dir fails with an assertion"
+      block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "Non-string data_dir was accepted"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'initial_cluster_token, data_dir, pg_etcd_bind_address' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject non-string managed etcd bind address"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    pg_etcd_bind_address: {address: "192.0.2.10"}
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: malformed-etcd-bind
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["https://etcd.example.org:2379"], etcd: {enabled: true, initial_cluster_token: bind, data_dir: "/var/lib/etcd/data", tls: {enabled: true}, members: [{name: etcd01, host: instance-idarsi-validation, peer_url: "https://instance-idarsi-validation:2380", client_url: "https://instance-idarsi-validation:2379"}]}}
+              patroni: {restapi: {authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: malformed-etcd-bind}]
+  tasks:
+    - name: "Checking non-string bind address fails with an assertion"
+      block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "Non-string bind address was accepted"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'initial_cluster_token, data_dir, pg_etcd_bind_address' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject malformed managed etcd member records"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    pg_etcd_bind_address: "192.0.2.10"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: malformed-etcd-members
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["https://etcd.example.org:2379"], etcd: {enabled: true, initial_cluster_token: members, tls: {enabled: true}, members: ["not-a-member"]}}
+              patroni: {restapi: {authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: malformed-etcd-members}]
+  tasks:
+    - name: "Checking malformed member fails with an actionable assertion"
+      block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "Malformed etcd member was accepted"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'Patroni dcs.etcd.members records must be mappings even when disabled' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject enabled managed etcd without members"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    pg_etcd_bind_address: "192.0.2.10"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: missing-enabled-etcd-members
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["https://etcd.example.org:2379"], etcd: {enabled: true, initial_cluster_token: missing-members, tls: {enabled: true}}}
+              patroni: {restapi: {authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: missing-enabled-etcd-members}]
+  tasks:
+    - name: "Checking missing enabled etcd members fails before normalization"
+      block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "Missing enabled etcd members were accepted"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'must define a non-empty dcs.etcd.members list' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject enabled managed etcd with empty members"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    pg_etcd_bind_address: "192.0.2.10"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: empty-enabled-etcd-members
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["https://etcd.example.org:2379"], etcd: {enabled: true, initial_cluster_token: empty-members, tls: {enabled: true}, members: []}}
+              patroni: {restapi: {authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: empty-enabled-etcd-members}]
+  tasks:
+    - name: "Checking empty enabled etcd members fails before normalization"
+      block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "Empty enabled etcd members were accepted"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'must define a non-empty dcs.etcd.members list' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject scalar Patroni etcd configuration"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: scalar-etcd
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: ["http://etcd.example.org:2379"]
+                etcd: "enabled"
+              patroni: {restapi: {authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: scalar-etcd}]
+  tasks:
+    - name: "Checking scalar etcd fails cleanly"
+      block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "Scalar etcd was accepted"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'Patroni dcs.etcd, when present, must be a mapping' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject malformed disabled Patroni etcd members"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: malformed-disabled-etcd-members
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: ["http://etcd.example.org:2379"]
+                etcd: {enabled: false, members: [null]}
+              patroni: {restapi: {authentication: {username: patroni, password: password}}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: malformed-disabled-etcd-members}]
+  tasks:
+    - name: "Checking malformed disabled etcd members fail cleanly"
+      block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "Malformed disabled etcd member was accepted"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                'Patroni dcs.etcd.members records must be mappings even when
+                disabled' in (ansible_failed_result | to_nice_json)
+
+- name: "Accept explicit Patroni REST API IPv6 endpoints"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: explicit-restapi-ipv6
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd01.example.org:2379"]}
+              patroni:
+                restapi:
+                  listen: "[2001:db8::1]:8008"
+                  connect_address: "[2001:db8::2]:8008"
+                  auto_generate: true
+                  authentication: {username: patroni, password: patroni_password}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: explicit-restapi-ipv6}]
+  tasks:
+    - name: "Validating explicit bracketed IPv6 REST API endpoints"
+      ansible.builtin.include_role:
+        name: ansible-iac-role-postgresql
+    - name: "Checking the canonical cluster model preserves bracketed endpoints"
+      ansible.builtin.assert:
+        that:
+          - >-
+            (pg_validation_cluster_models
+             | selectattr('key', 'equalto', '17:explicit-restapi-ipv6')
+             | first).record.patroni.restapi.listen == "[2001:db8::1]:8008"
+          - >-
+            (pg_validation_cluster_models
+             | selectattr('key', 'equalto', '17:explicit-restapi-ipv6')
+             | first).record.patroni.restapi.connect_address == "[2001:db8::2]:8008"
+        fail_msg: "Bracketed IPv6 REST API endpoints were not preserved in the canonical model"
+
+- name: "Reject an unbracketed Patroni REST API IPv6 connect address"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: unbracketed-restapi-connect-ipv6
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd01.example.org:2379"]}
+              patroni:
+                listen: "127.0.0.1:8008"
+                restapi:
+                  connect_address: "2001:db8::2:8008"
+                  authentication: {username: patroni, password: patroni_password}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: unbracketed-restapi-connect-ipv6}]
+  tasks:
+    - name: "Checking unbracketed IPv6 connect address is rejected"
+      block:
+        - name: "Applying an unbracketed IPv6 REST API connect address"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if unbracketed IPv6 connect address was accepted"
+          ansible.builtin.fail:
+            msg: "Unbracketed IPv6 REST API connect address was accepted"
+      rescue:
+        - name: "Checking unbracketed IPv6 connect address failure"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("Patroni REST API connect_address must be a non-wildcard host:port")
 
 - name: "Reject a bracketed wildcard Patroni REST API listen address"
-  hosts: all
+  hosts: instance-idarsi-validation
   become: false
   vars:
     state: validate
@@ -90,7 +2027,7 @@
               dcs:
                 provider: etcd3
                 endpoints:
-                  - https://etcd01.example.org:2379
+                  - http://etcd01.example.org:2379
               patroni:
                 restapi:
                   listen: "[::]:8008"
@@ -119,14 +2056,235 @@
               - >-
                 (ansible_failed_result | to_nice_json)
                 is search("Patroni REST API must not listen on a wildcard address")
-        - name: "Writing bracketed wildcard listen marker"
-          ansible.builtin.copy:
-            dest: /tmp/postgresql-validation-bracketed-wildcard-listen.ok
-            content: "ok\n"
-            mode: "0644"
+
+- name: "Reject unsupported required Patroni REST API client verification"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: required-client-verification
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd01.example.org:2379"]}
+              patroni:
+                restapi:
+                  verify_client: required
+                  authentication: {username: patroni, password: patroni_password}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: required-client-verification}]
+  tasks:
+    - name: "Running validation expecting required client verification failure"
+      block:
+        - name: "Applying unsupported required client verification"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if required client verification was accepted"
+          ansible.builtin.fail:
+            msg: "Unsupported Patroni required client verification was accepted"
+      rescue:
+        - name: "Checking required client verification failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json) is search(
+                "Patroni REST API verify_client: required is not supported. Use
+                verify_client: optional or none")
+
+- name: "Reject plaintext routable Patroni REST API with templated boolean flags"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: plaintext-restapi
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd01.example.org:2379"]}
+              patroni:
+                restapi:
+                  listen: "192.0.2.10:8008"
+                  connect_address: "192.0.2.11:8008"
+                  authentication: {username: patroni, password: patroni_password}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: plaintext-restapi}]
+  tasks:
+    - name: "Checking plaintext routable REST API is rejected"
+      block:
+        - name: "Applying plaintext routable Patroni REST API"
+          ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - name: "Failing if plaintext routable REST API was accepted"
+          ansible.builtin.fail: {msg: "Plaintext routable Patroni REST API was accepted"}
+      rescue:
+        - name: "Checking plaintext routable REST API failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'Patroni REST API must use TLS' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject plaintext Patroni REST API using effective defaults"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: validate
+    pg_patroni_restapi_listen_address: "192.0.2.10"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: effective-restapi-defaults
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd01.example.org:2379"]}
+              patroni:
+                restapi:
+                  authentication: {username: patroni, password: patroni_password}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: effective-restapi-defaults}]
+  tasks:
+    - name: "Checking plaintext effective REST API defaults are rejected"
+      block:
+        - name: "Applying plaintext effective Patroni REST API defaults"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if plaintext effective REST API defaults were accepted"
+          ansible.builtin.fail:
+            msg: "Plaintext effective Patroni REST API defaults were accepted"
+      rescue:
+        - name: "Checking effective REST API defaults failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'Patroni REST API must use TLS' in (ansible_failed_result | to_nice_json)"
+
+- name: "Accept loopback-only plaintext Patroni REST API defaults"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: loopback-restapi-defaults
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd01.example.org:2379"]}
+              patroni:
+                restapi:
+                  authentication: {username: patroni, password: patroni_password}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: loopback-restapi-defaults}]
+  tasks:
+    - name: "Validating loopback-only plaintext REST API defaults"
+      ansible.builtin.include_role:
+        name: ansible-iac-role-postgresql
+    - name: "Checking loopback-only REST API default endpoints"
+      ansible.builtin.assert:
+        that:
+          - pg_patroni_restapi_listen_model.host == "127.0.0.1"
+          - pg_patroni_restapi_connect_host == "127.0.0.1"
+          - not pg_patroni_restapi_tls_enabled | bool
+
+- name: "Reject unsafe raw Patroni pg_hba authentication"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: raw-hba-trust
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd01.example.org:2379"]}
+              patroni:
+                restapi:
+                  authentication: {username: patroni, password: patroni_password}
+                pg_hba: ["host all all 192.0.2.0/24 trust"]
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: raw-hba-trust, security_profile: safe}]
+  tasks:
+    - name: "Checking unsafe raw pg_hba authentication is rejected"
+      block:
+        - name: "Applying unsafe raw Patroni pg_hba authentication"
+          ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - name: "Failing if unsafe raw pg_hba authentication was accepted"
+          ansible.builtin.fail: {msg: "Unsafe raw Patroni pg_hba authentication was accepted"}
+      rescue:
+        - name: "Checking raw Patroni pg_hba failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'Raw Patroni pg_hba records' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject a non-boolean Patroni allow_broad_hba value"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: invalid-broad-hba-type
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd01.example.org:2379"]}
+              patroni:
+                allow_broad_hba: "true"
+                restapi:
+                  authentication: {username: patroni, password: patroni_password}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: invalid-broad-hba-type}]
+  tasks:
+    - name: "Checking non-boolean allow_broad_hba is rejected"
+      block:
+        - name: "Applying a non-boolean allow_broad_hba value"
+          ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - name: "Failing if non-boolean allow_broad_hba was accepted"
+          ansible.builtin.fail: {msg: "Non-boolean allow_broad_hba was accepted"}
+      rescue:
+        - name: "Checking non-boolean allow_broad_hba failure"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                'Patroni allow_broad_hba must be a YAML boolean' in
+                (ansible_failed_result | to_nice_json)
+
+- name: "Reject malformed and injectable raw Patroni HBA addresses"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: invalid-raw-hba-addresses
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd01.example.org:2379"]}
+              patroni:
+                pg_hba: ["{{ pg_invalid_raw_hba_case }}"]
+                restapi:
+                  authentication: {username: patroni, password: patroni_password}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: invalid-raw-hba-addresses}]
+  tasks:
+    - name: "Checking each malformed raw HBA address independently"
+      ansible.builtin.include_tasks: raw_hba_validation_case.yml
+      loop:
+        - "hostssl all all 999.0.0.1 scram-sha-256"
+        - "hostssl all all 2001:db8:::1 scram-sha-256"
+        - "hostssl all all 192.0.2.1 host all all trust"
+      loop_control:
+        loop_var: pg_invalid_raw_hba_case
 
 - name: "Reject duplicate managed etcd member names"
-  hosts: all
+  hosts: instance-idarsi-validation
   become: false
   vars:
     state: validate
@@ -146,11 +2304,11 @@
                   initial_cluster_token: duplicate-dcs
                   members:
                     - name: duplicate
-                      host: etcd01.example.org
+                      host: instance-idarsi-validation
                       peer_url: https://etcd01.example.org:2380
                       client_url: https://etcd01.example.org:2379
                     - name: duplicate
-                      host: etcd02.example.org
+                      host: instance-idarsi-etcd
                       peer_url: https://etcd02.example.org:2380
                       client_url: https://etcd02.example.org:2379
                   tls:
@@ -190,14 +2348,9 @@
               - >-
                 (ansible_failed_result | to_nice_json)
                 is search("Managed etcd member names must be unique")
-        - name: "Writing duplicate managed etcd marker"
-          ansible.builtin.copy:
-            dest: /tmp/postgresql-validation-duplicate-etcd-member.ok
-            content: "ok\n"
-            mode: "0644"
 
 - name: "Reject incomplete managed etcd TLS configuration"
-  hosts: all
+  hosts: instance-idarsi-validation
   become: false
   vars:
     state: validate
@@ -217,13 +2370,14 @@
                   initial_cluster_token: incomplete-tls
                   members:
                     - name: etcd01
-                      host: etcd01.example.org
+                      host: instance-idarsi-etcd
                       peer_url: https://etcd01.example.org:2380
                       client_url: https://etcd01.example.org:2379
                   tls:
                     enabled: true
+                    access_group: "etcd-pki"
                     client:
-                      ca_file: /etc/etcd/pki/ca.crt
+                      ca_file: "/etc/etcd/pki/custom-ca.crt"
               patroni:
                 restapi:
                   authentication: {username: patroni, password: patroni_password}
@@ -235,7 +2389,7 @@
             - name: main
               cluster: incomplete-etcd-tls
   tasks:
-    - name: "Running validation expecting incomplete TLS failure"
+    - name: "Checking incomplete TLS configuration fails"
       block:
         - name: "Applying incomplete managed etcd TLS configuration"
           ansible.builtin.include_role:
@@ -244,21 +2398,170 @@
           ansible.builtin.fail:
             msg: "Incomplete managed etcd TLS configuration was accepted"
       rescue:
-        - name: "Checking incomplete TLS failure message"
+        - name: "Checking actionable incomplete TLS failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                "Managed etcd TLS is incomplete" in
+                (ansible_failed_result | to_nice_json)
+              - >-
+                "CA-only" in (ansible_failed_result | to_nice_json)
+            fail_msg: "Incomplete managed etcd TLS did not report the CA-only material failure"
+
+- name: "Reject shared managed etcd client and peer key paths"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: validate
+    pg_etcd_bind_address: "192.0.2.10"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: shared-etcd-key-path
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: [https://etcd01.example.org:2379]
+                etcd:
+                  enabled: true
+                  initial_cluster_token: shared-key-path
+                  members:
+                    - {name: etcd01, host: instance-idarsi-etcd, peer_url: https://etcd01.example.org:2380, client_url: https://etcd01.example.org:2379}
+                  tls:
+                    enabled: true
+                    client: {key_file: /etc/etcd/pki/shared.key}
+                    peer: {key_file: /etc/etcd/pki/shared.key}
+              patroni:
+                restapi: {authentication: {username: patroni, password: patroni_password}}
+              members: [{host: instance-idarsi-validation, instance: main, name: shared-key-path-member}]
+          instances: [{name: main, cluster: shared-etcd-key-path}]
+  tasks:
+    - name: "Running validation expecting shared etcd key path failure"
+      block:
+        - name: "Applying shared managed etcd key paths"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if shared managed etcd key paths were accepted"
+          ansible.builtin.fail:
+            msg: "Shared managed etcd key paths were accepted"
+      rescue:
+        - name: "Checking shared managed etcd key path failure message"
           ansible.builtin.assert:
             that:
               - ansible_failed_result is defined
               - >-
                 (ansible_failed_result | to_nice_json)
-                is search("Managed etcd TLS requires client and peer CA")
-        - name: "Writing incomplete TLS marker"
-          ansible.builtin.copy:
-            dest: /tmp/postgresql-validation-incomplete-etcd-tls.ok
-            content: "ok\n"
-            mode: "0644"
+                is search("Managed etcd client and peer key_file destinations must be different so Patroni can be isolated from the peer private key")
+
+- name: "Reject incomplete external managed etcd TLS material"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: validate
+    pg_etcd_bind_address: "192.0.2.10"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: invalid-etcd-tls-path
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: [https://etcd01.example.org:2379]
+                etcd:
+                  enabled: true
+                  initial_cluster_token: invalid-tls-path
+                  members:
+                    - {name: etcd01, host: instance-idarsi-etcd, peer_url: https://etcd01.example.org:2380, client_url: https://etcd01.example.org:2379}
+                  tls:
+                    enabled: true
+                    access_group: "etcd-pki"
+                    client:
+                      cert_file: /etc/etcd/pki/../etcd-client.crt
+              patroni:
+                restapi:
+                  authentication: {username: patroni, password: patroni_password}
+              members:
+                - {host: instance-idarsi-validation, instance: main, name: invalid-etcd-tls-path-member}
+          instances: [{name: main, cluster: invalid-etcd-tls-path}]
+  tasks:
+    - name: "Running validation expecting incomplete TLS material failure"
+      block:
+        - name: "Applying incomplete external managed etcd TLS material"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if incomplete external managed etcd TLS material was accepted"
+          ansible.builtin.fail:
+            msg: "Incomplete external managed etcd TLS material was accepted"
+      rescue:
+        - name: "Checking incomplete external managed etcd TLS material failure"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                "Managed etcd TLS is incomplete" in
+                (ansible_failed_result | to_nice_json)
+              - >-
+                "CA-only" in (ansible_failed_result | to_nice_json)
+            fail_msg: "Incomplete external managed etcd TLS did not report the material failure"
+
+- name: "Reject an unsafe custom generated etcd TLS destination"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    pg_etcd_bind_address: "192.0.2.10"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: unsafe-generated-etcd-path
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: ["https://etcd01.example.org:2379"]
+                etcd:
+                  enabled: true
+                  initial_cluster_token: unsafe-generated-path
+                  members:
+                    - {name: etcd01, host: etcd01.example.org, peer_url: "https://etcd01.example.org:2380", client_url: "https://etcd01.example.org:2379"}
+                  tls:
+                    enabled: true
+                    auto_generate: true
+                    client:
+                      ca_file: "/etc/etcd/pki/client-ca.crt"
+                      cert_file: "/etc/etcd/pki/client.crt"
+                      key_file: "/etc/etcd/pki/../unsafe-client.key"
+                    peer:
+                      ca_file: "/etc/etcd/pki/peer-ca.crt"
+                      cert_file: "/etc/etcd/pki/peer.crt"
+                      key_file: "/etc/etcd/pki/peer.key"
+              patroni:
+                restapi: {authentication: {username: patroni, password: patroni_password}}
+              members: [{host: instance-idarsi-validation, instance: main, name: unsafe-generated-path-member}]
+          instances: [{name: main, cluster: unsafe-generated-etcd-path}]
+  tasks:
+    - name: "Running validation expecting unsafe generated destination failure"
+      block:
+        - name: "Applying an unsafe custom generated etcd destination"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if unsafe generated destination was accepted"
+          ansible.builtin.fail:
+            msg: "Unsafe custom generated etcd destination was accepted"
+      rescue:
+        - name: "Checking unsafe generated destination failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json) is search(
+                "Managed etcd TLS generated paths must remain below /etc/etcd/pki")
 
 - name: "Reject an unsupported TimescaleDB source"
-  hosts: all
+  hosts: instance-idarsi-validation
   become: false
   vars:
     state: validate
@@ -289,14 +2592,9 @@
               - >-
                 (ansible_failed_result | to_nice_json)
                 is search("TimescaleDB source must be either 'pgdg' or 'community'")
-        - name: "Writing invalid source marker"
-          ansible.builtin.copy:
-            dest: /tmp/postgresql-validation-invalid-source.ok
-            content: "ok\n"
-            mode: "0644"
 
 - name: "Reject invalid Patroni timeout values"
-  hosts: all
+  hosts: instance-idarsi-validation
   become: false
   vars:
     state: validate
@@ -309,7 +2607,7 @@
               dcs:
                 provider: etcd3
                 endpoints:
-                  - https://etcd01.example.org:2379
+                  - http://etcd01.example.org:2379
               patroni:
                 ttl: 20
                 loop_wait: 10
@@ -340,14 +2638,9 @@
               - >-
                 (ansible_failed_result | to_nice_json)
                 is search('Patroni requires loop_wait')
-        - name: "Writing invalid Patroni timeout marker"
-          ansible.builtin.copy:
-            dest: /tmp/postgresql-validation-patroni-timeout.ok
-            content: "ok\n"
-            mode: "0644"
 
 - name: "Reject a Patroni instance without a local cluster member"
-  hosts: all
+  hosts: instance-idarsi-validation
   become: false
   vars:
     state: validate
@@ -360,12 +2653,12 @@
               dcs:
                 provider: etcd3
                 endpoints:
-                  - https://etcd01.example.org:2379
+                  - http://etcd01.example.org:2379
               patroni:
                 restapi:
                   authentication: {username: patroni, password: patroni_password}
               members:
-                - host: another-host.example.org
+                - host: instance-idarsi-etcd
                   instance: main
                   name: another-member
           instances:
@@ -388,14 +2681,9 @@
               - >-
                 (ansible_failed_result | to_nice_json)
                 is search("must reference an existing cluster and have exactly one member")
-        - name: "Writing missing local member marker"
-          ansible.builtin.copy:
-            dest: /tmp/postgresql-validation-patroni-member.ok
-            content: "ok\n"
-            mode: "0644"
 
 - name: "Reject conflicting TimescaleDB sources for one PostgreSQL version"
-  hosts: all
+  hosts: instance-idarsi-validation
   become: false
   vars:
     state: validate
@@ -431,14 +2719,9 @@
               - >-
                 (ansible_failed_result | to_nice_json)
                 is search("requests multiple TimescaleDB sources")
-        - name: "Writing source conflict marker"
-          ansible.builtin.copy:
-            dest: /tmp/postgresql-validation-source-conflict.ok
-            content: "ok\n"
-            mode: "0644"
 
 - name: "Reject duplicate PostgreSQL instance names"
-  hosts: all
+  hosts: instance-idarsi-validation
   become: false
   vars:
     state: validate
@@ -465,14 +2748,9 @@
               - >-
                 (ansible_failed_result | to_nice_json)
                 is search("PostgreSQL instance names must be unique")
-        - name: "Writing duplicate instance marker"
-          ansible.builtin.copy:
-            dest: /tmp/postgresql-validation-duplicate-instance.ok
-            content: "ok\n"
-            mode: "0644"
 
 - name: "Reject a Patroni cluster without DCS endpoints"
-  hosts: all
+  hosts: instance-idarsi-validation
   become: false
   vars:
     state: validate
@@ -512,14 +2790,9 @@
               - >-
                 (ansible_failed_result | to_nice_json)
                 is search("require a DCS provider, a list of DCS endpoints")
-        - name: "Writing missing DCS endpoints marker"
-          ansible.builtin.copy:
-            dest: /tmp/postgresql-validation-missing-dcs-endpoints.ok
-            content: "ok\n"
-            mode: "0644"
 
 - name: "Reject duplicate Patroni cluster member names"
-  hosts: all
+  hosts: instance-idarsi-validation
   become: false
   vars:
     state: validate
@@ -532,7 +2805,7 @@
               dcs:
                 provider: etcd3
                 endpoints:
-                  - https://etcd01.example.org:2379
+                  - http://etcd01.example.org:2379
               patroni:
                 restapi:
                   authentication: {username: patroni, password: patroni_password}
@@ -540,7 +2813,7 @@
                 - host: instance-idarsi-validation
                   instance: main
                   name: duplicate-member
-                - host: another-host.example.org
+                - host: instance-idarsi-etcd
                   instance: main
                   name: duplicate-member
           instances:
@@ -563,14 +2836,9 @@
               - >-
                 (ansible_failed_result | to_nice_json)
                 is search("PostgreSQL cluster member names must be unique")
-        - name: "Writing duplicate Patroni member marker"
-          ansible.builtin.copy:
-            dest: /tmp/postgresql-validation-duplicate-patroni-member.ok
-            content: "ok\n"
-            mode: "0644"
 
 - name: "Reject a standby that preloads TimescaleDB without package metadata"
-  hosts: all
+  hosts: instance-idarsi-validation
   become: false
   vars:
     state: validate
@@ -585,6 +2853,10 @@
                 primary_port: 5432
                 replication_user: replicator
                 replication_password: changeme
+                sslrootcert: "/var/lib/pgsql/17/standby/ca.crt"
+                sslrootcert_content: "test-ca\n"
+                primary_certificate_subject_alt_names:
+                  - primary.example.org
               configuration:
                 shared_preload_libraries: "timescaledb"
   tasks:
@@ -604,14 +2876,9 @@
               - >-
                 (ansible_failed_result | to_nice_json)
                 is search("Standby instances that preload TimescaleDB")
-        - name: "Writing missing TimescaleDB metadata marker"
-          ansible.builtin.copy:
-            dest: /tmp/postgresql-validation-standby-timescaledb.ok
-            content: "ok\n"
-            mode: "0644"
 
 - name: "Reject a missing PostgreSQL blueprint"
-  hosts: all
+  hosts: instance-idarsi-validation
   become: false
   vars:
     state: validate
@@ -632,14 +2899,9 @@
               - >-
                 (ansible_failed_result | to_nice_json)
                 is search("iac_blueprint or iac_blueprint.postgresql is not defined")
-        - name: "Writing missing blueprint marker"
-          ansible.builtin.copy:
-            dest: /tmp/postgresql-validation-missing-blueprint.ok
-            content: "ok\n"
-            mode: "0644"
 
 - name: "Reject a PostgreSQL blueprint with an invalid root type"
-  hosts: all
+  hosts: instance-idarsi-validation
   become: false
   vars:
     state: "validate"
@@ -661,14 +2923,40 @@
               - >-
                 (ansible_failed_result | to_nice_json)
                 is search("iac_blueprint must be a mapping containing postgresql")
-        - name: "Writing invalid blueprint root marker"
-          ansible.builtin.copy:
-            dest: "/tmp/postgresql-validation-invalid-root.ok"
-            content: "ok\n"
-            mode: "0644"
+
+- name: "Reject an invalid PostgreSQL cluster record"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - "invalid-cluster-record"
+          instances: []
+  tasks:
+    - name: "Running validation expecting an invalid cluster record failure"
+      block:
+        - name: "Applying a PostgreSQL blueprint with an invalid cluster record"
+          ansible.builtin.include_role:
+            name: "ansible-iac-role-postgresql"
+        - name: "Failing if an invalid cluster record was accepted"
+          ansible.builtin.fail:
+            msg: "An invalid PostgreSQL cluster record was accepted"
+      rescue:
+        - name: "Checking invalid cluster record failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search(
+                "PostgreSQL cluster record must be a mapping; malformed cluster records
+                cannot be validated")
 
 - name: "Reject Patroni REST API without authentication"
-  hosts: all
+  hosts: instance-idarsi-validation
   become: false
   vars:
     state: validate
@@ -681,7 +2969,7 @@
               dcs:
                 provider: etcd3
                 endpoints:
-                  - https://etcd01.example.org:2379
+                  - http://etcd01.example.org:2379
               patroni:
                 restapi: {}
               members:
@@ -708,14 +2996,9 @@
               - >-
                 (ansible_failed_result | to_nice_json)
                 is search("REST API authentication credentials")
-        - name: "Writing missing REST API authentication marker"
-          ansible.builtin.copy:
-            dest: /tmp/postgresql-validation-missing-restapi-authentication.ok
-            content: "ok\n"
-            mode: "0644"
 
 - name: "Reject PostgreSQL post-install shell commands"
-  hosts: all
+  hosts: instance-idarsi-validation
   become: false
   vars:
     state: validate
@@ -745,14 +3028,9 @@
               - >-
                 (ansible_failed_result | to_nice_json)
                 is search("post-install jobs must use a non-empty sql field")
-        - name: "Writing post-install validation marker"
-          ansible.builtin.copy:
-            dest: /tmp/postgresql-validation-post-install.ok
-            content: "ok\n"
-            mode: "0644"
 
 - name: "Reject PostgreSQL root cron jobs"
-  hosts: all
+  hosts: instance-idarsi-validation
   become: false
   vars:
     state: validate
@@ -782,14 +3060,9 @@
               - >-
                 (ansible_failed_result | to_nice_json)
                 is search("must define a non-empty job and run as the postgres user")
-        - name: "Writing cron validation marker"
-          ansible.builtin.copy:
-            dest: /tmp/postgresql-validation-cron.ok
-            content: "ok\n"
-            mode: "0644"
 
 - name: "Reject PostgreSQL protected filesystem paths"
-  hosts: all
+  hosts: instance-idarsi-validation
   become: false
   vars:
     state: validate
@@ -818,14 +3091,9 @@
               - >-
                 (ansible_failed_result | to_nice_json)
                 is search("filesystem paths must be safe")
-        - name: "Writing filesystem validation marker"
-          ansible.builtin.copy:
-            dest: /tmp/postgresql-validation-filesystem.ok
-            content: "ok\n"
-            mode: "0644"
 
 - name: "Reject unsafe all_absent cleanup paths"
-  hosts: all
+  hosts: instance-idarsi-validation
   become: false
   vars:
     state: all_absent
@@ -855,14 +3123,9 @@
               - >-
                 (ansible_failed_result | to_nice_json)
                 is search("PostgreSQL cleanup paths must be absolute")
-        - name: "Writing cleanup path validation marker"
-          ansible.builtin.copy:
-            dest: /tmp/postgresql-validation-cleanup-path.ok
-            content: "ok\n"
-            mode: "0644"
 
 - name: "Reject unsafe PostgreSQL instance names"
-  hosts: all
+  hosts: instance-idarsi-validation
   become: false
   vars:
     state: instances_absent
@@ -888,14 +3151,9 @@
               - >-
                 (ansible_failed_result | to_nice_json)
                 is search("PostgreSQL instance names may contain only")
-        - name: "Writing instance name validation marker"
-          ansible.builtin.copy:
-            dest: /tmp/postgresql-validation-instance-name.ok
-            content: "ok\n"
-            mode: "0644"
 
 - name: "Reject unsafe absent cleanup paths"
-  hosts: all
+  hosts: instance-idarsi-validation
   become: false
   vars:
     state: absent
@@ -921,14 +3179,9 @@
               - >-
                 (ansible_failed_result | to_nice_json)
                 is search("PostgreSQL cleanup paths must be absolute")
-        - name: "Writing absent cleanup path validation marker"
-          ansible.builtin.copy:
-            dest: /tmp/postgresql-validation-absent-cleanup-path.ok
-            content: "ok\n"
-            mode: "0644"
 
 - name: "Reject unsafe version-scoped bind paths"
-  hosts: all
+  hosts: instance-idarsi-validation
   become: false
   vars:
     state: validate
@@ -937,7 +3190,7 @@
         - version: 17
           binds:
             - source: /etc
-              target: /tmp/pgsql-unsafe-bind
+              target: "/var/lib/ansible/.ansible/validation/validation/pgsql-unsafe-bind"
   tasks:
     - name: "Running validation expecting unsafe version-scoped bind failure"
       block:
@@ -955,8 +3208,1028 @@
               - >-
                 (ansible_failed_result | to_nice_json)
                 is search("version-scoped bind paths must be absolute")
-        - name: "Writing version-scoped bind validation marker"
+
+- name: "Reject replication CA path traversal"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: standby
+              replication:
+                role: standby
+                primary_host: primary.example.org
+                primary_port: 5432
+                replication_user: replicator
+                replication_password: changeme
+                sslrootcert: "/var/lib/pgsql/17/standby/../../etc/postgresql/ca.crt"
+                sslrootcert_content: "test-ca\n"
+                primary_certificate_subject_alt_names:
+                  - primary.example.org
+  tasks:
+    - name: "Running validation expecting replication CA traversal failure"
+      block:
+        - name: "Applying a traversing replication CA destination"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if replication CA traversal was accepted"
+          ansible.builtin.fail:
+            msg: "Replication CA path traversal was accepted"
+      rescue:
+        - name: "Checking replication CA traversal failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                 (ansible_failed_result | to_nice_json)
+                 is search("safe file path: non-empty, absolute, normalized")
+
+- name: "Reject simultaneous replication CA source and content"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: standby
+              replication:
+                role: standby
+                primary_host: primary.example.org
+                primary_port: 5432
+                replication_user: replicator
+                replication_password: changeme
+                sslrootcert: "/var/lib/pgsql/17/standby/ca.crt"
+                sslrootcert_content: "test-ca\n"
+                sslrootcert_src: "/etc/pki/ca-trust/source/anchors/ca.crt"
+                primary_certificate_subject_alt_names:
+                  - primary.example.org
+  tasks:
+    - name: "Running validation expecting dual replication CA input failure"
+      block:
+        - name: "Applying both replication CA input forms"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if dual replication CA inputs were accepted"
+          ansible.builtin.fail:
+            msg: "Simultaneous replication CA source and content were accepted"
+      rescue:
+        - name: "Checking dual replication CA input failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("supplying both is ambiguous")
+
+- name: "Accept strict IPv4 and IPv6 replication CIDRs"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: valid-replication-addresses
+              replication:
+                role: primary
+                replication_user: replicator
+                replication_password: changeme
+                allowed_standby_addresses:
+                  - "192.0.2.0/24"
+                  - "2001:db8:1234::/48"
+  tasks:
+    - name: "Validating strict replication address forms"
+      ansible.builtin.include_role:
+        name: ansible-iac-role-postgresql
+
+- name: "Reject malformed and injectable replication standby addresses"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: invalid-replication-addresses
+              replication:
+                role: primary
+                replication_user: replicator
+                replication_password: changeme
+                allowed_standby_addresses:
+                  - "not-an-address"
+                  - "192.0.2.1 host all all trust"
+                  - "192.0.2.1\nhost all all trust"
+                  - "192.0.2.1 # injected comment"
+                  - "3232235777"
+                  - 12345
+  tasks:
+    - name: "Running validation expecting replication address safety failure"
+      block:
+        - name: "Applying malformed and injectable standby addresses"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if unsafe replication addresses were accepted"
+          ansible.builtin.fail:
+            msg: "Malformed or injectable replication standby addresses were accepted"
+      rescue:
+        - name: "Checking replication address safety failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("allowed_standby_addresses must contain only strict IPv4/IPv6")
+
+- name: "Accept absent, false, and explicit true allow_broad_hba values"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: broad-hba-boolean-values
+              replication:
+                role: primary
+                replication_user: replicator
+                replication_password: changeme
+                allowed_standby_addresses: ["192.0.2.0/24"]
+            - name: false-broad-hba
+              replication:
+                role: primary
+                replication_user: replicator
+                replication_password: changeme
+                allow_broad_hba: false
+                allowed_standby_addresses: ["192.0.2.0/24"]
+            - name: true-broad-hba
+              replication:
+                role: primary
+                replication_user: replicator
+                replication_password: changeme
+                allow_broad_hba: true
+                allowed_standby_addresses: ["0.0.0.0/0", "::/0"]
+  tasks:
+    - name: "Validating supported allow_broad_hba boolean forms"
+      ansible.builtin.include_role:
+        name: ansible-iac-role-postgresql
+
+- name: "Accept raw Patroni broad addresses with native true under off profile"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: raw-broad-true
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd01.example.org:2379"]}
+              patroni:
+                allow_broad_hba: true
+                pg_hba: ["host all all 0.0.0.0/0 scram-sha-256", "host all all ::/0 scram-sha-256"]
+                restapi: {authentication: {username: patroni, password: patroni_password}}
+              members: [{host: instance-idarsi-validation, instance: main, name: raw-broad-true-member}]
+          instances: [{name: main, cluster: raw-broad-true}]
+  tasks:
+    - name: "Validating raw Patroni broad opt-in"
+      ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+
+- name: "Reject raw Patroni broad addresses without opt-in"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: raw-broad-rejected
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd01.example.org:2379"]}
+              patroni:
+                pg_hba: ["host all all 0.0.0.0/0 scram-sha-256"]
+                restapi: {port: 8023, listen: "127.0.0.1:8023", connect_address: "127.0.0.1:8023", authentication: {username: patroni, password: patroni_password}}
+              members: [{host: instance-idarsi-validation, instance: main, name: raw-broad-rejected-member}]
+            - name: raw-broad-false
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd01.example.org:2379"]}
+              patroni:
+                allow_broad_hba: false
+                pg_hba: ["host all all ::/0 scram-sha-256"]
+                restapi: {port: 8024, listen: "127.0.0.1:8024", connect_address: "127.0.0.1:8024", authentication: {username: patroni, password: patroni_password}}
+              members: [{host: instance-idarsi-validation, instance: "false", name: raw-broad-false-member}]
+          instances:
+            - {name: main, cluster: raw-broad-rejected}
+            - {name: "false", cluster: raw-broad-false}
+  tasks:
+    - name: "Checking raw Patroni broad address rejection"
+      block:
+        - name: "Applying raw Patroni broad address without opt-in"
+          ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - name: "Failing if raw Patroni broad address was accepted"
+          ansible.builtin.fail: {msg: "Raw Patroni broad address was accepted without opt-in"}
+      rescue:
+        - name: "Checking raw Patroni broad address failure"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'Raw Patroni pg_hba records' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject bare wildcard HBA addresses even with opt-in"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: raw-bare-wildcard
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd01.example.org:2379"]}
+              patroni:
+                allow_broad_hba: true
+                pg_hba: ["host all all 0.0.0.0 scram-sha-256"]
+                restapi: {port: 8025, listen: "127.0.0.1:8025", connect_address: "127.0.0.1:8025", authentication: {username: patroni, password: patroni_password}}
+              members: [{host: instance-idarsi-validation, instance: main, name: raw-bare-wildcard-member}]
+          instances: [{name: main, cluster: raw-bare-wildcard}]
+  tasks:
+    - name: "Checking bare wildcard HBA rejection"
+      block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "Bare wildcard HBA address was accepted"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'Raw Patroni pg_hba records' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject Patroni security profile override"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: patroni-profile-override
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd01.example.org:2379"]}
+              patroni:
+                security_profile: "off"
+                pg_hba: ["host all all 192.0.2.0/24 trust"]
+                restapi: {authentication: {username: patroni, password: patroni_password}}
+              members: [{host: instance-idarsi-validation, instance: main, name: patroni-profile-override-member}]
+          instances: [{name: main, cluster: patroni-profile-override, security_profile: safe}]
+  tasks:
+    - name: "Checking Patroni profile override rejection"
+      block:
+        - name: "Applying Patroni security profile override"
+          ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - name: "Failing if Patroni security profile override was accepted"
+          ansible.builtin.fail: {msg: "Patroni security profile override was accepted"}
+      rescue:
+        - name: "Checking Patroni security profile override failure"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'Patroni security_profile is not supported' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject non-boolean allow_broad_hba values"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: invalid-broad-hba
+              replication:
+                role: primary
+                replication_user: replicator
+                replication_password: changeme
+                allow_broad_hba: "true"
+                allowed_standby_addresses: ["192.0.2.0/24"]
+  tasks:
+    - name: "Running validation expecting non-boolean allow_broad_hba failure"
+      block:
+        - name: "Applying a non-boolean allow_broad_hba value"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if a non-boolean allow_broad_hba value was accepted"
+          ansible.builtin.fail:
+            msg: "A non-boolean allow_broad_hba value was accepted"
+      rescue:
+        - name: "Checking non-boolean allow_broad_hba failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                 (ansible_failed_result | to_nice_json)
+                  is search("allow_broad_hba must be a YAML boolean")
+
+- name: "Accept an instance-less Patroni cluster with the secure default profile"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: instance-less-secure-default
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd01.example.org:2379"]}
+              patroni:
+                restapi: {authentication: {username: patroni, password: patroni_password}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: []
+  tasks:
+    - name: "Validating the instance-less Patroni cluster"
+      ansible.builtin.include_role:
+        name: ansible-iac-role-postgresql
+
+- name: "Reject non-canonical broad replication ranges despite opt-in"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: noncanonical-broad-range
+              replication:
+                role: primary
+                replication_user: replicator
+                replication_password: changeme
+                allow_broad_hba: true
+                allowed_standby_addresses: ["192.0.2.1/0"]
+  tasks:
+    - name: "Applying a non-canonical broad replication range"
+      block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "Non-canonical broad range was accepted"}
+      rescue:
+        - name: "Checking non-canonical broad range failure"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - (ansible_failed_result | to_nice_json) is search("allowed_standby_addresses")
+
+    - name: "Checking the instance-less Patroni secure default"
+      ansible.builtin.assert:
+        that:
+          - pg_validation_security_profile == "safe"
+        fail_msg: "Instance-less Patroni clusters must use the secure default profile"
+
+- name: "Reject mixed Patroni instance security profiles"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: mixed-instance-profiles
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd01.example.org:2379"]}
+              patroni: {restapi: {authentication: {username: patroni, password: patroni_password}}}
+              members:
+                - {host: instance-idarsi-validation, instance: safe, name: safe-member}
+                - {host: instance-idarsi-validation, instance: "off", name: off-member}
+          instances:
+            - {name: safe, cluster: mixed-instance-profiles, security_profile: safe}
+            - {name: "off", cluster: mixed-instance-profiles, security_profile: "off"}
+  tasks:
+    - name: "Validating mixed Patroni instance profiles"
+      block:
+        - name: "Applying mixed Patroni instance profiles"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if mixed Patroni profiles were accepted"
+          ansible.builtin.fail:
+            msg: "Mixed Patroni instance profiles were accepted"
+      rescue:
+        - name: "Checking mixed profile validation failure"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                "mixed instance profiles are ambiguous" in (ansible_failed_result | to_nice_json)
+
+- name: "Reject invalid raw Patroni HBA without host mutation"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: invalid-raw-hba-no-mutation
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd01.example.org:2379"]}
+              patroni:
+                pg_hba: ["host all all 192.0.2.0/24 trust"]
+                restapi: {authentication: {username: patroni, password: patroni_password}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: invalid-raw-hba-no-mutation, security_profile: safe}]
+  tasks:
+    - name: "Validating invalid raw Patroni HBA"
+      block:
+        - name: "Applying invalid raw Patroni HBA"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if invalid raw HBA was accepted"
+          ansible.builtin.fail:
+            msg: "Invalid raw Patroni HBA was accepted"
+      rescue:
+        - name: "Checking invalid raw HBA validation failure"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                "Raw Patroni pg_hba records" in (ansible_failed_result | to_nice_json)
+
+- name: "Accept normalized managed etcd IPv4 IPv6 and DNS endpoints"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    pg_etcd_bind_address: "192.0.2.10"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: valid-etcd-endpoints
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: ["https://etcd.example.org:2379"]
+                etcd:
+                  enabled: true
+                  initial_cluster_token: "valid-token_01"
+                  members:
+                    - name: "etcd-01"
+                      host: instance-idarsi-validation
+                      peer_url: "https://[2001:db8::10]:2380"
+                      client_url: "https://etcd.example.org:2379"
+                  tls: {enabled: true, auto_generate: true}
+              patroni:
+                restapi: {authentication: {username: patroni, password: patroni_password}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: valid-etcd-endpoints}]
+  tasks:
+    - name: "Validating managed etcd endpoint forms"
+      ansible.builtin.include_role:
+        name: ansible-iac-role-postgresql
+
+- name: "Reject managed etcd token and member injection"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    pg_etcd_bind_address: "192.0.2.10"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: invalid-etcd-token
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: ["https://etcd.example.org:2379"]
+                etcd:
+                  enabled: true
+                  initial_cluster_token: "bad-token\nETCD_INITIAL_CLUSTER_STATE=existing"
+                  members:
+                    - name: "etcd01;injected"
+                      host: instance-idarsi-validation
+                      peer_url: "https://etcd.example.org:2380"
+                      client_url: "https://etcd.example.org:2379"
+                  tls: {enabled: true, auto_generate: true}
+              patroni:
+                restapi: {authentication: {username: patroni, password: patroni_password}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: invalid-etcd-token}]
+  tasks:
+    - name: "Running validation expecting etcd token injection failure"
+      block:
+        - name: "Applying unsafe etcd token and member"
+          ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - name: "Failing if unsafe etcd token or member was accepted"
+          ansible.builtin.fail: {msg: "Unsafe etcd token or member was accepted"}
+      rescue:
+        - name: "Checking etcd token injection failure"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'initial_cluster_token' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject malformed managed etcd URL injection"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    pg_etcd_bind_address: "192.0.2.10"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: invalid-etcd-url
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: ["https://etcd.example.org:2379"]
+                etcd:
+                  enabled: true
+                  initial_cluster_token: "valid-token"
+                  members:
+                    - name: etcd01
+                      host: instance-idarsi-validation
+                      peer_url: "https://etcd.example.org:2380/path"
+                      client_url: "https://etcd.example.org:2379;id"
+                  tls: {enabled: true, auto_generate: true}
+              patroni:
+                restapi: {authentication: {username: patroni, password: patroni_password}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: invalid-etcd-url}]
+  tasks:
+    - name: "Running validation expecting malformed etcd URL failure"
+      block:
+        - name: "Applying malformed etcd URL"
+          ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - name: "Failing if malformed etcd URL was accepted"
+          ansible.builtin.fail: {msg: "Malformed etcd URL was accepted"}
+      rescue:
+        - name: "Checking malformed etcd URL failure"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'complete HTTPS host:port' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject a Patroni REST API advertised port differing from the listener"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: invalid-restapi-port
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd01.example.org:2379"]}
+              patroni:
+                restapi:
+                  port: 8008
+                  connect_address: "patroni.example.org:18008"
+                  authentication: {username: patroni, password: patroni_password}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: invalid-restapi-port}]
+  tasks:
+    - name: "Checking differing REST API advertised port is rejected"
+      block:
+        - name: "Applying differing REST API advertised port"
+          ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - name: "Failing if differing REST API advertised port was accepted"
+          ansible.builtin.fail: {msg: "Differing REST API advertised port was accepted"}
+      rescue:
+        - name: "Checking differing REST API advertised port failure"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'connect_address port must match restapi.port' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject malformed Patroni nested mappings"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: malformed-nested-mappings
+              provider: patroni
+              dcs: "invalid"
+              patroni: "invalid"
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: malformed-nested-mappings}]
+  tasks:
+    - name: "Checking malformed nested mappings are rejected"
+      block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "Malformed nested mappings were accepted"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'dcs to be a non-empty mapping' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject malformed Patroni REST API authentication"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: malformed-auth
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd.example.org:2379"]}
+              patroni: {restapi: {authentication: {username: 42, password: "secret"}}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: malformed-auth}]
+  tasks:
+    - name: "Checking malformed authentication is rejected"
+      block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "Malformed authentication was accepted"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'authentication username and password must be native' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject invalid Patroni REST API verify_client type"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: invalid-verify-client-type
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd.example.org:2379"]}
+              patroni: {restapi: {verify_client: true, authentication: {username: patroni, password: secret}}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: invalid-verify-client-type}]
+  tasks:
+    - name: "Checking invalid verify_client type is rejected"
+      block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "Invalid verify_client type was accepted"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'verify_client must be a string' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject invalid Patroni REST API fallback types"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    pg_patroni_restapi_port: "8008"
+    pg_patroni_restapi_listen_address: 127
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: invalid-fallback-types
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd.example.org:2379"]}
+              patroni: {restapi: {authentication: {username: patroni, password: secret}}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: invalid-fallback-types}]
+  tasks:
+    - name: "Checking invalid fallback types are rejected"
+      block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "Invalid fallback types were accepted"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'fallback port must be an integer' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject invalid Patroni REST API fallback address"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    pg_patroni_restapi_endpoint_fallback_address: "bad fallback host"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: invalid-fallback-address
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd.example.org:2379"]}
+              patroni: {restapi: {authentication: {username: patroni, password: secret}}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: invalid-fallback-address}]
+  tasks:
+    - name: "Checking invalid fallback address is rejected"
+      block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "Invalid fallback address was accepted"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'fallback port must be an integer' not in (ansible_failed_result | to_nice_json)"
+              - "'fallback endpoint address' in (ansible_failed_result | to_nice_json)"
+
+- name: "Accept a cluster-only PostgreSQL version without instances"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: cluster-only-source-collection
+              provider: "standalone"
+              members: [{host: "instance-idarsi-validation", instance: "cluster-only", name: "cluster-only-member"}]
+  tasks:
+    - name: "Checking cluster-only version validation does not dereference instances"
+      ansible.builtin.include_role:
+        name: ansible-iac-role-postgresql
+
+- name: "Reject a symlinked controller-side CA source parent"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_validation_fixture_root: "{{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_DIRECTORY') }}/.artifacts/validation-ca/{{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_NAME') | default('validation', true) }}-controller-{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') | basename }}"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: symlinked-client-ca
+              client_certificate_authority_src: "{{ iac_validation_fixture_root }}/ca-link/ca.crt"
+  tasks:
+    - name: "Checking symlinked CA source parent fails before mutation"
+      block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "Symlinked CA source parent was accepted"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'non-symlinked' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject a missing controller-side client CA source"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: missing-client-ca
+              client_certificate_authority_src: "/etc/pki/does-not-exist/postgresql-client-ca.crt"
+  tasks:
+    - name: "Checking missing client CA source fails before mutation"
+      block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "Missing client CA source was accepted"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'must be an existing, owner-readable, regular non-symlink file' in (ansible_failed_result | to_nice_json)"
+
+- name: "Reject an unreadable controller-side replication CA source"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_validation_fixture_root: "{{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_DIRECTORY') }}/.artifacts/validation-ca/{{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_NAME') | default('validation', true) }}-controller-{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') | basename }}"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: unreadable-replication-ca
+              replication:
+                role: standby
+                primary_host: primary.example.org
+                primary_port: 5432
+                replication_user: replicator
+                replication_password: password
+                sslrootcert: "/var/lib/pgsql/17/unreadable/ca.crt"
+                sslrootcert_src: "{{ iac_validation_fixture_root }}/unreadable-ca.crt"
+                primary_certificate_subject_alt_names: [primary.example.org]
+  tasks:
+    - name: "Checking unreadable replication CA source fails before mutation"
+      block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "Unreadable replication CA source was accepted"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'must be an existing, owner-readable, regular non-symlink file' in (ansible_failed_result | to_nice_json)"
+
+- name: "Validate host-specific controller-side replication CA sources"
+  hosts: all
+  become: false
+  vars:
+    state: "validate"
+    iac_validation_system_ca: "{{ lookup('ansible.builtin.pipe', 'readlink -f /etc/ssl/certs/ca-certificates.crt') }}"
+    iac_validation_ca_by_host:
+      instance-idarsi-validation: "{{ iac_validation_system_ca }}"
+      instance-idarsi-etcd: "{{ iac_validation_system_ca }}"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: host-specific-replication-ca
+              replication:
+                role: standby
+                primary_host: primary.example.org
+                primary_port: 5432
+                replication_user: replicator
+                replication_password: password
+                sslrootcert: "/var/lib/pgsql/17/host-specific-replication-ca.crt"
+                sslrootcert_src: "{{ iac_validation_ca_by_host[inventory_hostname] }}"
+                primary_certificate_subject_alt_names: [primary.example.org]
+  tasks:
+    - name: "Running per-host replication CA source validation"
+      ansible.builtin.include_role:
+        name: ansible-iac-role-postgresql
+    - name: "Checking this host validated only its own replication CA source"
+      ansible.builtin.assert:
+        that:
+          - pg_validation_controller_ca_sources == [iac_validation_ca_by_host[inventory_hostname]]
+          - pg_validation_controller_ca_source_stats.results | length == 1
+          - pg_validation_controller_ca_source_stats.results[0].pg_validation_controller_ca_source == iac_validation_ca_by_host[inventory_hostname]
+          - pg_validation_controller_ca_source_stats.results[0].stat.uid == 0
+        fail_msg: "Controller validation did not isolate this host's replication CA source"
+
+- name: "Validate a regular controller-side CA source without target mutation"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    ansible_become_method: "su"
+    iac_validation_regular_ca_source: "{{ lookup('ansible.builtin.pipe', 'readlink -f /etc/ssl/certs/ca-certificates.crt') }}"
+    iac_validation_regular_ca_target: "/var/lib/pgsql/17/validation-regular-ca.crt"
+    iac_validation_regular_ca_content: |-
+      -----BEGIN CERTIFICATE-----
+      VALIDATION-FAKE-PEM-SENTINEL
+      -----END CERTIFICATE-----
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: regular-controller-ca
+              client_certificate_authority_src: "{{ iac_validation_regular_ca_source }}"
+  tasks:
+    - name: "Create a known target file for controller validation immutability test"
+      become: true
+      block:
+        - name: "Create target parent for controller validation immutability test"
+          ansible.builtin.file:
+            path: "{{ iac_validation_regular_ca_target | dirname }}"
+            state: "directory"
+            owner: "root"
+            group: "root"
+            mode: "0755"
+        - name: "Seed known fake PEM target content"
           ansible.builtin.copy:
-            dest: /tmp/postgresql-validation-version-bind.ok
-            content: "ok\n"
-            mode: "0644"
+            content: "{{ iac_validation_regular_ca_content }}"
+            dest: "{{ iac_validation_regular_ca_target }}"
+            owner: "root"
+            group: "root"
+            mode: "0640"
+
+    - name: "Snapshot target before regular controller CA validation"
+      ansible.builtin.stat:
+        path: "{{ iac_validation_regular_ca_target }}"
+        follow: false
+      register: iac_validation_regular_ca_target_before
+
+    - name: "Read target content before regular controller CA validation"
+      become: true
+      ansible.builtin.slurp:
+        src: "{{ iac_validation_regular_ca_target }}"
+      register: iac_validation_regular_ca_target_content_before
+
+    - name: "Validate regular controller CA source"
+      ansible.builtin.include_role:
+        name: ansible-iac-role-postgresql
+      no_log: true
+
+    - name: "Snapshot target after regular controller CA validation"
+      ansible.builtin.stat:
+        path: "{{ iac_validation_regular_ca_target }}"
+        follow: false
+      register: iac_validation_regular_ca_target_after
+
+    - name: "Read target content after regular controller CA validation"
+      become: true
+      ansible.builtin.slurp:
+        src: "{{ iac_validation_regular_ca_target }}"
+      register: iac_validation_regular_ca_target_content_after
+
+    - name: "Assert regular CA metadata passed without target mutation or content logging"
+      ansible.builtin.assert:
+        that:
+          - pg_validation_controller_ca_sources == [iac_validation_regular_ca_source]
+          - pg_validation_controller_ca_source_stats.results | length == 1
+          - pg_validation_controller_ca_source_stats.results[0].stat.isreg
+          - not (pg_validation_controller_ca_source_stats.results[0].stat.islnk | default(false))
+          - pg_validation_controller_ca_source_stats.results[0].stat.uid == 0
+          - iac_validation_regular_ca_target_before.stat.checksum == iac_validation_regular_ca_target_after.stat.checksum
+          - iac_validation_regular_ca_target_before.stat == iac_validation_regular_ca_target_after.stat
+          - (iac_validation_regular_ca_target_content_before.content | b64decode) == iac_validation_regular_ca_content
+          - (iac_validation_regular_ca_target_content_after.content | b64decode) == iac_validation_regular_ca_content
+          - iac_validation_regular_ca_target_content_before.content == iac_validation_regular_ca_target_content_after.content
+        fail_msg: "Regular controller CA validation mutated target content or metadata"
+
+- name: "Reject raw Patroni certificate authentication without a client CA"
+  hosts: instance-idarsi-validation
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: raw-certificate-without-ca
+              provider: patroni
+              dcs: {provider: etcd3, endpoints: ["http://etcd.example.org:2379"]}
+              patroni:
+                pg_hba:
+                  - "hostssl all all 192.0.2.0/24 cert"
+                  - "hostssl all all 192.0.2.0/24 scram-sha-256 clientcert=verify-full"
+                  - "hostssl all all 192.0.2.0/24 scram-sha-256 clientname=CN"
+                  - "hostssl all all 192.0.2.0/24 cert map=certmap"
+                restapi: {authentication: {username: patroni, password: password}}
+              members: [{host: instance-idarsi-validation, instance: main, name: member}]
+          instances: [{name: main, cluster: raw-certificate-without-ca}]
+  tasks:
+    - name: "Checking raw certificate authentication fails before mutation"
+      block:
+        - ansible.builtin.include_role: {name: ansible-iac-role-postgresql}
+        - ansible.builtin.fail: {msg: "Raw certificate authentication without CA was accepted"}
+      rescue:
+        - ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - "'certificate-aware authentication is enabled without a configured client CA' in (ansible_failed_result | to_nice_json)"
+
+- name: "Execute external-path loop-shape negative case and cleanup"
+  hosts: localhost
+  gather_facts: false
+  become: true
+  vars:
+    iac_external_path_fixture_root: "/tmp/idarsi-external-path-shape"
+    iac_external_path_link: "{{ iac_external_path_fixture_root }}/link"
+    iac_external_path_target: "{{ iac_external_path_link }}/ca.crt"
+  tasks:
+    - name: "Create external-path loop-shape fixture"
+      block:
+        - ansible.builtin.file:
+            path: "{{ iac_external_path_fixture_root }}/real"
+            state: "directory"
+            mode: "0700"
+        - ansible.builtin.copy:
+            content: "validation fixture\n"
+            dest: "{{ iac_external_path_fixture_root }}/real/ca.crt"
+            mode: "0600"
+        - ansible.builtin.file:
+            src: "{{ iac_external_path_fixture_root }}/real"
+            dest: "{{ iac_external_path_link }}"
+            state: "link"
+        - name: "Reject symlinked external path using registered result shape"
+          block:
+            - ansible.builtin.include_tasks: ../../tasks/validate/validate_external_path_ancestors.yml
+              vars:
+                pg_external_path_paths: ["{{ iac_external_path_target }}"]
+                pg_external_path_acl_paths: ["{{ iac_external_path_target }}"]
+                pg_external_path_service_group: "root"
+                pg_external_path_immediate_groups: ["root"]
+            - ansible.builtin.fail:
+                msg: "Symlinked external path was accepted"
+          rescue:
+            - ansible.builtin.assert:
+                that:
+                  - ansible_failed_result is defined
+                  - "'must not be a symlink' in (ansible_failed_result | to_nice_json)"
+                fail_msg: "External path negative case did not reject the symlink"
+      always:
+        - ansible.builtin.file:
+            path: "{{ iac_external_path_fixture_root }}"
+            state: "absent"

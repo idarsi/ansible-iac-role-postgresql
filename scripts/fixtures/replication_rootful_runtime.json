@@ -1,0 +1,7 @@
+{
+  "Host": {
+    "Security": {
+      "Rootless": false
+    }
+  }
+}

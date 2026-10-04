@@ -1,0 +1,51 @@
+---
+- name: "Build certificate path contract model"
+  ansible.builtin.set_fact:
+    pg_certificate_contract_generated: "{{ ([pg_certificate_path_contract.generated] if pg_certificate_path_contract.generated is string else pg_certificate_path_contract.generated | default([], true) | list) if pg_certificate_path_contract.generated | default('', true) | length > 0 else [] }}"  # noqa yaml[line-length]
+    pg_certificate_contract_managed: "{{ ([pg_certificate_path_contract.managed] if pg_certificate_path_contract.managed is string else pg_certificate_path_contract.managed | default([], true) | list) if pg_certificate_path_contract.managed | default('', true) | length > 0 else [] }}"  # noqa yaml[line-length]
+    pg_certificate_contract_ssl_paths: "{{ ([pg_certificate_path_contract.ssl_paths] if pg_certificate_path_contract.ssl_paths is string else pg_certificate_path_contract.ssl_paths | default([], true) | list) if pg_certificate_path_contract.ssl_paths | default('', true) | length > 0 else [] }}"  # noqa yaml[line-length]
+
+- name: "Initialize canonical certificate contract paths"
+  ansible.builtin.set_fact:
+    pg_certificate_contract_generated_canonical: []
+    pg_certificate_contract_managed_canonical: []
+    pg_certificate_contract_ssl_paths_canonical: []
+
+- name: "Canonicalize generated contract paths"
+  ansible.builtin.include_tasks: normalize_path.yml
+  loop: "{{ pg_certificate_contract_generated }}"
+  loop_control:
+    loop_var: pg_certificate_contract_path
+  vars:
+    pg_path_normalize_input: "{{ pg_certificate_contract_path }}"
+    pg_path_normalize_result_fact: "pg_certificate_contract_current_path"
+    pg_path_normalize_label: "Certificate contract path"
+    pg_path_normalize_accumulator: "pg_certificate_contract_generated_canonical"
+
+- name: "Canonicalize managed contract paths"
+  ansible.builtin.include_tasks: normalize_path.yml
+  loop: "{{ pg_certificate_contract_managed }}"
+  loop_control:
+    loop_var: pg_certificate_contract_path
+  vars:
+    pg_path_normalize_input: "{{ pg_certificate_contract_path }}"
+    pg_path_normalize_result_fact: "pg_certificate_contract_current_path"
+    pg_path_normalize_label: "Certificate contract path"
+    pg_path_normalize_accumulator: "pg_certificate_contract_managed_canonical"
+
+- name: "Check certificate path collision contract"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+           pg_certificate_contract_generated_canonical | unique | list | length ==
+           pg_certificate_contract_generated_canonical | length
+           and
+           pg_certificate_contract_managed_canonical | unique | list | length ==
+           pg_certificate_contract_managed_canonical | length
+           and
+           (pg_certificate_contract_generated_canonical + pg_certificate_contract_managed_canonical)
+           | unique | list | length ==
+           (pg_certificate_contract_generated_canonical + pg_certificate_contract_managed_canonical) | length
+         ) == pg_certificate_path_contract.expected_valid
+    fail_msg: "Certificate destination collision contract produced an unexpected result"

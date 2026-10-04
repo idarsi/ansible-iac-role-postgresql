@@ -1,0 +1,21 @@
+valid:
+  - subnet: "{{ (pg_replication_subnets_data | first).get('subnet') }}"
+    address: "{{ pg_replication_container_network_data['podman'].get('IPAddress') }}"
+  - subnet: '{{ (pg_replication_subnets_data | first).get("subnet") }}'
+    address: '{{ pg_replication_container_network_data["podman"].get("IPAddress") }}'
+  - subnet: >-
+      {{ (pg_replication_subnets_data | first).subnet }}
+    address: >-
+      {{ pg_replication_container_network_data.podman[IPAddress] }}
+  - subnet: >-
+      {{ (pg_replication_subnets_data | first)[subnet] }}
+    address: >-
+      {{ pg_replication_container_network_data['podman'].get(IPAddress) }}
+invalid:
+  - expression: "{{ (pg_replication_subnets_data | first).get('network') }}"
+    required:
+      - subnet
+  - expression: "{{ pg_replication_container_network_data['network'].get('Address') }}"
+    required:
+      - podman
+      - IPAddress

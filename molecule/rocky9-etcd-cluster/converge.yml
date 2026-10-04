@@ -4,7 +4,7 @@
   become: false
   vars:
     state: install
-    pg_patroni_restapi_listen_address: "0.0.0.0"
+    pg_patroni_restapi_listen_address: "127.0.0.1"
     pg_patroni_reinitialize: false
     pg_lang: "en"
     pg_locale: "US"
@@ -40,8 +40,8 @@
                       client_url: https://etcd03:2379
                   tls:
                     enabled: true
-                    client: {ca_file: /etc/etcd/pki/ca.crt, cert_file: /etc/etcd/pki/etcd.crt, key_file: /etc/etcd/pki/etcd.key}
-                    peer: {ca_file: /etc/etcd/pki/ca.crt, cert_file: /etc/etcd/pki/etcd.crt, key_file: /etc/etcd/pki/etcd.key}
+                    client: {ca_file: /etc/etcd/pki/ca.crt, cert_file: /etc/etcd/pki/etcd-client.crt, key_file: /etc/etcd/pki/etcd-client.key}
+                    peer: {ca_file: /etc/etcd/pki/ca.crt, cert_file: /etc/etcd/pki/etcd-peer.crt, key_file: /etc/etcd/pki/etcd-peer.key}
               patroni:
                 ttl: 30
                 loop_wait: 5
@@ -56,6 +56,7 @@
                   - host replication replicator 0.0.0.0/0 scram-sha-256
                 restapi:
                   port: 8008
+                  auto_generate: true
                   authentication:
                     username: patroni
                     password: patroni_password
@@ -85,7 +86,13 @@
                 max_connections: 50
   pre_tasks:
     - name: "Discover the local container IPv4 address"
-      ansible.builtin.command: "getent ahostsv4 {{ inventory_hostname }}"
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_facts['python']['executable'] }}"
+          - "-c"
+          - >-
+            import socket; print(socket.getaddrinfo("{{ inventory_hostname }}", None,
+            socket.AF_INET)[0][4][0])
       register: pg_etcd_local_address
       changed_when: false
 
@@ -101,7 +108,8 @@
   tasks:
     - name: "Wait for the local Patroni API"
       ansible.builtin.uri:
-        url: http://127.0.0.1:8008/patroni
+        url: https://127.0.0.1:8008/patroni
+        ca_path: /etc/patroni/pki/ca.crt
         status_code: 200
       register: patroni_ready
       retries: 90

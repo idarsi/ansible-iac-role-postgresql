@@ -1,0 +1,35 @@
+---
+- name: "Constructing Patroni inventory listen fallback"
+  ansible.builtin.include_tasks: ../host_port.yml
+  vars:
+    pg_host_port_host: "{{ pg_patroni_restapi_listen_address }}"
+    pg_host_port_port: "{{ pg_validation_patroni_restapi.port | default(pg_patroni_restapi_port) }}"
+    pg_host_port_result_fact: "pg_validation_patroni_listen_fallback"
+
+- name: "Constructing Patroni inventory connect fallback"
+  ansible.builtin.include_tasks: ../host_port.yml
+  vars:
+    pg_host_port_host: "{{ pg_patroni_restapi_endpoint_fallback_address | default(pg_validation_patroni_member.host) }}"
+    pg_host_port_port: "{{ pg_validation_patroni_restapi.port | default(pg_patroni_restapi_port) }}"
+    pg_host_port_result_fact: "pg_validation_patroni_connect_fallback"
+
+- name: "Appending Patroni inventory endpoint record"
+  ansible.builtin.set_fact:
+    pg_validation_patroni_endpoint_records: >-
+      {{ pg_validation_patroni_endpoint_records + [{
+        'key': pg_validation_cluster_model.key ~ ':' ~ pg_validation_patroni_member.host ~ ':' ~ pg_validation_patroni_member.instance,
+        'version': pg_validation_cluster_model.version | string,
+        'cluster': pg_validation_cluster_model.record.name | string,
+        'member': pg_validation_patroni_member.host | string,
+        'instance': pg_validation_patroni_member.instance | string,
+        'host_scope': pg_validation_patroni_member.host,
+        'listen': pg_validation_patroni_restapi.listen | default(pg_validation_patroni_listen_fallback),
+        'connect': pg_validation_patroni_restapi.connect_address | default(pg_validation_patroni_connect_fallback),
+        'tls_enabled': (pg_validation_patroni_restapi.enabled | default(false) | bool
+          or pg_validation_patroni_restapi.auto_generate | default(false) | bool
+          or pg_validation_patroni_restapi.cafile is defined
+          or pg_validation_patroni_restapi.certfile is defined
+          or pg_validation_patroni_restapi.keyfile is defined)
+      }] }}
+  vars:
+    pg_validation_patroni_restapi: "{{ pg_validation_cluster_model.record.patroni.restapi | default({}) }}"

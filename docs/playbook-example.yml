@@ -1,4 +1,6 @@
 ---
+# Run from the repository root with:
+# ANSIBLE_ROLES_PATH="$(pwd)/.." ansible-playbook -i <inventory> docs/playbook-example.yml
 - hosts: postgres_primary
   become: true
 

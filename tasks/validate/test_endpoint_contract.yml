@@ -1,0 +1,31 @@
+---
+- name: "Normalize endpoint contract"
+  ansible.builtin.include_tasks: ../endpoint_normalize.yml
+  vars:
+    pg_endpoint_normalize_input: "{{ pg_endpoint_contract.input }}"
+    pg_endpoint_normalize_result_fact: "pg_endpoint_contract_model"
+    pg_endpoint_normalize_default_scheme: "{{ pg_endpoint_contract.default_scheme }}"
+    pg_endpoint_normalize_label: "endpoint contract"
+
+- name: "Check endpoint contract"
+  ansible.builtin.assert:
+    that:
+      - pg_endpoint_contract_model.scheme == pg_endpoint_contract.scheme
+      - pg_endpoint_contract_model.has_scheme == pg_endpoint_contract.has_scheme
+      - pg_endpoint_contract_model.host == pg_endpoint_contract.host
+      - pg_endpoint_contract_model.canonical_host == pg_endpoint_contract.canonical
+      - pg_endpoint_contract_san_identities is sequence
+      - pg_endpoint_contract_san_identities | length == 1
+      - >-
+        pg_endpoint_contract_san_identities | first
+        == pg_endpoint_contract.canonical
+      - >-
+        pg_endpoint_contract_model.rendered_endpoint
+        == (pg_endpoint_contract_model.uri
+            if pg_endpoint_contract.has_scheme
+            else pg_endpoint_contract_model.scheme_free_endpoint)
+      - pg_endpoint_contract_model.rendered_host in pg_endpoint_contract_model.rendered_endpoint
+    fail_msg: "Endpoint normalization helper contract was not preserved"
+  vars:
+    pg_endpoint_contract_san_identities: >-
+      {{ pg_endpoint_contract_model.san_identities | default([], true) | list }}

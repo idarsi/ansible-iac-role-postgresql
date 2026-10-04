@@ -1,0 +1,5 @@
+---
+- name: "Normalizing DCS proxy through the canonical endpoint model"
+  ansible.builtin.include_tasks: normalize_dcs_proxy.yml
+  vars:
+    pg_validation_dcs_proxy: "{{ pg_validation_cluster_record.dcs.proxy }}"

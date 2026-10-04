@@ -41,6 +41,8 @@
 - name: "Gathering installed package facts before installation"
   ansible.builtin.package_facts:
     manager: "auto"
+  vars:
+    ansible_python_interpreter: "{{ pg_package_module_interpreter }}"
 
 - name: "Recording packages already installed before role management"
   ansible.builtin.set_fact:
@@ -80,6 +82,7 @@
 - name: "Ensuring packages are installed"
   ansible.builtin.dnf:
     name: "{{ pg_package_list }}"
+    allowerasing: true
     sslverify: "{{ dnf_sslverify }}"
     validate_certs: "{{ dnf_validate_certs }}"
     disable_gpg_check: "{{ dnf_disable_gpg_check }}"

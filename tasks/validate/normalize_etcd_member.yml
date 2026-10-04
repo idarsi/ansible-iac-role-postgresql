@@ -1,0 +1,28 @@
+---
+- name: "Normalizing managed etcd peer URL"
+  ansible.builtin.include_tasks: ../endpoint_normalize.yml
+  vars:
+    pg_endpoint_normalize_input: "{{ pg_validation_etcd_member.peer_url }}"
+    pg_endpoint_normalize_result_fact: "pg_validation_etcd_peer_model"
+    pg_endpoint_normalize_default_scheme: "https"
+    pg_endpoint_normalize_label: "managed etcd peer_url"
+
+- name: "Normalizing managed etcd client URL"
+  ansible.builtin.include_tasks: ../endpoint_normalize.yml
+  vars:
+    pg_endpoint_normalize_input: "{{ pg_validation_etcd_member.client_url }}"
+    pg_endpoint_normalize_result_fact: "pg_validation_etcd_client_model"
+    pg_endpoint_normalize_default_scheme: "https"
+    pg_endpoint_normalize_label: "managed etcd client_url"
+
+- name: "Adding normalized managed etcd member"
+  ansible.builtin.set_fact:
+    pg_validation_etcd_members_normalized: >-
+      {{ pg_validation_etcd_members_normalized + [pg_validation_etcd_member | combine({
+        'name': pg_validation_etcd_member.name | trim,
+        'host': pg_validation_etcd_member.host | trim,
+        'peer_url': pg_validation_etcd_peer_model.rendered_endpoint,
+        'client_url': pg_validation_etcd_client_model.rendered_endpoint,
+        'peer_endpoint_model': pg_validation_etcd_peer_model,
+        'client_endpoint_model': pg_validation_etcd_client_model
+      })] }}

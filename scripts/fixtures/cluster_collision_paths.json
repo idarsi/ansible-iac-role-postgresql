@@ -1,0 +1,10 @@
+[
+  {"name": "role-coverage-is-complete", "valid": false, "expected_failure_message": "The collision model does not cover every occurrence role"},
+  {"name": "managed-role-collision-is-rejected", "valid": false, "expected_failure_message": "Cluster generated, CA, registry, lock, metadata, managed, and seed paths must be pairwise distinct"},
+  {"name": "shared-ca-is-allowed", "valid": true},
+  {"name": "ca-and-non-ca-collision-is-rejected", "valid": false, "expected_failure_message": "Cluster generated, CA, registry, lock, metadata, managed, and seed paths must be pairwise distinct"},
+  {"name": "missing-normalized-destinations-are-valid", "valid": true},
+  {"name": "disabled-tls-is-valid", "valid": true},
+  {"name": "patroni-only-is-valid", "valid": true},
+  {"name": "etcd-only-is-valid", "valid": true}
+]

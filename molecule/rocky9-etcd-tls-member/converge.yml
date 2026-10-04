@@ -4,7 +4,7 @@
   become: false
   vars:
     state: install
-    pg_patroni_restapi_listen_address: "0.0.0.0"
+    pg_patroni_restapi_listen_address: "127.0.0.1"
     pg_lang: "en"
     pg_locale: "US"
     pg_disable_postgresql_module: false
@@ -31,6 +31,13 @@
                   tls:
                     enabled: true
                     auto_generate: true
+                    ca_file: "/etc/etcd/pki/custom-ca.crt"
+                    client:
+                      cert_file: "/etc/etcd/pki/custom-client.crt"
+                      key_file: "/etc/etcd/pki/custom-client.key"
+                    peer:
+                      cert_file: "/etc/etcd/pki/custom-peer.crt"
+                      key_file: "/etc/etcd/pki/custom-peer.key"
               patroni:
                 ttl: 30
                 loop_wait: 5
@@ -41,6 +48,7 @@
                 replication_password: replication_password
                 restapi:
                   port: 8008
+                  connect_address: "127.0.0.1:8008"
                   authentication:
                     username: patroni
                     password: patroni_password
@@ -64,7 +72,13 @@
                 max_connections: 50
   pre_tasks:
     - name: "Discover the local container IPv4 address"
-      ansible.builtin.command: "getent ahostsv4 {{ inventory_hostname }}"
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_facts['python']['executable'] }}"
+          - "-c"
+          - >-
+            import socket; print(socket.getaddrinfo("{{ inventory_hostname }}", None,
+            socket.AF_INET)[0][4][0])
       register: pg_etcd_local_address
       changed_when: false
 
@@ -73,7 +87,6 @@
         pg_etcd_bind_address: "{{ pg_etcd_local_address.stdout_lines[0].split()[0] }}"
   roles:
     - role: ansible-iac-role-postgresql
-
   tasks:
     - name: "Restore the managed Patroni cluster context for idempotence coverage"
       ansible.builtin.set_fact:
@@ -95,3 +108,99 @@
       when: >-
         iac_blueprint.postgresql[0].clusters[0].dcs.etcd.enabled
         | default(false) | bool
+
+- name: "Exercise immutable external etcd TLS material and access group"
+  hosts: all
+  become: true
+  vars:
+    ansible_become_method: "su"
+    state: install
+    pg_patroni_restapi_listen_address: "127.0.0.1"
+    pg_etcd_external_tls_access_group: "molecule_tlsreaders"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: molecule-etcd-external-tls
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: ["https://etcd01:2379"]
+                proxy: "https://etcd01:2379"
+                etcd:
+                  enabled: true
+                  initial_cluster_token: "molecule-etcd-external-tls"
+                  members: [{name: etcd01, host: etcd01, peer_url: "https://etcd01:2380", client_url: "https://etcd01:2379"}]
+                  tls:
+                    enabled: true
+                    auto_generate: false
+                    access_group: "molecule_tlsreaders"
+                    client:
+                      ca_file: "/etc/etcd/pki/external/ca.crt"
+                      cert_file: "/etc/etcd/pki/external/client.crt"
+                      key_file: "/etc/etcd/pki/external/client.key"
+                    peer:
+                      ca_file: "/etc/etcd/pki/external/ca.crt"
+                      cert_file: "/etc/etcd/pki/external/peer.crt"
+                      key_file: "/etc/etcd/pki/external/peer.key"
+              patroni:
+                ttl: 30
+                loop_wait: 5
+                retry_timeout: 5
+                postgresql: {superuser_password: "postgres_password", replication_username: "replicator"}
+                replication_password: "replication_password"
+                restapi: {port: 8008, connect_address: "127.0.0.1:8008", authentication: {username: "patroni", password: "patroni_password"}}
+              members: [{host: etcd01, instance: main, name: molecule-etcd-external-tls-etcd01}]
+          instances: [{name: main, cluster: molecule-etcd-external-tls, configuration: {listen_addresses: "*", port: 5432, max_connections: 50}}]
+  pre_tasks:
+    - name: "Pre-provision the external TLS access group and service membership"
+      ansible.builtin.group:
+        name: "molecule_tlsreaders"
+        state: present
+    - name: "Add etcd and Patroni accounts to the external TLS parent group"
+      ansible.builtin.user:
+        name: "{{ item }}"
+        groups: ["molecule_tlsreaders"]
+        append: true
+      loop: ["etcd", "postgres"]
+    - name: "Create the immutable external TLS parent directory"
+      ansible.builtin.file:
+        path: "/etc/etcd/pki/external"
+        state: directory
+        owner: root
+        group: "molecule_tlsreaders"
+        mode: "0750"
+    - name: "Copy known valid TLS fixtures to external destinations"
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        remote_src: true
+        owner: root
+        group: "{{ 'etcd' if item.dest.endswith(('peer.crt', 'peer.key')) else 'molecule_tlsreaders' }}"
+        mode: "0640"
+      loop:
+        - {src: "/etc/etcd/pki/custom-ca.crt", dest: "/etc/etcd/pki/external/ca.crt"}
+        - {src: "/etc/etcd/pki/custom-client.crt", dest: "/etc/etcd/pki/external/client.crt"}
+        - {src: "/etc/etcd/pki/custom-client.key", dest: "/etc/etcd/pki/external/client.key"}
+        - {src: "/etc/etcd/pki/custom-peer.crt", dest: "/etc/etcd/pki/external/peer.crt"}
+        - {src: "/etc/etcd/pki/custom-peer.key", dest: "/etc/etcd/pki/external/peer.key"}
+      no_log: true
+    - name: "Record external TLS content and metadata before role convergence"
+      ansible.builtin.shell: >-
+         sha256sum /etc/etcd/pki/external/* && stat -c '%n %u %g %a %Y %C'
+         /etc/etcd/pki/external /etc/etcd/pki && ls -Zd /etc/etcd/pki/external
+         /etc/etcd/pki/external/* && getfacl --absolute-names
+         /etc/etcd/pki/external /etc/etcd/pki/external/*
+      args:
+        executable: "/bin/bash"
+      register: external_tls_fixture_baseline
+      changed_when: false
+      no_log: true
+    - name: "Persist external TLS metadata and ACL baseline without exposing it"
+      ansible.builtin.copy:
+        content: "{{ external_tls_fixture_baseline.stdout }}\n"
+        dest: "/tmp/molecule-external-tls-baseline"
+        mode: "0600"
+      no_log: true
+  roles:
+    - role: ansible-iac-role-postgresql

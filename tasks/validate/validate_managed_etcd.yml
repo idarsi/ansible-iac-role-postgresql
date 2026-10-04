@@ -1,0 +1,129 @@
+---
+###############################################################################
+#
+# validate_managed_etcd.yml
+#
+# The role manages one global etcd configuration and systemd unit.  Keep the
+# inventory from describing multiple etcd services that would overwrite them.
+#
+###############################################################################
+
+- name: "Checking normalized cluster model record types"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_cluster_model_record | type_debug == 'dict'
+    fail_msg: >-
+      Normalized PostgreSQL cluster models must be mappings; malformed models
+      cannot be inspected for managed etcd ownership
+  loop: "{{ pg_validation_cluster_models }}"
+  loop_control:
+    loop_var: pg_validation_cluster_model_record
+
+- name: "Collecting managed etcd records by host"
+  ansible.builtin.set_fact:
+    pg_validation_managed_etcd_records: >-
+      {% set ns = namespace(records=[]) %}
+      {% for cluster_model in pg_validation_cluster_models %}
+      {% if ((cluster_model.record.dcs | default({})).etcd | default({})).enabled
+            | default(false) | bool %}
+      {% for member in ((cluster_model.record.dcs | default({})).etcd | default({})).members
+            | default([]) %}
+      {% set ns.records = ns.records + [{
+        'version': cluster_model.version | string,
+        'cluster': cluster_model.record.name,
+        'host': member.host,
+        'data_dir': ((cluster_model.record.dcs | default({})).etcd | default({})).data_dir
+          | default(pg_etcd_data_directory)
+      }] %}
+      {% endfor %}
+      {% endif %}
+      {% endfor %}
+      {{ ns.records }}
+
+- name: "Normalizing managed etcd records as a list of mappings"
+  ansible.builtin.set_fact:
+    pg_validation_managed_etcd_records: >-
+      {{ pg_validation_managed_etcd_records
+         if pg_validation_managed_etcd_records is not string
+         else pg_validation_managed_etcd_records | trim | from_yaml }}
+
+- name: "Checking normalized managed etcd record types"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_managed_etcd_record | type_debug == 'dict'
+    fail_msg: >-
+      Normalized managed etcd records must be mappings; malformed records
+      cannot be checked for host-wide singleton or data directory conflicts
+  loop: "{{ pg_validation_managed_etcd_records }}"
+  loop_control:
+    loop_var: pg_validation_managed_etcd_record
+
+- name: "Collecting managed etcd data directory conflicts before service checks"
+  ansible.builtin.set_fact:
+    pg_validation_managed_etcd_data_dir_conflicts: >-
+      {% set ns = namespace(conflicts=[]) %}
+      {% for left in pg_validation_managed_etcd_records %}
+      {% for right in pg_validation_managed_etcd_records %}
+      {% if left.cluster != right.cluster and left.host == right.host
+            and (left.data_dir == right.data_dir
+                 or left.data_dir.startswith(right.data_dir ~ '/')
+                 or right.data_dir.startswith(left.data_dir ~ '/')) %}
+      {% set ns.conflicts = ns.conflicts + [
+        left.cluster ~ ':' ~ left.data_dir ~ ' conflicts with '
+        ~ right.cluster ~ ':' ~ right.data_dir
+      ] %}
+      {% endif %}
+      {% endfor %}
+      {% endfor %}
+      {{ ns.conflicts | unique | list }}
+
+- name: "Normalizing managed etcd data directory conflicts as a list"
+  ansible.builtin.set_fact:
+    pg_validation_managed_etcd_data_dir_conflicts: >-
+      {{ pg_validation_managed_etcd_data_dir_conflicts
+         if pg_validation_managed_etcd_data_dir_conflicts is not string
+         else pg_validation_managed_etcd_data_dir_conflicts
+           | trim | from_yaml }}
+
+- name: "Rejecting shared or nested managed etcd data directories"
+  ansible.builtin.assert:
+    that:
+      - pg_validation_managed_etcd_data_dir_conflicts | length == 0
+    fail_msg: >-
+      Managed etcd data_dir values must be dedicated, role-owned directories;
+      duplicate and ancestor/child data directories cannot be shared between
+       clusters
+       ({{ pg_validation_managed_etcd_data_dir_conflicts | join('; ') }})
+
+- name: "Rejecting multiple managed etcd clusters on one host"
+  ansible.builtin.assert:
+    that:
+      - >-
+         pg_validation_managed_etcd_records
+         | selectattr('host', 'equalto', pg_managed_etcd_record.host)
+         | map(attribute='cluster') | unique | list | length <= 1
+    fail_msg: >-
+      Managed etcd cannot define more than one cluster on host
+       {{ pg_managed_etcd_record.host }} (regardless of PostgreSQL version)
+       because the role manages the global
+      /etc/etcd/etcd.conf and etcd.service
+  loop: "{{ pg_validation_managed_etcd_records }}"
+  loop_control:
+    loop_var: pg_managed_etcd_record
+
+- name: "Rejecting managed etcd reuse across PostgreSQL versions"
+  ansible.builtin.assert:
+    that:
+      - >-
+        pg_validation_managed_etcd_records
+        | selectattr('host', 'equalto', pg_managed_etcd_record.host)
+        | selectattr('cluster', 'equalto', pg_managed_etcd_record.cluster)
+        | map(attribute='version') | unique | list | length <= 1
+    fail_msg: >-
+      Managed etcd cluster {{ pg_managed_etcd_record.cluster }} on host
+      {{ pg_managed_etcd_record.host }} is declared for multiple PostgreSQL
+      versions. The role owns one global /etc/etcd/etcd.conf and etcd.service
+      per host; use one version or separate hosts and cluster names.
+  loop: "{{ pg_validation_managed_etcd_records }}"
+  loop_control:
+    loop_var: pg_managed_etcd_record

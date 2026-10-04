@@ -26,8 +26,8 @@ OOMScoreAdjust=-1000
 Environment=PG_OOM_ADJUST_FILE=/proc/self/oom_score_adj
 Environment=PG_OOM_ADJUST_VALUE=0
 
-ExecStartPre=/usr/pgsql-{{ pg_version }}/bin/postgresql-{{ pg_version }}-check-db-dir ${PGDATA}
-ExecStart=/usr/pgsql-{{ pg_version }}/bin/postgres -D ${PGDATA}
+ExecStartPre=/usr/pgsql-{{ pg_version }}/bin/postgresql-{{ pg_version }}-check-db-dir {{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/
+ExecStart=/usr/pgsql-{{ pg_version }}/bin/postgres -D {{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}/
 ExecReload=/bin/kill -HUP $MAINPID
 KillMode=mixed
 KillSignal=SIGINT

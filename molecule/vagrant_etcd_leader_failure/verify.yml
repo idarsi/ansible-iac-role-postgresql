@@ -18,15 +18,15 @@
     - name: "Record a committed key before failure"
       ansible.builtin.command: >-
         etcdctl --endpoints=https://pg01:2379 --cacert=/etc/etcd/pki/ca.crt
-        --cert=/etc/etcd/pki/etcd.crt --key=/etc/etcd/pki/etcd.key put
+         --cert=/etc/etcd/pki/etcd-client.crt --key=/etc/etcd/pki/etcd-client.key put
         /molecule/leader-failure before
       environment: {ETCDCTL_API: "3"}
       changed_when: true
     - name: "Find the current etcd leader"
       ansible.builtin.command: >-
         etcdctl --endpoints=https://pg01:2379,https://pg02:2379,https://pg03:2379
-        --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd.crt
-        --key=/etc/etcd/pki/etcd.key endpoint status -w json
+           --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd-client.crt
+           --key=/etc/etcd/pki/etcd-client.key endpoint status -w json
       environment: {ETCDCTL_API: "3"}
       register: vagrant_etcd_status
       changed_when: false
@@ -65,7 +65,7 @@
         - name: "Wait for a different leader and preserved data"
           ansible.builtin.command: >-
             etcdctl --endpoints={{ vagrant_surviving_etcd_endpoints }}
-            --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd.crt --key=/etc/etcd/pki/etcd.key
+             --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd-client.crt --key=/etc/etcd/pki/etcd-client.key
             get /molecule/leader-failure
           environment: {ETCDCTL_API: "3"}
           register: vagrant_after_leader
@@ -76,7 +76,7 @@
         - name: "Confirm the elected leader changed"
           ansible.builtin.command: >-
             etcdctl --endpoints={{ vagrant_surviving_etcd_endpoints }}
-            --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd.crt --key=/etc/etcd/pki/etcd.key
+             --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd-client.crt --key=/etc/etcd/pki/etcd-client.key
             endpoint status -w json
           environment: {ETCDCTL_API: "3"}
           register: vagrant_replacement_status
@@ -109,8 +109,8 @@
               - "etcdctl"
               - "--endpoints={{ vagrant_failed_etcd_endpoint }}"
               - "--cacert=/etc/etcd/pki/ca.crt"
-              - "--cert=/etc/etcd/pki/etcd.crt"
-              - "--key=/etc/etcd/pki/etcd.key"
+              - "--cert=/etc/etcd/pki/etcd-client.crt"
+              - "--key=/etc/etcd/pki/etcd-client.key"
               - "endpoint"
               - "health"
           environment: {ETCDCTL_API: "3"}
@@ -125,8 +125,8 @@
               - "etcdctl"
               - "--endpoints=https://pg01:2379"
               - "--cacert=/etc/etcd/pki/ca.crt"
-              - "--cert=/etc/etcd/pki/etcd.crt"
-              - "--key=/etc/etcd/pki/etcd.key"
+              - "--cert=/etc/etcd/pki/etcd-client.crt"
+              - "--key=/etc/etcd/pki/etcd-client.key"
               - "member"
               - "list"
               - "-w"

@@ -86,14 +86,47 @@
     daemon_reload: true
 
 ###############################################################################
-# REMOVING PACKAGES AND REPOSITORY
+# REMOVING ROLE-OWNED PACKAGES AND REPOSITORY
 ###############################################################################
+
+- name: "Gathering installed package facts for role-owned cleanup"
+  ansible.builtin.package_facts:
+    manager: "auto"
+  vars:
+    ansible_python_interpreter: "{{ pg_package_module_interpreter }}"
+
+- name: "Checking managed package marker"
+  ansible.builtin.stat:
+    path: "{{ pg_managed_packages_file }}"
+  register: pg_managed_packages_marker
+
+- name: "Rejecting an unsafe managed package marker"
+  ansible.builtin.assert:
+    that:
+      - not pg_managed_packages_marker.stat.exists or pg_managed_packages_marker.stat.isreg
+      - not pg_managed_packages_marker.stat.exists or pg_managed_packages_marker.stat.pw_name == 'root'
+    fail_msg: "Refusing PostgreSQL package cleanup from an unsafe managed package marker"
+
+- name: "Reading managed package marker"
+  ansible.builtin.slurp:
+    path: "{{ pg_managed_packages_file }}"
+  register: pg_managed_packages_content
+  when: pg_managed_packages_marker.stat.exists
+
+- name: "Selecting installed role-owned packages"
+  ansible.builtin.set_fact:
+    pg_all_absent_packages: >-
+      {{ ((pg_managed_packages_content.content | b64decode).splitlines()
+          if pg_managed_packages_marker.stat.exists else [])
+         | map('trim')
+         | reject('equalto', '')
+         | select('in', ansible_facts.packages.keys() | list)
+         | unique
+         | list }}
 
 - name: "Ensuring all PostgreSQL packages are absent"
   ansible.builtin.dnf:
-    name:
-      - "postgresql*"
-      - "timescaledb*"
+    name: "{{ pg_all_absent_packages }}"
     sslverify: "{{ dnf_sslverify }}"
     validate_certs: "{{ dnf_validate_certs }}"
     disable_gpg_check: "{{ dnf_disable_gpg_check }}"
@@ -104,6 +137,7 @@
     http_proxy: "{{ http_proxy }}"
     https_proxy: "{{ https_proxy }}"
     no_proxy: "{{ no_proxy }}"
+  when: pg_all_absent_packages | length > 0
 
 - name: "Writing log"
   ansible.builtin.include_tasks: log_write.yml

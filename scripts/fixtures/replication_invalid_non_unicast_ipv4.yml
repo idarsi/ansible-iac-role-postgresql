@@ -1,0 +1,5 @@
+---
+role: "primary"
+allowed_standby_addresses:
+  - "224.0.0.1"
+expected_failure: "valid IPv4 or IPv6 address or CIDR"
