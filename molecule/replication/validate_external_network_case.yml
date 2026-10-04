@@ -72,7 +72,12 @@
         pg_replication_external_ipv4_unicast: "{{ pg_replication_external_ipv4_candidate | ansible.utils.ipaddr('unicast') }}"
         pg_replication_external_ipv4_loopback: "{{ pg_replication_external_ipv4_candidate | ansible.utils.ipaddr('loopback') }}"
         pg_replication_external_ipv4_link_local: "{{ pg_replication_external_ipv4_candidate | ansible.utils.ipaddr('link-local') }}"
-        pg_replication_external_ipv4_unspecified: "{{ pg_replication_external_ipv4_candidate | ansible.utils.ipaddr('unspecified') }}"
+        pg_replication_external_ipv4_unspecified: >-
+          {{ pg_replication_external_ipv4_candidate | ansible.utils.ipaddr('unspecified')
+             if pg_replication_external_ipv4_candidate is string and
+                pg_replication_external_ipv4_candidate | trim | length > 0 and
+                pg_replication_external_ipv4_candidate is ansible.utils.ipv4
+             else none }}
         pg_replication_external_subnet_normalized: "{{ pg_replication_external_subnet_candidate | ansible.utils.ipaddr('network/prefix') }}"
         pg_replication_external_ipv4_in_subnet: "{{ pg_replication_external_ipv4_candidate | ansible.utils.ipaddr(pg_replication_external_subnet_candidate) }}"
     - name: "Require a unicast external-network IPv4 address before further parsing"
