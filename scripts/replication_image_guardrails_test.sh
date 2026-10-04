@@ -11,6 +11,8 @@ normalize_helper=$root/scripts/replication_image_normalize.sh
 package_normalize_helper=$root/scripts/replication_package_normalize.sh
 selected_python=${REPLICATION_PYTHON_COMMAND:-/home/arsi/.local/share/venvs/idarsi-ansible-testing/bin/python}
 repo_digest_fixture=$root/scripts/fixtures/replication_base_repo_digests_podman.txt
+index_fixture=$root/scripts/fixtures/replication_base_manifest_index.json
+manifest_fixture=$root/scripts/fixtures/replication_base_manifest_b33d.json
 derived_without_repo_digests_fixture=$root/scripts/fixtures/replication_derived_without_repo_digests.json
 derived_distinct_repo_digest_fixture=$root/scripts/fixtures/replication_derived_with_distinct_repo_digest.json
 rootful_runtime_fixture=$root/scripts/fixtures/replication_rootful_runtime.json
@@ -341,6 +343,8 @@ fi
 assert_file_contains "$dockerfile" 'normalize_replication_iproute_nevra()'
 test -f "$package_normalize_helper" || { printf '%s\n' 'replication image guardrail failed: package normalization helper is missing' >&2; exit 1; }
 test -f "$provenance_helper" || { printf '%s\n' 'replication image guardrail failed: provenance helper is missing' >&2; exit 1; }
+test -f "$index_fixture" || { printf '%s\n' 'replication image guardrail failed: OCI index fixture is missing' >&2; exit 1; }
+test -f "$manifest_fixture" || { printf '%s\n' 'replication image guardrail failed: OCI manifest fixture is missing' >&2; exit 1; }
 test -f "$derived_without_repo_digests_fixture" || { printf '%s\n' 'replication image guardrail failed: derived no-RepoDigests fixture is missing' >&2; exit 1; }
 test -f "$derived_distinct_repo_digest_fixture" || { printf '%s\n' 'replication image guardrail failed: derived distinct-RepoDigest fixture is missing' >&2; exit 1; }
 assert_file_contains "$ci_file" '"${REPLICATION_PODMAN_COMMAND}" pull --quiet "${base_ref}"'
@@ -388,18 +392,14 @@ printf '%s\n' \
    printf '%s\n' 'replication image guardrail failed: exact shell aliases were rejected' >&2
    exit 1;
  }
-if printf '%s\n' \
-  'docker.io/rockylinux/rockylinux@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5' |
-  validate_replication_base_repo_digests >/dev/null; then
-   printf '%s\n' 'replication image guardrail failed: single untagged alias was accepted' >&2
-   exit 1;
- fi
-if printf '%s\n' \
-  'docker.io/rockylinux/rockylinux@sha256:d706f937383b94727cfece22e2e29d67e26ed85c8156993e4718ca68c5e7dcd4' |
-  validate_replication_base_repo_digests >/dev/null; then
-   printf '%s\n' 'replication image guardrail failed: single d706 alias was accepted' >&2
-   exit 1;
- fi
+for accepted_alias in \
+  'docker.io/rockylinux/rockylinux@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5' \
+  'docker.io/rockylinux/rockylinux@sha256:d706f937383b94727cfece22e2e29d67e26ed85c8156993e4718ca68c5e7dcd4'; do
+  printf '%s\n' "$accepted_alias" | validate_replication_base_repo_digests >/dev/null || {
+    printf '%s\n' 'replication image guardrail failed: valid RepoDigest alias was rejected' >&2
+    exit 1
+  }
+done
 if printf '%s\n' \
   'docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5' |
   validate_replication_base_repo_digests >/dev/null; then
@@ -464,19 +464,35 @@ fi
 
 # Exercise the exact comparator used by prepare.yml, including a matching
 # label with a mismatched layer chain. This must fail independently of labels.
-base_json='{"Id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","RepoDigests":["docker.io/rockylinux/rockylinux@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5","docker.io/rockylinux/rockylinux@sha256:d706f937383b94727cfece22e2e29d67e26ed85c8156993e4718ca68c5e7dcd4"],"RootFS":{"Layers":["sha256:1111111111111111111111111111111111111111111111111111111111111111"]}}'
-canonical_base_json=$("$selected_python" "$provenance_helper" --normalize-json "$base_json")
+base_json='{"Id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","Architecture":"amd64","Os":"linux","Digest":"sha256:d706f937383b94727cfece22e2e29d67e26ed85c8156993e4718ca68c5e7dcd4","RepoDigests":["docker.io/rockylinux/rockylinux@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5","docker.io/rockylinux/rockylinux@sha256:d706f937383b94727cfece22e2e29d67e26ed85c8156993e4718ca68c5e7dcd4"],"RootFS":{"Layers":["sha256:1111111111111111111111111111111111111111111111111111111111111111"]}}'
+index_json=$(cat "$index_fixture")
+manifest_json=$(cat "$manifest_fixture")
+canonical_base_json=$("$selected_python" "$provenance_helper" --normalize-json "$base_json" --index-json "$index_json")
 printf '%s' "$canonical_base_json" | "$selected_python" -c 'import json,sys; digests=json.load(sys.stdin)["RepoDigests"]; assert len(digests) == 2 and all(d.startswith("docker.io/rockylinux/rockylinux@sha256:") for d in digests)'
 matching_json='{"Id":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","Config":{"Labels":{"io.idarsi.replication.base-digest":"expected"}},"RootFS":{"Layers":["sha256:1111111111111111111111111111111111111111111111111111111111111111","sha256:3333333333333333333333333333333333333333333333333333333333333333"]}}'
 mismatched_json='{"Id":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","Config":{"Labels":{"io.idarsi.replication.base-digest":"expected"}},"RootFS":{"Layers":["sha256:2222222222222222222222222222222222222222222222222222222222222222","sha256:3333333333333333333333333333333333333333333333333333333333333333"]}}'
-"$selected_python" "$provenance_helper" --base-json "$canonical_base_json" --derived-json "$matching_json" --base-id 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --repo-digest 'docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5'
+"$selected_python" "$provenance_helper" --base-json "$canonical_base_json" --derived-json "$matching_json" --base-id 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --repo-digest 'docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5' --index-json "$index_json"
 # The shared comparator accepts the exact untagged aliases while requiring the
 # tagged pinned reference independently; prepare.yml normalizes the artifact.
-"$selected_python" "$provenance_helper" --base-json "$base_json" --derived-json "$matching_json" --base-id 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --repo-digest 'docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5'
+"$selected_python" "$provenance_helper" --base-json "$base_json" --derived-json "$matching_json" --base-id 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --repo-digest 'docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5' --index-json "$index_json"
+# A direct single-manifest pin is valid without an OCI index child relationship.
+direct_base_json=$(printf '%s' "$base_json" | "$selected_python" -c 'import json,sys; value=json.load(sys.stdin); value["Digest"]="sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5"; print(json.dumps(value))')
+# The direct-manifest fixture is a manifest object, while the expected image
+# digest is supplied by the image-inspect fixture.  They cannot be confused
+# with a cryptographic hash of this historical fixture document.
+printf '%s' "$manifest_json" | "$selected_python" -c 'import json,sys; value=json.load(sys.stdin); assert value["mediaType"] == "application/vnd.docker.distribution.manifest.v2+json" and value["config"]["digest"].startswith("sha256:")'
+printf '%s' "$direct_base_json" | "$selected_python" -c 'import json,sys; assert json.load(sys.stdin)["Digest"] == "sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5"'
+invalid_direct_base_json=$(printf '%s' "$direct_base_json" | "$selected_python" -c 'import json,sys; value=json.load(sys.stdin); value["Digest"]="sha256:" + "c" * 64; print(json.dumps(value))')
+if "$selected_python" "$provenance_helper" --normalize-json "$invalid_direct_base_json" --index-json "$manifest_json"; then
+  printf '%s\n' 'replication image guardrail failed: direct manifest digest mismatch was accepted' >&2
+  exit 1
+fi
+direct_canonical_json=$($selected_python "$provenance_helper" --normalize-json "$direct_base_json" --index-json "$manifest_json")
+"$selected_python" "$provenance_helper" --base-json "$direct_canonical_json" --derived-json "$matching_json" --base-id 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --repo-digest 'docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5' --index-json "$manifest_json"
 # Derived RepoDigests are independent metadata: both absent and unrelated
 # derived aliases must pass while the base aliases remain strictly checked.
-"$selected_python" "$provenance_helper" --base-json "$base_json" --derived-json "$(cat "$derived_without_repo_digests_fixture")" --base-id 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --repo-digest 'docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5'
-"$selected_python" "$provenance_helper" --base-json "$base_json" --derived-json "$(cat "$derived_distinct_repo_digest_fixture")" --base-id 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --repo-digest 'docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5'
+"$selected_python" "$provenance_helper" --base-json "$base_json" --derived-json "$(cat "$derived_without_repo_digests_fixture")" --base-id 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --repo-digest 'docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5' --index-json "$index_json"
+"$selected_python" "$provenance_helper" --base-json "$base_json" --derived-json "$(cat "$derived_distinct_repo_digest_fixture")" --base-id 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --repo-digest 'docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5' --index-json "$index_json"
 "$selected_python" - "$provenance_helper" <<'PY'
 import importlib.util
 import sys
@@ -497,15 +513,8 @@ assert provenance.normalize_repo_digests([
     provenance.OBSERVED_EQUIVALENT_REPO_DIGEST,
 ], "base") == [provenance.OBSERVED_UNTAGGED_B33D_REPO_DIGEST, provenance.OBSERVED_EQUIVALENT_REPO_DIGEST]
 for aliases, message in [
-    (["docker.io/rockylinux/rockylinux@sha256:" + "b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5"], "untagged-only b33d"),
-    ([provenance.OBSERVED_EQUIVALENT_REPO_DIGEST], "untagged-only d706"),
-    ([provenance.OBSERVED_EQUIVALENT_REPO_DIGEST], "missing untagged b33d"),
-    ([provenance.OBSERVED_UNTAGGED_B33D_REPO_DIGEST] * 2, "duplicate aliases"),
-    ([provenance.OBSERVED_UNTAGGED_B33D_REPO_DIGEST,
-      provenance.OBSERVED_EQUIVALENT_REPO_DIGEST,
-      provenance.OBSERVED_EQUIVALENT_REPO_DIGEST], "extra alias"),
-    ([provenance.EXPECTED_REPO_DIGEST,
-      provenance.OBSERVED_EQUIVALENT_REPO_DIGEST], "tagged pulled reference"),
+     ([provenance.EXPECTED_REPO_DIGEST,
+       provenance.OBSERVED_EQUIVALENT_REPO_DIGEST], "tagged pulled reference"),
 ]:
     try:
         provenance.normalize_repo_digests(aliases, "base")
@@ -521,7 +530,16 @@ try:
 except ValueError:
     pass
 else:
-    raise AssertionError("non-equivalent RepoDigests aliases were accepted")
+    raise AssertionError("unknown RepoDigest alias was accepted")
+try:
+    provenance.normalize_repo_digests([
+        provenance.OBSERVED_UNTAGGED_B33D_REPO_DIGEST,
+        provenance.OBSERVED_UNTAGGED_B33D_REPO_DIGEST,
+    ], "base")
+except ValueError:
+    pass
+else:
+    raise AssertionError("duplicate RepoDigest alias was accepted")
 assert provenance.normalize_repo_digest(provenance.EXPECTED_REPO_DIGEST) is None
 assert provenance.normalize_repo_digest(
     "docker.io/example/rockylinux:9-ubi-init@sha256:" + "b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5"
@@ -529,6 +547,19 @@ assert provenance.normalize_repo_digest(
 assert provenance.normalize_repo_digest(
     "rockylinux/rockylinux@sha256:d706f937383b94727cfece22e2e29d67e26ed85c8156993e4718ca68c5e7dcd4"
 ) is None
+assert provenance.normalize_repo_digest(
+    "docker.io/rockylinux/rockylinux@sha256:" + "c" * 64
+) is None
+provenance.validate_index(open(sys.argv[1].replace("replication_image_provenance.py", "fixtures/replication_base_manifest_index.json")).read())
+bad_index = open(sys.argv[1].replace("replication_image_provenance.py", "fixtures/replication_base_manifest_index.json")).read().replace(
+    provenance.EXPECTED_AMD64_CHILD_DIGEST, "sha256:" + "b" * 64
+)
+try:
+    provenance.validate_index(bad_index)
+except ValueError:
+    pass
+else:
+    raise AssertionError("OCI index with unrelated amd64 child was accepted")
 PY
 invalid_repo_json='{"Id":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","RepoDigests":["not-a-repo-digest"],"RootFS":{"Layers":["sha256:1111111111111111111111111111111111111111111111111111111111111111"]}}'
 unexpected_repo_json='{"Id":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","RepoDigests":["docker.io/rockylinux/rockylinux@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5","docker.io/example/extra@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"],"RootFS":{"Layers":["sha256:1111111111111111111111111111111111111111111111111111111111111111"]}}'
@@ -536,41 +567,41 @@ null_repo_json='{"Id":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 scalar_repo_json='{"Id":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","RepoDigests":"docker.io/rockylinux/rockylinux@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5","RootFS":{"Layers":["sha256:1111111111111111111111111111111111111111111111111111111111111111"]}}'
 empty_repo_json='{"Id":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","RepoDigests":[],"RootFS":{"Layers":["sha256:1111111111111111111111111111111111111111111111111111111111111111"]}}'
 invalid_layers_json='{"Id":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","RootFS":{"Layers":["sha256:not-a-digest"]}}'
-if "$selected_python" "$provenance_helper" --base-json "$invalid_repo_json" --derived-json "$matching_json" --base-id 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --repo-digest 'docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5'; then
+if "$selected_python" "$provenance_helper" --base-json "$invalid_repo_json" --derived-json "$matching_json" --base-id 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --repo-digest 'docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5' --index-json "$index_json"; then
   printf '%s\n' 'replication image guardrail failed: malformed RepoDigests fixture was accepted' >&2
   exit 1
 fi
-if "$selected_python" "$provenance_helper" --base-json "$unexpected_repo_json" --derived-json "$matching_json" --base-id 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --repo-digest 'docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5'; then
+if "$selected_python" "$provenance_helper" --base-json "$unexpected_repo_json" --derived-json "$matching_json" --base-id 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --repo-digest 'docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5' --index-json "$index_json"; then
   printf '%s\n' 'replication image guardrail failed: unexpected RepoDigests fixture was accepted' >&2
   exit 1
 fi
 for invalid_repo_fixture in null_repo_json scalar_repo_json empty_repo_json; do
   eval "invalid_repo=\${$invalid_repo_fixture}"
-  if "$selected_python" "$provenance_helper" --base-json "$invalid_repo" --derived-json "$matching_json" --base-id 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --repo-digest 'docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5'; then
+  if "$selected_python" "$provenance_helper" --base-json "$invalid_repo" --derived-json "$matching_json" --base-id 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --repo-digest 'docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5' --index-json "$index_json"; then
     printf 'replication image guardrail failed: %s RepoDigests fixture was accepted\n' "$invalid_repo_fixture" >&2
     exit 1
   fi
 done
-if "$selected_python" "$provenance_helper" --base-json "$base_json" --derived-json "$invalid_layers_json" --base-id 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --repo-digest 'docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5'; then
+if "$selected_python" "$provenance_helper" --base-json "$base_json" --derived-json "$invalid_layers_json" --base-id 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --repo-digest 'docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5' --index-json "$index_json"; then
   printf '%s\n' 'replication image guardrail failed: malformed RootFS.Layers fixture was accepted' >&2
   exit 1
 fi
-if "$selected_python" "$provenance_helper" --base-json "$base_json" --derived-json "$matching_json" --base-id 'not-an-image-id' --repo-digest 'docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5'; then
+if "$selected_python" "$provenance_helper" --base-json "$base_json" --derived-json "$matching_json" --base-id 'not-an-image-id' --repo-digest 'docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5' --index-json "$index_json"; then
   printf '%s\n' 'replication image guardrail failed: malformed base ID fixture was accepted' >&2
   exit 1
 fi
-if "$selected_python" "$provenance_helper" --base-json "$base_json" --derived-json "$mismatched_json" --base-id 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --repo-digest 'docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5'; then
+if "$selected_python" "$provenance_helper" --base-json "$base_json" --derived-json "$mismatched_json" --base-id 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --repo-digest 'docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5' --index-json "$index_json"; then
   printf '%s\n' 'replication image guardrail failed: mismatched layer fixture was accepted' >&2
   exit 1
 fi
-if "$selected_python" "$provenance_helper" --base-json "$base_json" --derived-json "$matching_json" --base-id 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --repo-digest 'docker.io/rockylinux/rockylinux:9-ubi-init@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'; then
+if "$selected_python" "$provenance_helper" --base-json "$base_json" --derived-json "$matching_json" --base-id 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --repo-digest 'docker.io/rockylinux/rockylinux:9-ubi-init@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' --index-json "$index_json"; then
   printf '%s\n' 'replication image guardrail failed: wrong pinned digest was accepted' >&2
   exit 1
 fi
 malformed_extra_derived_json='{"Id":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","RepoDigests":["docker.io/example/derived@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","malformed-extra"],"RootFS":{"Layers":["sha256:1111111111111111111111111111111111111111111111111111111111111111","sha256:3333333333333333333333333333333333333333333333333333333333333333"]}}'
 # Even malformed derived RepoDigests are outside the base provenance claim;
 # identity, labels, and the fail-closed layer prefix are the derived checks.
-"$selected_python" "$provenance_helper" --base-json "$base_json" --derived-json "$malformed_extra_derived_json" --base-id 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --repo-digest 'docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5'
+"$selected_python" "$provenance_helper" --base-json "$base_json" --derived-json "$malformed_extra_derived_json" --base-id 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --repo-digest 'docker.io/rockylinux/rockylinux:9-ubi-init@sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5' --index-json "$index_json"
 
 # The implementation uses argv entries (podman container inspect --format),
 # not a shell literal.  Check the command semantics so harmless YAML/layout

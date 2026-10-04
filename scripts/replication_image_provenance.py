@@ -23,6 +23,8 @@ OBSERVED_REPO_DIGESTS = {
     OBSERVED_UNTAGGED_B33D_REPO_DIGEST,
     OBSERVED_EQUIVALENT_REPO_DIGEST,
 }
+EXPECTED_AMD64_CHILD_DIGEST = "sha256:d706f937383b94727cfece22e2e29d67e26ed85c8156993e4718ca68c5e7dcd4"
+EXPECTED_PINNED_DIGEST = "sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5"
 REPO_DIGEST_PATTERN = re.compile(
     r"^(?P<registry>(?:docker\.io|index\.docker\.io))/"
     r"(?P<repository>rockylinux/rockylinux)@(?P<digest>sha256:[0-9a-f]{64})$"
@@ -44,7 +46,8 @@ def normalize_repo_digest(value: object) -> str | None:
     match = REPO_DIGEST_PATTERN.fullmatch(value)
     if match is None:
         return None
-    return f"docker.io/{match.group('repository')}@{match.group('digest')}"
+    normalized = f"docker.io/{match.group('repository')}@{match.group('digest')}"
+    return normalized if normalized in OBSERVED_REPO_DIGESTS else None
 
 
 def repo_digest_alias_kind(value: object) -> str | None:
@@ -84,28 +87,83 @@ def layers(image: dict, name: str) -> list[str]:
 
 
 def normalize_repo_digests(values: object, name: str) -> list[str]:
-    """Validate the exact two untagged Podman RepoDigests aliases.
-
-    The tagged pinned reference is supplied independently; it is not a
-    RepoDigests entry in the Podman output.
-    """
+    """Validate only the observed canonical aliases, never image identity."""
     if not isinstance(values, list) or not values:
         raise ValueError(f"{name} image has no valid RepoDigests")
-    if len(values) != 2:
-        raise ValueError(f"{name} RepoDigests must contain the exact two untagged aliases")
     normalized = [normalize_repo_digest(value) for value in values]
-    kinds = [repo_digest_alias_kind(value) for value in normalized]
-    if any(value is None for value in normalized):
-        raise ValueError(f"{name} image has no valid RepoDigests")
-    if any(kind is None for kind in kinds) or sorted(kinds) != ["untagged-b33d", "untagged-d706"]:
-        raise ValueError(f"{name} RepoDigests contains duplicate or unsupported aliases")
+    if (
+        any(value is None for value in normalized)
+        or any(value not in OBSERVED_REPO_DIGESTS for value in normalized)
+        or len(set(normalized)) != len(normalized)
+    ):
+        raise ValueError(f"{name} image has unknown or duplicate RepoDigests")
     return normalized
 
 
-def normalize_image_json(value: str, name: str = "base") -> str:
+def validate_index(value: str, name: str = "base") -> None:
+    """Require the inspected pinned OCI index to name its linux/amd64 child."""
+    index = load(value, f"{name} OCI index")
+    manifests = index.get("manifests")
+    if not isinstance(manifests, list) or not manifests:
+        raise ValueError(
+            f"{name} OCI index inspection is unavailable or has no manifests"
+        )
+    matches = []
+    for manifest in manifests:
+        if not isinstance(manifest, dict):
+            continue
+        platform = manifest.get("platform")
+        if (
+            isinstance(platform, dict)
+            and platform.get("os") == "linux"
+            and platform.get("architecture") == "amd64"
+            and normalize_digest(manifest.get("digest")) == EXPECTED_AMD64_CHILD_DIGEST
+        ):
+            matches.append(manifest)
+    if len(matches) != 1:
+        raise ValueError(
+            f"{name} OCI index does not contain exactly one expected linux/amd64 child"
+        )
+
+
+def validate_pinned_object(value: str, image: dict, name: str = "base") -> None:
+    """Validate Podman-backed metadata for the pinned OCI index or a direct platform manifest."""
+    document = load(value, f"{name} OCI object")
+    media_type = document.get("mediaType")
+    if media_type in {
+        "application/vnd.oci.image.index.v1+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+    }:
+        validate_index(value, name)
+        selected_child_digest(image, name)
+        return
+    if media_type in {
+        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.docker.distribution.manifest.v2+json",
+    }:
+        if normalize_digest(image.get("Digest")) != EXPECTED_PINNED_DIGEST:
+            raise ValueError(f"{name} direct manifest is not the pinned digest")
+        if image.get("Architecture") != "amd64" or image.get("Os") != "linux":
+            raise ValueError(f"{name} direct manifest is not linux/amd64")
+        return
+    raise ValueError(f"{name} OCI object has an unsupported media type")
+
+
+def selected_child_digest(image: dict, name: str) -> str:
+    """Return Podman's selected platform manifest digest, not an alias."""
+    digest = normalize_digest(image.get("Digest"))
+    if digest != EXPECTED_AMD64_CHILD_DIGEST:
+        raise ValueError(
+            f"{name} selected child manifest is not the expected linux/amd64 digest"
+        )
+    if image.get("Architecture") != "amd64" or image.get("Os") != "linux":
+        raise ValueError(f"{name} image is not the native linux/amd64 image")
+    return digest
+
+
+def normalize_image_json(value: str, index_json: str, name: str = "base") -> str:
     image = load(value, name)
-    # Validate without discarding the observed triple: the inspection artifact
-    # must retain the evidence that both untagged aliases were present.
+    validate_pinned_object(index_json, image, name)
     normalize_repo_digests(image.get("RepoDigests"), name)
     return json.dumps(image, separators=(",", ":"))
 
@@ -117,16 +175,25 @@ def main() -> int:
     parser.add_argument("--base-id")
     parser.add_argument("--repo-digest")
     parser.add_argument("--normalize-json")
+    parser.add_argument("--index-json")
     args = parser.parse_args()
     try:
         if args.normalize_json is not None:
-            print(normalize_image_json(args.normalize_json))
+            if args.index_json is None:
+                raise ValueError(
+                    "--index-json is required; refusing independent image-field validation"
+                )
+            print(normalize_image_json(args.normalize_json, args.index_json))
             return 0
         if args.base_id is None or args.repo_digest is None:
             raise ValueError("--base-id and --repo-digest are required for comparison")
         if args.base_json is None or args.derived_json is None:
             raise ValueError(
                 "--base-json and --derived-json are required for comparison"
+            )
+        if args.index_json is None:
+            raise ValueError(
+                "--index-json is required; refusing independent image-field validation"
             )
         base = load(args.base_json, "base")
         derived = load(args.derived_json, "derived")
@@ -141,9 +208,8 @@ def main() -> int:
             )
         if normalize_digest(base.get("Id")) != recorded_base_id:
             raise ValueError("inspected base ID differs from recorded base ID")
-        base_repo_digests = normalize_repo_digests(base.get("RepoDigests"), "base")
-        if set(base_repo_digests) != OBSERVED_REPO_DIGESTS:
-            raise ValueError("inspected base RepoDigests contains unexpected aliases")
+        validate_pinned_object(args.index_json, base)
+        normalize_repo_digests(base.get("RepoDigests"), "base")
         # A derived image is a separate artifact.  Builders commonly publish
         # it under different repository aliases (or without RepoDigests), so
         # never apply the base image's alias set to the derived image.

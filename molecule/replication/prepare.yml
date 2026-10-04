@@ -34,6 +34,7 @@
       - "/usr/lib/podman/aardvark"
     pg_replication_image_identity: "rocky-9-ubi"
     pg_replication_image_name: "docker.io/rockylinux/rockylinux:9-ubi-init"
+    pg_replication_index_name: "docker.io/rockylinux/rockylinux"
     pg_replication_image_digest: "sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5"
     pg_replication_os_version: "9.8"
     pg_replication_build_contract: "rocky-9.8-iproute-0:6.17.0-2.el9.x86_64-v2"
@@ -41,6 +42,7 @@
       {{ lookup('env', 'MOLECULE_REPLICATION_BASE_IMAGE_ID') }}
     pg_replication_base_repo_digest: >-
       {{ lookup('env', 'MOLECULE_REPLICATION_BASE_REPO_DIGEST') }}
+    pg_replication_base_index_digest: "sha256:b33dfee97df5b631945b9b04ffc2f4deb28862db927c86cb0afb94ef9861dfb5"
     pg_replication_provenance_helper: >-
       {{ playbook_dir }}/../../scripts/replication_image_provenance.py
     pg_replication_containers:
@@ -271,6 +273,20 @@
       changed_when: false
       delegate_to: localhost
 
+    - name: "Inspect the pinned Rocky OCI object"
+      ansible.builtin.command:
+        argv:
+          - "{{ pg_replication_podman_executable }}"
+          - manifest
+          - inspect
+          - "{{ pg_replication_index_name }}@{{ pg_replication_base_index_digest }}"
+      register: pg_replication_base_index_preflight
+      changed_when: false
+      failed_when: >-
+        pg_replication_base_index_preflight.rc != 0 or
+        (pg_replication_base_index_preflight.stdout | trim | length) == 0
+      delegate_to: localhost
+
     - name: "Inspect replication image provenance and architecture"
       ansible.builtin.command:
         argv:
@@ -409,6 +425,8 @@
           - "{{ pg_replication_provenance_helper }}"
           - --normalize-json
           - "{{ pg_replication_base_preflight.stdout }}"
+          - --index-json
+          - "{{ pg_replication_base_index_preflight.stdout }}"
       register: pg_replication_base_preflight_normalized
       changed_when: false
       delegate_to: localhost
@@ -429,6 +447,8 @@
           - "{{ pg_replication_base_image_id }}"
           - --repo-digest
           - "{{ pg_replication_base_repo_digest }}"
+          - --index-json
+          - "{{ pg_replication_base_index_preflight.stdout }}"
       loop: "{{ pg_replication_built_image_preflight.results }}"
       loop_control:
         loop_var: pg_replication_built_image_result
