@@ -46,6 +46,18 @@
     "expected_message": "valid unicast IPv4 address",
     "published_facts": {}
   },
+  "unspecified_ipv4": {
+    "ipv4": "0.0.0.0",
+    "subnets": [{"subnet": "10.88.0.0/16"}],
+    "expected_message": "valid unicast IPv4 address",
+    "published_facts": {}
+  },
+  "link_local_ipv4": {
+    "ipv4": "169.254.10.20",
+    "subnets": [{"subnet": "169.254.0.0/16"}],
+    "expected_message": "valid unicast IPv4 address and subnet",
+    "published_facts": {}
+  },
   "invalid_subnet": {
     "ipv4": "10.88.0.2",
     "subnets": [{"subnet": "10.88.0.2/16"}],

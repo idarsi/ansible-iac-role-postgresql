@@ -12,12 +12,12 @@ ROOT = Path(__file__).parents[1]
 CONVERGE = ROOT / "molecule/replication/converge.yml"
 ROLE_VALIDATION = ROOT / "tasks/validate/validate_replication.yml"
 RECORD_VALIDATION = ROOT / "tasks/validate/validate_replication_record.yml"
-IPADDR_NAME = "Validate the configured external-network IPv4 address and subnet"
+CLASSIFICATION_NAME = "Classify the configured external-network IPv4 address natively"
 STRUCTURE_NAME = "Validate the external-network inspection structure before indexing"
 COUNT_NAME = "Validate the inspected network keys and subnet count before indexing"
 SUBNET_NAME = "Validate the selected subnet structure before indexing"
 NON_EMPTY_GUARD_NAME = "Reject missing or empty external-network IPv4 and subnet values"
-SYNTAX_GUARD_NAME = "Validate external-network IPv4 and subnet syntax before filters"
+SYNTAX_GUARD_NAME = "Validate external-network IPv4 syntax before filters"
 ARITHMETIC_GUARD_NAME = "Validate external-network subnet alignment before arithmetic"
 PUBLISH_NAME = "Publish the validated external-network IPv4 address and subnet"
 INVALID_INCLUDE_NAME = "Exercise invalid external-network values in the actual validation path"
@@ -67,12 +67,13 @@ def main():
     validation_case = yaml.safe_load(
         (ROOT / "molecule/replication/validate_external_network_case.yml").read_text()
     )[0]
+    validation_text = (ROOT / "molecule/replication/validate_external_network_case.yml").read_text()
     validation_tasks = validation_case["block"]
     non_empty_index = task_index(validation_tasks, NON_EMPTY_GUARD_NAME)
     syntax_index = task_index(validation_tasks, SYNTAX_GUARD_NAME)
     arithmetic_index = task_index(validation_tasks, ARITHMETIC_GUARD_NAME)
-    ipaddr_index = task_index(validation_tasks, IPADDR_NAME)
-    assert non_empty_index < syntax_index < arithmetic_index < ipaddr_index
+    classification_index = task_index(validation_tasks, CLASSIFICATION_NAME)
+    assert non_empty_index < syntax_index < arithmetic_index < classification_index
 
     guard = expressions(validation_tasks[non_empty_index])
     assert {
@@ -92,15 +93,27 @@ def main():
     arithmetic_guard = expressions(validation_tasks[arithmetic_index])
     assert "pg_replication_external_ipv4_candidate is ansible.utils.ipv4" not in arithmetic_guard
     assert any("%" in expression and "32 -" in expression for expression in arithmetic_guard), (
-        "strict subnet validation must reject host bits without normalizing through ipaddr"
+        "strict subnet validation must reject host bits before native range checks"
     )
-    assert "pg_replication_external_ipv4_candidate is ansible.utils.ipv4" in str(
-        validation_tasks[task_index(validation_tasks, "Validate external-network IPv4 values before address filters")]
+    assert "ansible.utils.ipaddr" not in validation_text
+    unicast_guard = validation_tasks[task_index(
+        validation_tasks, "Require a unicast external-network IPv4 address before further parsing"
+    )]
+    assert "pg_replication_external_ipv4_unicast is true" in str(unicast_guard)
+    unicast_index = task_index(
+        validation_tasks, "Require a unicast external-network IPv4 address before further parsing"
     )
-    for task in validation_tasks[:ipaddr_index]:
-        assert "ansible.utils.ipaddr" not in str(task), (
-            "external-network input syntax/type guards must precede every ipaddr expression"
-        )
+    address_guard = next(
+        task for task in validation_tasks[unicast_index + 1:]
+        if task.get("name") == "Validate the configured external-network IPv4 address and subnet"
+    )
+    assert all(f"{name} is false" in str(address_guard) for name in (
+        "pg_replication_external_ipv4_loopback",
+        "pg_replication_external_ipv4_link_local",
+        "pg_replication_external_ipv4_unspecified",
+    ))
+    assert "pg_replication_external_ipv4_in_subnet is true" in str(address_guard)
+    assert "!= pg_replication_external_ipv4_normalized" not in validation_text
     assert not any(
         task.get("ansible.builtin.assert")
         and (
@@ -109,7 +122,7 @@ def main():
             or "pg_replication_external_subnet_normalized"
             in str(task)
         )
-        for task in validation_tasks[ipaddr_index + 1 :]
+        for task in validation_tasks[classification_index + 1 :]
     ), "canonical subnet validation must not occur after an ipaddr expression"
 
     structure_index = task_index(tasks, STRUCTURE_NAME)
@@ -119,7 +132,6 @@ def main():
     assert "pg_replication_subnets_data | length == 1" in expressions(tasks[count_index])
     assert "pg_replication_subnets_data | first is mapping" in expressions(tasks[subnet_index])
     assert '"subnet" in (pg_replication_subnets_data | first)' in expressions(tasks[subnet_index])
-    validation_text = (ROOT / "molecule/replication/validate_external_network_case.yml").read_text()
     assert "pg_replication_external_ipv4_candidate" in validation_text
     assert "pg_replication_external_subnet_candidate" in validation_text
     publish_index = task_index(validation_tasks, PUBLISH_NAME)
@@ -169,6 +181,14 @@ def main():
     assert all(case.get("expected_message") for case in invalid_values.values())
     assert invalid_values["invalid_subnet"]["subnets"][0]["subnet"] == "10.88.0.2/16"
     assert invalid_values["invalid_subnet"]["expected_message"] == "canonical IPv4 CIDR"
+    assert invalid_values["unspecified_ipv4"] == {
+        "ipv4": "0.0.0.0",
+        "subnets": [{"subnet": "10.88.0.0/16"}],
+        "expected_message": "valid unicast IPv4 address",
+        "published_facts": {},
+    }
+    assert invalid_values["unspecified_ipv4"]["published_facts"] == {}
+    assert invalid_values["link_local_ipv4"]["expected_message"] == "valid unicast IPv4 address and subnet"
     converge_text = CONVERGE.read_text()
     assert "replication_external_network_invalid_values.json" in converge_text
     assert "pg_replication_invalid_external_network_outcomes" in converge_text
