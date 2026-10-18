@@ -1,639 +1,119 @@
 > **Maturity State: Beta**<br>
 > **RC Readiness: 85%**
 
-## Maturity assessment
-
-Assessed ref: current worktree based on `db6be4e6cc472e28539fa62122427e84b8b4cd52` (`HEAD`), including the uncommitted KVM scenario migration. The existing supplemental scenario logic previously passed on Vagrant; the migrated KVM scenarios have not yet had an end-to-end run. This is an engineering-readiness assessment, not a production approval.
-
-| Category / criterion | Score | Evidence / rationale |
-|---|---:|---|
-| **Scope and Public Contract** | **10/12** | |
-| Purpose and boundaries | 3/3 | README documents PostgreSQL, Patroni/etcd boundaries, destructive cleanup, and ownership. |
-| Inputs and states | 4/5 | Blueprint structure, defaults, validation tasks, and state table are extensive; the large interface is not represented by role metadata. |
-| Support contract | 3/4 | Rocky/RHEL/Fedora and PG 16–18 support, PGDG sources, and prerequisites are documented and defaulted. |
-| **Functional Completeness** | **19/20** | |
-| Core convergence | 8/8 | Installation, versions, instances, configuration, databases, roles, extensions, replication, Patroni, and managed etcd are implemented. |
-| Applicable lifecycle | 6/6 | Present/absent, start/stop/restart, update, cleanup, replication, membership, failover, and the expanded supplemental scenario logic is implemented and was exercised on Vagrant; some operational cluster procedures are explicitly excluded. |
-| Platform and dependency handling | 3/3 | EL/Fedora repository paths, interpreters, PGDG packages, and Patroni/etcd dependencies are handled. |
-| Failure and rerun behavior | 2/3 | Validation and retry/rejoin paths are present; the supplemental outage, failure, partition, restart, rotation, and restore scenarios previously passed on Vagrant, but interruption and rollback coverage is not complete. |
-| **Validation and Safety** | **16/20** | |
-| Preflight validation | 5/6 | Types, required fields, references, conflicts, paths, HBA, cluster, replication, and platform checks are implemented before mutation. |
-| Secure behavior | 5/6 | Safe SSL defaults, certificate handling, restrictive permissions, repository checks, and escaped SQL are documented/implemented; external PKI and firewall remain boundaries. |
-| Destructive guardrails | 4/5 | Explicit destructive states, PostgreSQL-specific path checks, ownership markers, and guardrail scenarios protect cleanup. |
-| Check and diff behavior | 2/3 | Validation-only non-mutation is tested; representative mutating check-mode coverage is incomplete. |
-| **Convergence and Recovery** | **10/13** | |
-| Idempotent convergence | 4/5 | Idempotence is exercised in normal and Patroni paths; broad state coverage is not evidenced at this ref. |
-| State transitions | 3/4 | Removal, outage, failover, and rejoin scenarios cover important transitions; not all transitions have equivalent evidence. |
-| Operational recovery | 3/4 | Handlers, retries, quorum restoration, member rejoin, serial restart, TLS rotation, and isolated DCS restore are implemented/tested, including supplemental scenarios previously exercised on Vagrant; host suspend/power-loss and rollback evidence is absent. |
-| **Automated Testing and CI** | **22/25** | |
-| Static quality checks | 3/3 | CI defines production-profile ansible-lint and syntax checks; both passed locally for this worktree. |
-| Input validation tests | 4/4 | Validation scenario covers valid/invalid blueprints, ordering, cleanup, and actionable failures without installation. |
-| Functional verification | 6/6 | Molecule and supplemental E2E scenarios previously run on Vagrant verify observable package, service, database, replication, Patroni, etcd, TLS, failover, quorum recovery, restart, partition safety, snapshot restore, and rejoin outcomes. |
-| Idempotence tests | 3/4 | Representative normal and Patroni idempotence runs exist; complete state coverage is not shown. |
-| Lifecycle and guardrail tests | 4/4 | Cleanup, bind/HBA guardrails, outages, failover, membership, rejoin, partition safety, restart, TLS rotation, snapshot restore, and supplemental recovery paths previously exercised on Vagrant are covered. |
-| Supported-platform matrix | 2/3 | Automated EL9–10 and Fedora 43–44 matrix is declared; current green evidence and every version path are not independently confirmed here. |
-| CI enforcement | 0/1 | Workflow is present, but no successful CI run for this uncommitted worktree/ref was available as assessment evidence. |
-| **Documentation and Release Hygiene** | **8/10** | |
-| Operator documentation | 4/4 | README includes requirements, states, examples, safety behavior, platforms, repositories, and limitations. |
-| Test and limitation documentation | 2/2 | TESTING.md documents the matrix, commands, KVM host prerequisites, known gaps, and the supplemental scenarios previously run on Vagrant; the KVM migration still needs an end-to-end run; those scenarios remain manual and are excluded from CI. |
-| Contribution contract | 1/2 | CONTRIBUTING.md covers blueprint validation, examples, tests, and syntax; release-impact guidance is limited. |
-| Repository and release metadata | 1/2 | License, pinned CI dependencies, collections, and history exist; standard role metadata/version compatibility declarations are absent. |
-| **Total RC Readiness** | **85/100** | Rounded down per the assessment method; the prior Vagrant E2E runs add recovery and observable-outcome evidence; KVM execution is still pending. |
-
-**State decision:** Numeric state is **Beta** (60–99%). The mandatory Beta cap applies because platform/support coverage remains materially unverified at this ref and the expanded KVM scenarios are supplemental manual evidence, not CI-gated. No successful CI result for this uncommitted worktree/ref, Stable/Mature production review, or production approval is claimed.
-
-**RC blockers and missing evidence:** obtain a green CI result for the assessed change set; expand check-mode, interruption/rollback, and full lifecycle/platform coverage; add standard role metadata and release compatibility declarations. The supplemental KVM evidence still requires KVM, libvirt/KVM, the shared test environment, a reachable Rocky Linux install tree, guest resources, and host authorization; it cannot substitute for CI or production-like evidence. The smallest readiness gains are CI evidence, focused check-mode and interruption/rollback tests, broader platform evidence, and metadata completion.
-
 ANSIBLE-IAC-ROLE-POSTGRESQL
-===========================
-**COPYRIGHT** 2026 ^(ida|arsi)$ collective  
-**LICENSE** MIT License [LICENSE](LICENSE)  
+===============================
+**COPYRIGHT** 2026 ^(ida|arsi)$ collective
+**LICENSE** MIT Licence [LICENSE](LICENSE)
 **AUTHORS**
-- Arsi Atomi <arsi@atomi.sh>  
-- Arsi Atomi <arsi.atomi@valtori.fi>  
+- Arsi Atomi <arsi@atomi.sh>
+- Arsi Atomi <arsi.atomi@valtori.fi>
 
 Overview
-========
+--------
 
-This Ansible role provides a declarative way to deploy and manage PostgreSQL
-environments with multiple major versions, instances, databases, roles,
-extensions, and supporting infrastructure.
+This Ansible role provides a declarative way to install PostgreSQL and converge
+configured instances and database resources.
 
-Its development goal is to make complex PostgreSQL installations possible to
-roll out and maintain across large environments with as little manual work as
-possible. The role is also intended to evolve toward continuously verifying
-that the deployed PostgreSQL configuration remains aligned with the desired
-blueprint and organizational compliance requirements.
+This role uses the `iac_blueprint` model to define the desired state, while
+Ansible handles the host-specific implementation. See [Idarsi](https://github.com/idarsi)
+for further information.
 
-The role uses the `iac_blueprint` model to keep the desired state in one
-structured inventory while Ansible handles the host-specific implementation.
+The role manages:
 
-> **Maturity Level: Beta**<br>
-> The role's main functionality is complete and covered by extensive Molecule
-> scenarios across supported Enterprise Linux versions. It supports
-> multi-version and multi-instance PostgreSQL deployments, database and role
-> management, extensions, replication, inventory validation, repository
-> workflows, filesystem handling, and destructive cleanup. The role remains at
-> Beta because its interfaces and behavior may still change, and broader
-> long-term production evidence and backward-compatibility guarantees have not
-> yet been established.
+- PostgreSQL packages, repositories, instances, and services.
+- Databases, roles, extensions, configuration, and physical replication.
+- Optional Patroni clusters and explicitly enabled role-managed etcd.
 
-Supported PostgreSQL major versions:
-- PostgreSQL 18 — supported until 14 November 2030
-- PostgreSQL 17 — supported until 8 November 2029
-- PostgreSQL 16 — supported until 9 November 2028
+The role does not manage:
 
-These versions are installed from the PostgreSQL Global Development Group
-(PGDG) repositories. PGDG follows the PostgreSQL project's policy of
-supporting each major version for five years after its initial release. The
-PGDG repository provides packages and updates for supported PostgreSQL
-versions throughout their support lifetime.
+- External PKI, firewall policy, or external DCS provisioning.
+- Operational etcd membership changes or general host-wide system administration.
 
-Supported operating systems and lifecycle targets:
+Supported platforms
+-------------------
 
-Operating system                | Supported versions | Upstream lifecycle target
---------------------------------|--------------------|-------------------------
-Rocky Linux                     | 9, 10              | Rocky 9 until 31 May 2032; Rocky 10 until 31 May 2035
-Red Hat Enterprise Linux (UBI)  | 9, 10              | RHEL 9 and 10 follow Red Hat's ten-year lifecycle; planned major-release ends are 31 May 2032 and 31 May 2035
-Fedora                          | 43, 44             | Approximately 13 months per release; Fedora 43 is maintained until one month after Fedora 45, and Fedora 44 until one month after Fedora 46
+| Operating system                  | Supported versions                | Automated test coverage                   |
+|-----------------------------------|-----------------------------------|-------------------------------------------|
+| Rocky Linux                       | 8, 9, 10                          | 9, 10 (Molecule; see [TESTING.md](TESTING.md)) |
+| Red Hat Enterprise Linux (UBI)    | 8, 9, 10                          | 9, 10 (Molecule; see [TESTING.md](TESTING.md)) |
+| Fedora                            | 43, 44                            | 43, 44 (Molecule; see [TESTING.md](TESTING.md)) |
 
-The Rocky Linux dates are based on the [Rocky Linux release guide](https://wiki.rockylinux.org/rocky/version/).
-RHEL and UBI follow the [Red Hat Enterprise Linux lifecycle policy](https://access.redhat.com/support/policy/updates/errata);
-the role does not manage Red Hat subscriptions. Fedora follows the
-[Fedora release lifecycle](https://fedoraproject.org/wiki/Fedora_Release_Life_Cycle),
-so its end dates move with the actual release schedule. These lifecycle
-targets should be reviewed when adding or removing a supported major version.
+Rocky 8 and Red Hat/UBI 8 are allowed by `defaults/main.yml` and the role's
+platform preflight; EL8 repository handling is implemented in
+`tasks/repo_present_el8.yml`. They are support claims derived from implementation,
+not from automated coverage. See [TESTING.md](TESTING.md) for the tested matrix.
 
-On Red Hat Enterprise Linux (including UBI) and Rocky Linux, the role uses the
-PGDG repository for PostgreSQL packages. It does not install PostgreSQL from
-Red Hat's distribution PostgreSQL packages. The host's Red Hat or Rocky Linux
-base repositories remain platform prerequisites; the role only manages the
-additional Rocky Linux repositories needed by its package workflow.
+Supported states
+----------------
 
-See the [PostgreSQL versioning policy](https://www.postgresql.org/support/versioning/)
-and the [PGDG Red Hat family platform documentation](https://www.postgresql.org/download/linux/redhat/)
-for the current lifecycle and repository support information.
-
-These operations are supported:
-
-Operation                       | State               |
---------------------------------|---------------------|
-Installing and configuring all  | install             |
-Updating installed role-managed packages | update              |
-Uninstalling all                | uninstall           |
-Removing PostgreSQL completely  | all_absent          |
-Validating inventory            | validate             |
-Installing PostgreSQL           | present             |
-Uninstalling PostgreSQL         | absent              |
-Create PostgreSQL instances     | instances_present   |
-Remove PostgreSQL instances     | instances_absent    |
-Start PostgreSQL instances      | instances_started   |
-Stop PostgreSQL instances       | instances_stopped   |
-Restart PostgreSQL instances    | instances_restarted |
-Ensure replication is present   | replication_present |
-Ensure cluster configuration is present | clusters_present |
-Create databases                | databases_present   |
-Remove databases                | databases_absent    |
-Create database users           | roles_present       |
-Remove database users           | roles_absent        |
-Run post-install SQL jobs       | post_installs_present |
+| State                  | Behaviour |
+|------------------------|-----------|
+| `install`              | Installs and configures declared PostgreSQL resources and applicable clusters. |
+| `update`               | Updates installed packages recorded as managed by this role. |
+| `uninstall`            | Stops and removes declared instances and the PostgreSQL installation. |
+| `all_absent`           | Destructively removes PostgreSQL and role-managed remnants, including data and the PostgreSQL OS user; cleanup guards apply. |
+| `validate`             | Validates the blueprint without applying PostgreSQL state. |
+| `present`              | Ensures PostgreSQL packages and repositories are present. |
+| `absent`               | Removes PostgreSQL installation in the declared scope subject to safeguards. |
+| `instances_present`    | Ensures declared instances and configuration are present. |
+| `instances_absent`     | Stops and removes declared instances subject to ownership safeguards. |
+| `instances_started`    | Starts declared instances and required extension packages. |
+| `instances_stopped`    | Stops declared instances without removing them. |
+| `instances_restarted`  | Restarts declared instances. |
+| `replication_present`  | Configures physical replication; standby bootstrap may initialize its data directory. |
+| `clusters_present`     | Renders declared Patroni/cluster configuration without converging databases or roles. |
+| `databases_present`    | Ensures declared databases and extensions are present. |
+| `databases_absent`     | Removes declared databases. |
+| `roles_present`        | Ensures declared database roles are present. |
+| `roles_absent`         | Removes declared database roles. |
+| `post_installs_present`| Runs declared post-install SQL jobs. |
 
 Quick start
 -----------
 
-Install PostgreSQL 17 with one instance:
-
-```yaml
----
-- hosts: postgres
-  become: true
-  roles:
-    - role: ansible-iac-role-postgresql
-      state: install
-  vars:
-    iac_blueprint:
-      postgresql:
-        - version: 17
-          instances:
-            - name: main
-```
-
-The role validates the complete inventory before applying the selected state.
-Run only the validation when checking a blueprint without changing the host:
-
-```yaml
-- hosts: postgres
-  become: true
-  roles:
-    - role: ansible-iac-role-postgresql
-      state: validate
-```
-
-The `update` state updates only packages that are both managed by this role and
-currently installed on the host. It does not run a general system-wide DNF
-update and does not install packages that are missing. The role records packages
-it installs in a marker file and uses that record for later updates.
-
-The `all_absent` state is intentionally destructive: it removes PostgreSQL
-packages, repository configuration, service files, data, logs, and the
-PostgreSQL operating system user. Use it only when the host should be reset to
-a clean pre-PostgreSQL baseline.
+See the [Blueprint example](#configuration-examples).
 
 Requirements
 ------------
 
-- Operating systems covered by the automated Molecule test matrix are listed
-  in [TESTING.md](TESTING.md).
+Control node
 
-- Other components
-  - Ansible Core 2.19.12 is the minimum supported version. Compatibility
-    coverage for newer versions is documented in [TESTING.md](TESTING.md).
+- Ansible Core 2.19.12 or newer
+- `ansible.posix` (>=1.3.0) and `containers.podman` (>=1.7.0); see [collections.yml](collections.yml)
 
-GitHub Actions uses the isolated tooling pins in
-[requirements-ci.txt](requirements-ci.txt) and selects an Ansible Core line per
-CI lane. For local role testing, use the pinned environments in
-[`idarsi-ansible-test-environments`](https://github.com/idarsi/idarsi-ansible-test-environments)
-as described in [TESTING.md](TESTING.md).
+Target host
 
-Usage
-=====
+- Supported operating system and version listed above; package repositories and network access to fetch selected software must be available.
 
-How to run playbook with inventory
-----------------------------------
+Blueprint structure
+-------------------
 
-Use playbook and inventory examples to create your own playbook and run command below.
+Configuration is read from:
 
-```bash
-ansible-playbook -i <inventory_file> <playbook_file> -kK
-```
+`iac_blueprint.postgresql`
 
-Playbook example
-----------------
-
-```yaml
----
-- hosts: postgres
-  become: true
-
-  roles:
-  - role: ansible-iac-role-postgresql
-    state: install
-```
-
-The above example is equivalent to the example below in practical use.
-
-```yaml
----
-- hosts: postgres
-  become: true
-
-  roles:
-  - role: ansible-iac-role-postgresql
-    state: present
-
-  - role: ansible-iac-role-postgresql
-    state: instances_present
-
-  - role: ansible-iac-role-postgresql
-    state: instances_started
-
-  - role: ansible-iac-role-postgresql
-    state: roles_present
-
-  - role: ansible-iac-role-postgresql
-    state: databases_present
-
-  - role: ansible-iac-role-postgresql
-    state: replication_present
-```
-
-To validate the complete PostgreSQL inventory without applying a PostgreSQL
-state, run the role with the `validate` state:
-
-```yaml
----
-- hosts: postgres
-  become: true
-
-  roles:
-  - role: ansible-iac-role-postgresql
-    state: validate
-```
-
-PostgreSQL clustering
----------------------
-
-Clustering is modeled separately from a PostgreSQL instance. A version-level
-`clusters` record is shared with every member host, while each instance points
-to its cluster by name. The role selects the local member by matching
-`inventory_hostname` and the instance name. The supported providers are
-`standalone`, `streaming_replication`, and `patroni`.
-
-For Patroni, the DCS is an external dependency. This role installs and
-configures the Patroni agent and its systemd unit, but it does not provision
-etcd, Consul, or Kubernetes. Patroni instances are started through Patroni,
-not through the PostgreSQL systemd unit directly.
-
-For an `etcd3` DCS, the role automatically installs the PGDG
-`patroni-etcd` package together with Patroni. This follows the PGDG Patroni
-packaging guidance and keeps the Patroni package and its etcd client support
-from the same repository family:
-
-```yaml
-pg_patroni_etcd_package: patroni-etcd
-```
-
-The package is selected only when the cluster DCS provider is `etcd3`. When
-managed etcd is not enabled, external etcd remains the responsibility of the
-surrounding role or infrastructure layer. The default package name can be
-overridden with `pg_patroni_etcd_package`, while additional Patroni packages
-can be supplied through `pg_patroni_additional_packages`.
-
-For hosts listed in `dcs.etcd.members`, define the local etcd bind address
-explicitly, for example in host variables:
-
-```yaml
-pg_etcd_bind_address: 10.0.0.11
-```
-
-TLS certificates for Patroni and managed etcd can either be supplied by the
-inventory or generated by the role. The existing `ca_file`, `cert_file`, and
-`key_file` fields remain supported. Set `auto_generate: true` to create a
-cluster CA and member certificates automatically. The CA private key remains
-on the first cluster member; only the CA certificate and member certificate
-are distributed. Generated certificates use the configured member hostname in
-their subject alternative name.
-
-The generated etcd leaves are member-specific even though the destination paths
-are shared names (`etcd.crt` and `etcd.key`): each host receives the certificate
-generated for its own cluster member. The supplemental TLS-rotation scenario
-follows the same rule and additionally includes each member's private IP SAN;
-it does not use a shared leaf.
-
-Known limitation: the CA and seed-side generated private-key artifacts under
-`/var/lib/pgsql` are created by the OpenSSL command and are not subsequently
-owner/mode-normalized by the role. This pre-existing seed-host limitation was
-not changed in this review. Deployed etcd key and certificate permissions are
-managed separately on each member.
-
-For managed etcd:
-
-The blueprint keeps HTTPS endpoints so the role can validate and configure
-secure transport. When rendering Patroni `etcd3.hosts`, the role removes the
-URL scheme and supplies `protocol: https` plus the configured TLS files,
-matching the format expected by supported Patroni versions.
-
-```yaml
-dcs:
-  provider: etcd3
-  endpoints: [https://pg01:2379, https://pg02:2379, https://pg03:2379]
-  etcd:
-    enabled: true
-    auto_generate: true
-    members:
-      - {name: etcd01, host: pg01, peer_url: https://pg01:2380, client_url: https://pg01:2379}
-      - {name: etcd02, host: pg02, peer_url: https://pg02:2380, client_url: https://pg02:2379}
-      - {name: etcd03, host: pg03, peer_url: https://pg03:2380, client_url: https://pg03:2379}
-```
-
-For Patroni REST API TLS, place `auto_generate: true` under
-`patroni.restapi`. Automatic generation creates the server certificate and CA.
-Clients that connect to the REST API still need a client certificate when
-`verify_client` is `optional` or `required`; external operator client
-certificates remain the responsibility of the surrounding PKI.
+Minimal structure:
 
 ```yaml
 iac_blueprint:
   postgresql:
     - version: 17
-      clusters:
-        - name: core-db
-          provider: patroni
-          dcs:
-            provider: etcd3
-            endpoints:
-              - https://etcd01.example.org:2379
-              - https://etcd02.example.org:2379
-              - https://etcd03.example.org:2379
-            etcd:
-              enabled: true
-              # Required on every host managed as an etcd member.
-              # Define pg_etcd_bind_address in host_vars/group_vars.
-              initial_cluster_token: core-dcs
-              members:
-                - name: etcd01
-                  host: etcd01.example.org
-                  peer_url: https://etcd01.example.org:2380
-                  client_url: https://etcd01.example.org:2379
-                - name: etcd02
-                  host: etcd02.example.org
-                  peer_url: https://etcd02.example.org:2380
-                  client_url: https://etcd02.example.org:2379
-                - name: etcd03
-                  host: etcd03.example.org
-                  peer_url: https://etcd03.example.org:2380
-                  client_url: https://etcd03.example.org:2379
-              tls:
-                enabled: true
-                client:
-                  ca_file: /etc/etcd/pki/ca.crt
-                  cert_file: /etc/etcd/pki/etcd-client.crt
-                  key_file: /etc/etcd/pki/etcd-client.key
-                peer:
-                  ca_file: /etc/etcd/pki/ca.crt
-                  cert_file: /etc/etcd/pki/etcd-peer.crt
-                  key_file: /etc/etcd/pki/etcd-peer.key
-          patroni:
-            ttl: 30
-            loop_wait: 10
-            retry_timeout: 10
-            synchronous_mode: false
-            restapi:
-              authentication:
-                username: patroni
-                password: "{{ vault_patroni_restapi_password }}"
-              allowlist:
-                - db01.example.org
-                - db02.example.org
-          members:
-            - host: db01.example.org
-              instance: main
-              name: core-db01
-            - host: db02.example.org
-              instance: main
-              name: core-db02
       instances:
         - name: main
-          cluster: core-db
-          configuration:
-            port: 5432
 ```
 
-When `dcs.etcd.enabled` is `true`, the role installs the PGDG `etcd` package
-on hosts listed in `dcs.etcd.members`, renders the local member configuration,
-and enables the `etcd` systemd service. Managed etcd requires TLS/mTLS and an
-explicit host-level `pg_etcd_bind_address`; wildcard bind addresses and plain
-HTTP endpoints are rejected. Certificate files must be provisioned by the
-surrounding certificate workflow before enabling the cluster. The current
-implementation supports static cluster bootstrap. Add/remove member operations
-and snapshot/restore remain separate operational procedures.
+Top-level blueprint variables
+-----------------------------
 
-Use `state: clusters_present` to render Patroni configuration and its service
-unit without changing PostgreSQL databases or roles. `state: install` also
-handles the cluster configuration as part of the normal installation flow.
+| Variable          | Required (yes/no) | Default       | Short description |
+|-------------------|-------------------|---------------|-------------------|
+| `iac_blueprint`   | yes               | None          | Mapping containing the required `postgresql` list of version-level PostgreSQL declarations. |
 
-All other role states run the same inventory validation automatically before
-performing their state-specific work.
+Configuration examples
+----------------------
 
-When an instance uses TimescaleDB, `instances_started` ensures the selected
-TimescaleDB package and repository are present before starting the PostgreSQL
-service. This prevents PostgreSQL from starting before its configured preload
-library has been installed.
-
-Setting `pg_patroni_reinitialize` is destructive: it stops the local Patroni
-service and removes the local instance data directory before bootstrap. It is
-disabled by default and must only be enabled for an intentional, disposable
-rebootstrap.
-Post-bootstrap configuration finalization never enables this operation.
-
-To aggressively remove PostgreSQL from a host, including repository
-configuration, the operating system user, and PostgreSQL-owned data
-directories, run:
-
-```yaml
----
-- hosts: postgres
-  become: true
-
-  roles:
-  - role: ansible-iac-role-postgresql
-    state: all_absent
-```
-
-`all_absent` is intentionally destructive. It stops PostgreSQL systemd units,
-removes PostgreSQL packages and repository configuration, deletes PostgreSQL
-service files, removes PostgreSQL data and log directories, and deletes the
-PostgreSQL operating system user together with its home directory. It also
-removes version-scoped managed Git working trees before the final directory
-cleanup. Use it when a host or test environment must be reset back to a clean
-pre-PostgreSQL baseline instead of preserving any existing PostgreSQL data.
-
-The `safe` security profile uses `hostssl` as the default network access type
-and rejects explicit non-SSL host access. Generated server certificates include
-the configured `certificate_subject_alt_names` values (default: `localhost`).
-These names can be set per instance when clients connect using another DNS
-name.
-
-Before destructive cleanup, the role validates that its data and log roots are
-absolute PostgreSQL-specific paths ending in `/pgsql`, rejects traversal and
-system-root paths, and requires a role-managed marker created by the `present`
-state. Custom data roots such as `/srv/data/pgsql` are supported; cleanup
-refuses unmarked roots.
-
-Inventory example
------------------
-
-```yaml
----
-postgres:
-  hosts:
-    example.org:
-  vars:
-    iac_blueprint:
-      postgresql:
-        - version: 17
-          instances:
-            - name: main
-```
-
-Shared filesystem helpers
--------------------------
-
-Version-scoped `directories:`, `files:`, `binds:`, and `git:` entries are
-implemented through the shared task library under `tasks/shared`.
-
-For the exact `binds:` record structure and examples, see:
-
-- `tasks/shared/README.md`
-
-The PostgreSQL role also supports moving the whole PostgreSQL home/data tree to
-another filesystem location with a bind mount while keeping the legacy path in
-place:
-
-```yaml
-pg_real_dir: /srv/data/pgsql
-pg_bind_dir: /var/lib/pgsql
-```
-
-This creates `/srv/data/pgsql` when needed, moves existing data from
-`/var/lib/pgsql` to the new location when the migration preconditions are met,
-and then bind-mounts `/srv/data/pgsql` back to `/var/lib/pgsql`.
-
-iac_blueprint inventory structure
----------------------------------
-
-This role uses iac_blueprint.postgresql as the top-level inventory key. Each entry under it represents 
-a specific PostgreSQL major version and includes one or more instances configured independently on the 
-same or different hosts.
-
-Top-level structure:
-
-```yaml
-iac_blueprint:
-  postgresql:
-    - version: <major version number>          # e.g. 17
-      directories:                             # optional filesystem directories
-        - path: <path>
-          owner: <owner>
-          group: <group>
-          mode: <mode>
-      files:                                   # optional files with inline content
-        - path: <path>
-          content: <content>
-          owner: <owner>
-          group: <group>
-          mode: <mode>
-      git:                                     # optional git working trees
-        - repo: <repository url or path>
-          dest: <destination path>
-          version: <branch, tag, or commit>    # optional
-          update: true|false                   # optional
-          force: true|false                    # optional
-          recursive: true|false                # optional
-      cron:                                    # optional cronjobs
-        - name: <name>
-          job: <command>
-          user: <user>
-          minute: <minute>
-          hour: <hour>
-          weekday: <weekday>
-          cron_file: <cron_file>
-      post_install:                             # optional SQL jobs
-        jobs:
-          - database: <database>                # optional, defaults to postgres
-            sql: <SQL statement(s)>              # executed as the postgres OS user
-      instances:
-        - name: <instance name>                # must be unique on host
-          port: <custom port>                  # default: version-specific PostgreSQL default
-          configuration_profile: <name>        # e.g. "balanced"
-          autotuning_profile: <name>           # e.g. "balanced"
-          security_profile: <name>             # e.g. "safe"
-          certificate_subject_alt_names:       # optional DNS SANs for generated certificate
-            - <dns name>
-          client_certificate_authority_content: |  # optional trusted CA PEM for client certificate auth
-            -----BEGIN CERTIFICATE-----
-            ...
-            -----END CERTIFICATE-----
-          client_certificate_authority_src: <path> # optional controller-side CA PEM path for client certificate auth
-          replication:                        # optional physical primary/standby replication settings
-            role: <primary|standby>
-            replication_user: <username>
-            replication_password: <cleartext password>
-            allowed_standby_addresses:        # primary only
-              - <CIDR>
-            primary_host: <hostname or IP>    # standby only
-            primary_port: <port>              # standby only, default 5432
-            slot_name: <slot name>            # optional
-            application_name: <name>          # optional, standby only
-            reinitialize: true|false          # optional, standby only
-          maprole:                            # optional pg_ident.conf mappings, also used by certificate auth
-            - mapname: <map name>
-              system_username: <system user or certificate CN/DN>
-              pg_username: <database role>
-          configuration:                       # optional, direct postgresql.conf overrides
-            key: value
-          databases:
-            - name: <dbname>
-              owner: <username>
-              extensions:                      # Installs required OS package and runs CREATE EXTENSION in the database
-                - name: <extension>
-                  source: <pgdg|community>     # timescaledb only; defaults to pgdg
-              access:                          # optional pg_hba.conf entries for this database
-                - name: <username>
-                  address: <CIDR>
-                  type: <host|hostssl|local>   # optional, default: host
-                  method: <auth_method>        # optional, default: scram-sha-256
-                  clientcert: <verify-ca|verify-full> # optional, hostssl only
-                  clientname: <CN|DN>          # optional, hostssl only
-                  map: <map name>              # optional, hostssl certificate auth only
-          roles:                               # roles that exist in this instance
-            - name: <username>
-              password: <cleartext password>   # optional
-              encrypted_password: <SCRAM hash> # optional
-              createdb: true|false             # optional
-              createuser: true|false           # optional
-              superuser: true|false            # optional
-              login: true|false                # optional
-              description: <role comment>      # optional
-```
-
-For TimescaleDB, omitting `source` installs the Apache-licensed package from
-the PostgreSQL PGDG repository. Set `source: community` to use the Timescale
-Community repository and package:
-
-```yaml
-extensions:
-  - name: timescaledb
-    source: community
-```
-
-The TimescaleDB Community repository is managed directly by the role with a
-repository file and its GPG key. Repository metadata signatures are verified
-with `repo_gpgcheck`; the repository currently does not provide RPM package
-signing keys, so package-level `gpgcheck` remains disabled. The vendor
-installation script is not used.
-TimescaleDB is added automatically to `shared_preload_libraries` while
-preserving other configured preload libraries.
-
-For physical primary/standby replication, declare the same TimescaleDB
-extension and `source` on both hosts. The package must be installed locally on
-the standby even though `CREATE EXTENSION` and other database writes are run
-only on the primary. A standby configuration that explicitly preloads
-TimescaleDB without declaring the extension metadata fails inventory
-validation.
-
-A minimal working iac_blueprint that installs PostgreSQL 17 with one instance and allows user app to 
-connect to database appdb from a specific network:
+Minimal deployment with a database and role:
 
 ```yaml
 iac_blueprint:
@@ -643,7 +123,7 @@ iac_blueprint:
         - name: main
           roles:
             - name: app
-              password: changeme
+              password: "{{ vault_postgresql_app_password }}"
           databases:
             - name: appdb
               owner: app
@@ -652,255 +132,11 @@ iac_blueprint:
                   address: 192.168.1.0/24
 ```
 
-Certificate authentication example with explicit certificate-aware pg_hba fields:
+Physical replication and Patroni/managed-etcd configuration are supported.
+Their detailed examples, input fields, security requirements, and operational
+limitations are maintained in [TESTING.md](TESTING.md) and the role task
+validation; managed etcd requires TLS/mTLS and a per-host
+`pg_etcd_bind_address`. The `all_absent` and `pg_patroni_reinitialize`
+operations are destructive and should only be used with deliberate intent.
 
-```yaml
-iac_blueprint:
-  postgresql:
-    - version: 17
-      instances:
-        - name: main
-          security_profile: safe
-          client_certificate_authority_src: /srv/pki/postgresql/client-root-ca.crt
-          maprole:
-            - mapname: app_cert_map
-              system_username: app-client
-              pg_username: app_user
-          roles:
-            - name: app_user
-              login: true
-          databases:
-            - name: appdb
-              owner: app_user
-              access:
-                - name: app_user
-                  address: 192.168.1.0/24
-                  type: hostssl
-                  method: cert
-                  clientname: CN
-                  map: app_cert_map
-```
-
-Primary/standby physical replication example
---------------------------------------------
-
-Primary host inventory:
-
-```yaml
-iac_blueprint:
-  postgresql:
-    - version: 17
-      instances:
-        - name: main
-          security_profile: safe
-          replication:
-            role: primary
-            replication_user: replicator
-            replication_password: changeme
-            allowed_standby_addresses:
-              - 192.168.1.11/32
-            slot_name: standby1
-          roles:
-            - name: app_user
-              password: changeme
-          databases:
-            - name: appdb
-              owner: app_user
-```
-
-Standby host inventory:
-
-```yaml
-iac_blueprint:
-  postgresql:
-    - version: 17
-      instances:
-        - name: main
-          security_profile: safe
-          replication:
-            role: standby
-            primary_host: 192.168.1.10
-            primary_port: 5432
-            replication_user: replicator
-            replication_password: changeme
-            slot_name: standby1
-            application_name: pg-standby-1
-          databases:
-            - name: appdb
-              extensions:
-                - name: plpython3u
-```
-
-If the primary database uses extensions that require operating system packages,
-define the same `databases[].extensions` metadata on the standby host as well.
-The standby must have the extension packages installed locally even though
-`CREATE EXTENSION` runs only on the primary and reaches the standby through
-physical replication.
-
-Complete two-host inventory example:
-
-```yaml
-postgres_primary:
-  hosts:
-    pg-primary.example.org:
-  vars:
-    iac_blueprint:
-      postgresql:
-        - version: 17
-          instances:
-            - name: main
-              security_profile: safe
-              configuration:
-                listen_addresses: "*"
-                port: 5432
-              replication:
-                role: primary
-                replication_user: replicator
-                replication_password: changeme
-                allowed_standby_addresses:
-                  - 192.168.1.11/32
-                slot_name: standby1
-              roles:
-                - name: app_user
-                  password: changeme
-                  login: true
-              databases:
-                - name: appdb
-                  extensions:
-                    - name: plpython3u
-                  owner: app_user
-                  access:
-                    - name: app_user
-                      address: 192.168.1.0/24
-                      type: host
-                      method: scram-sha-256
-
-postgres_secondary:
-  hosts:
-    pg-standby.example.org:
-  vars:
-    iac_blueprint:
-      postgresql:
-        - version: 17
-          instances:
-            - name: main
-              security_profile: safe
-              configuration:
-                listen_addresses: "*"
-                port: 5432
-              replication:
-                role: standby
-                primary_host: 192.168.1.10
-                primary_port: 5432
-                replication_user: replicator
-                replication_password: changeme
-                slot_name: standby1
-                application_name: pg-standby-1
-              databases:
-                - name: appdb
-                  extensions:
-                    - name: plpython3u
-```
-
-Recommended execution order for a basic two-host setup:
-
-1. Run `present`, `instances_present`, `instances_started`, `roles_present`,
-   and `databases_present` on the primary host.
-2. Run `replication_present` on the primary host so the replication role and
-   optional slot exist.
-3. Run `present` and `replication_present` on the standby host to bootstrap
-   it with `pg_basebackup`.
-4. Run `instances_present` and `instances_started` on the standby host to
-   render local overrides and start the replicated instance.
-
-The standby host should not be the target for `roles_present` or
-`databases_present`; those write operations belong on the primary host.
-
-Blueprint cron jobs must run as `postgres`. Version-scoped filesystem entries
-are limited to PostgreSQL auxiliary paths under `/var/lib/pgsql/`,
-`/var/log/pgsql/`, `/etc/pgsql/`, or `/tmp/`; PostgreSQL data directories,
-Patroni, etcd, and systemd paths cannot be managed through these entries.
-Post-install jobs accept SQL through `sql` and are always executed with
-`psql` as the PostgreSQL operating-system user. Shell `command` and
-`run_as` fields are not supported.
-
-Minimal example: just install PostgreSQL with one instance
-
-```yaml
-iac_blueprint:
-  postgresql:
-    - version: 17
-      instances:
-        - name: data
-```
-
-Optional filesystem and cron example
-
-```yaml
-iac_blueprint:
-  postgresql:
-    - version: 17
-      directories:
-        - path: /var/lib/pgsql/backups
-          owner: postgres
-          group: postgres
-          mode: "0750"
-          files:
-            - path: /etc/pgsql/backup.env
-              content: "PGUSER=postgres\n"
-              owner: root
-              group: root
-              mode: "0640"
-          git:
-            - repo: /srv/git/pg-maintenance
-              dest: /var/lib/pgsql/git/pg-maintenance
-              version: main
-              update: true
-          cron:
-            - name: pg_backup
-              user: postgres
-          minute: "0"
-          hour: "2"
-          job: "/usr/local/bin/pg_backup"
-          cron_file: pg_backup
-      instances:
-        - name: data
-
-Definitions
------------
-
-In PostgreSQL documentation the term cluster refers to a collection of
-databases. Because cluster is also commonly used for a group of servers, this
-document uses instance for a PostgreSQL server-local cluster. A single host
-may run one or more PostgreSQL instances on different ports.
-
-Architecture
-------------
-
-This Ansible role uses the `iac_blueprint` declarative inventory structure. It
-defines the desired end state of services — such as service versions,
-instances, configuration profiles, and users — in a structured format. The
-role interprets this blueprint and applies the necessary changes.
-
-Repository checkout
--------------------
-
-The shared task library is included as a Git submodule under `tasks/shared`.
-Clone the repository with submodules:
-
-```bash
-git clone --recurse-submodules https://github.com/idarsi/ansible-iac-role-postgresql.git
-```
-
-If the repository was already cloned without submodules, initialize them with:
-
-```bash
-git submodule update --init --recursive
-```
-
-Static analysis and Molecule testing
-------------------------------------
-
-The repository runs Ansible Lint with the `production` profile as a separate
-static-analysis gate before the Molecule scenarios. See [TESTING.md](TESTING.md)
-for the current test matrix, scenario coverage, and test commands.
+For exact state behavior and test coverage, see [TESTING.md](TESTING.md).
