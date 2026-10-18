@@ -41,6 +41,10 @@
                   superuser_password: postgres_password
                   replication_username: replicator
                 replication_password: replication_password
+                pg_hba:
+                  - local all all trust
+                  - host all postgres 0.0.0.0/0 scram-sha-256
+                  - host replication replicator 0.0.0.0/0 scram-sha-256
                 restapi:
                   port: 8008
                   authentication:

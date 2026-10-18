@@ -1,0 +1,61 @@
+scenario:
+  name: kvm_restart_smoke
+  test_sequence:
+  - dependency
+  - cleanup
+  - destroy
+  - syntax
+  - create
+  - prepare
+  - converge
+  - verify
+  - cleanup
+  - destroy
+dependency:
+  name: galaxy
+driver:
+  name: default
+  options:
+    managed: true
+ansible:
+  playbooks:
+    create: ${IDARSI_TEST_ENVIRONMENT}/molecule/kvm/create.yml
+    destroy: ${IDARSI_TEST_ENVIRONMENT}/molecule/kvm/destroy.yml
+platforms:
+- name: pg01
+  install_source: "${IDARSI_TEST_KVM_INSTALL_SOURCE}"
+  kickstart: ${IDARSI_TEST_ENVIRONMENT}/examples/molecule-kvm/rocky9-10.ks.tmpl
+  network: idarsi-test
+  ipv4_address: 192.168.250.201
+  memory_mb: 2048
+  vcpus: 2
+  disk_size_gb: 30
+  install_timeout: 3600
+  ssh_user: molecule
+- name: pg02
+  install_source: "${IDARSI_TEST_KVM_INSTALL_SOURCE}"
+  kickstart: ${IDARSI_TEST_ENVIRONMENT}/examples/molecule-kvm/rocky9-10.ks.tmpl
+  network: idarsi-test
+  ipv4_address: 192.168.250.202
+  memory_mb: 2048
+  vcpus: 2
+  disk_size_gb: 30
+  install_timeout: 3600
+  ssh_user: molecule
+- name: pg03
+  install_source: "${IDARSI_TEST_KVM_INSTALL_SOURCE}"
+  kickstart: ${IDARSI_TEST_ENVIRONMENT}/examples/molecule-kvm/rocky9-10.ks.tmpl
+  network: idarsi-test
+  ipv4_address: 192.168.250.203
+  memory_mb: 2048
+  vcpus: 2
+  disk_size_gb: 30
+  install_timeout: 3600
+  ssh_user: molecule
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/..
+    ANSIBLE_REMOTE_TMP: /tmp
+verifier:
+  name: ansible

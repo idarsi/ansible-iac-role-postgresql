@@ -71,40 +71,79 @@
       }}
 
 - name: "Waiting for local Patroni API"
-  ansible.builtin.uri:
-    url: "{{ pg_patroni_restapi_scheme }}://{{ pg_patroni_restapi_url_host }}:{{ pg_patroni_restapi_port_effective }}/cluster"
-    validate_certs: true
-    ca_path: "{{ pg_patroni_restapi_cafile if pg_patroni_restapi_scheme == 'https' else omit }}"
-    client_cert: >-
-      {{ pg_patroni_restapi_certfile
-         if pg_patroni_restapi_scheme == 'https'
-         and pg_patroni_restapi_verify_client in ['optional', 'required']
-         else omit }}
-    client_key: >-
-      {{ pg_patroni_restapi_keyfile
-         if pg_patroni_restapi_scheme == 'https'
-         and pg_patroni_restapi_verify_client in ['optional', 'required']
-         else omit }}
-    status_code: 200
-    return_content: true
-    url_username: "{{ pg_patroni_restapi_username }}"
-    url_password: "{{ pg_patroni_restapi_password }}"
-    force_basic_auth: "{{ pg_patroni_restapi_username | length > 0 }}"
-  register: pg_patroni_cluster_response
-  retries: "{{ pg_patroni_readiness_retries }}"
-  delay: "{{ pg_patroni_readiness_delay }}"
-  until:
-    - pg_patroni_cluster_response.status | default(0) == 200
-    - (pg_patroni_cluster_response.json | default({})).members | default([]) | length == (pg_patroni_cluster.members | length)
-    - >-
-      ((pg_patroni_cluster_response.json | default({})).members | default([])
-      | map(attribute='name') | list | sort)
-      == (pg_patroni_cluster.members | map(attribute='name') | list | sort)
-    - >-
-      ((pg_patroni_cluster_response.json | default({})).members | default([])
-      | map(attribute='host') | list | sort)
-      == (pg_patroni_cluster.members | map(attribute='host') | list | sort)
-    - (pg_patroni_cluster_response.json | default({})).members | default([]) | selectattr('role', 'equalto', 'leader') | list | length == 1
+  block:
+    - name: "Wait for the local Patroni API and cluster membership"
+      ansible.builtin.uri:
+        url: "{{ pg_patroni_restapi_scheme }}://{{ pg_patroni_restapi_url_host }}:{{ pg_patroni_restapi_port_effective }}/cluster"
+        validate_certs: true
+        ca_path: "{{ pg_patroni_restapi_cafile if pg_patroni_restapi_scheme == 'https' else omit }}"
+        client_cert: >-
+          {{ pg_patroni_restapi_certfile
+             if pg_patroni_restapi_scheme == 'https'
+             and pg_patroni_restapi_verify_client in ['optional', 'required']
+             else omit }}
+        client_key: >-
+          {{ pg_patroni_restapi_keyfile
+             if pg_patroni_restapi_scheme == 'https'
+             and pg_patroni_restapi_verify_client in ['optional', 'required']
+             else omit }}
+        status_code: 200
+        return_content: true
+        url_username: "{{ pg_patroni_restapi_username }}"
+        url_password: "{{ pg_patroni_restapi_password }}"
+        force_basic_auth: "{{ pg_patroni_restapi_username | length > 0 }}"
+      register: pg_patroni_cluster_response
+      retries: "{{ pg_patroni_readiness_retries }}"
+      delay: "{{ pg_patroni_readiness_delay }}"
+      until:
+        - pg_patroni_cluster_response.status | default(0) == 200
+        - (pg_patroni_cluster_response.json | default({})).members | default([]) | length == (pg_patroni_cluster.members | length)
+        - >-
+          ((pg_patroni_cluster_response.json | default({})).members | default([])
+          | map(attribute='name') | list | sort)
+          == (pg_patroni_cluster.members | map(attribute='name') | list | sort)
+        - >-
+          ((pg_patroni_cluster_response.json | default({})).members | default([])
+          | map(attribute='host') | list | sort)
+          == (pg_patroni_cluster.members | map(attribute='host') | list | sort)
+        - (pg_patroni_cluster_response.json | default({})).members | default([]) | selectattr('role', 'equalto', 'leader') | list | length == 1
+  rescue:
+    - name: "Collect Patroni service status after API readiness failure"
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - status
+          - "{{ pg_patroni_service_name }}"
+          - --no-pager
+          - --full
+      register: pg_patroni_api_service_status
+      become: true
+      changed_when: false
+      failed_when: false
+
+    - name: "Collect Patroni journal after API readiness failure"
+      ansible.builtin.command:
+        argv:
+          - journalctl
+          - --unit
+          - "{{ pg_patroni_service_name }}"
+          - --lines=100
+          - --no-pager
+      register: pg_patroni_api_journal
+      become: true
+      changed_when: false
+      failed_when: false
+
+    - name: "Fail with Patroni API readiness diagnostics"
+      ansible.builtin.fail:
+        msg: >-
+          Patroni API at {{ pg_patroni_restapi_scheme }}://{{ pg_patroni_restapi_url_host }}:{{ pg_patroni_restapi_port_effective }}/cluster
+          did not become ready with the expected cluster membership after
+          {{ pg_patroni_readiness_retries * pg_patroni_readiness_delay }} seconds.
+          Service status:
+          {{ pg_patroni_api_service_status.stdout | default('No systemd status output was available.') }}
+          Recent service journal:
+          {{ pg_patroni_api_journal.stdout | default('No Patroni journal output was available.') }}
 
 - name: "Recording the Patroni leader host"
   ansible.builtin.set_fact:
@@ -121,11 +160,34 @@
   register: pg_patroni_post_bootstrap_version
 
 - name: "Waiting for the local PostgreSQL data directory"
-  ansible.builtin.wait_for:
-    path: "{{ pg_bind_dir }}/{{ pg_patroni_version }}/{{ pg_patroni_instance }}/PG_VERSION"
-    state: present
-    timeout: "{{ pg_patroni_readiness_retries * pg_patroni_readiness_delay }}"
   when: not pg_patroni_post_bootstrap_version.stat.exists
+  block:
+    - name: "Wait for Patroni to initialize the local PostgreSQL data directory"
+      ansible.builtin.wait_for:
+        path: "{{ pg_bind_dir }}/{{ pg_patroni_version }}/{{ pg_patroni_instance }}/PG_VERSION"
+        state: present
+        timeout: "{{ pg_patroni_readiness_retries * pg_patroni_readiness_delay }}"
+  rescue:
+    - name: "Collect Patroni logs after local bootstrap timeout"
+      ansible.builtin.command:
+        argv:
+          - journalctl
+          - --unit
+          - "{{ pg_patroni_service_name }}"
+          - --lines=80
+          - --no-pager
+      register: pg_patroni_bootstrap_journal
+      become: true
+      changed_when: false
+      failed_when: false
+
+    - name: "Fail with local Patroni bootstrap diagnostics"
+      ansible.builtin.fail:
+        msg: >-
+          Timed out waiting for {{ pg_bind_dir }}/{{ pg_patroni_version }}/{{ pg_patroni_instance }}/PG_VERSION
+          on {{ inventory_hostname }} after {{ pg_patroni_readiness_retries * pg_patroni_readiness_delay }} seconds.
+          Recent {{ pg_patroni_service_name }} logs:
+          {{ pg_patroni_bootstrap_journal.stdout | default('No Patroni journal output was available.') }}
 
 - name: "Checking that Patroni bootstrap completed locally"
   ansible.builtin.stat:
@@ -150,14 +212,30 @@
     pg_patroni_reinitialize: false
     pg_patroni_post_bootstrap: true
 
-- name: "Restarting Patroni after first bootstrap configuration"
-  ansible.builtin.systemd_service:
-    name: "patroni-{{ pg_patroni_version }}-{{ pg_patroni_instance }}.service"
-    state: restarted
-  throttle: 1
+- name: "Reloading Patroni after first bootstrap configuration"
+  ansible.builtin.uri:
+    url: "{{ pg_patroni_restapi_scheme }}://{{ pg_patroni_restapi_url_host }}:{{ pg_patroni_restapi_port_effective }}/reload"
+    method: POST
+    validate_certs: true
+    ca_path: "{{ pg_patroni_restapi_cafile if pg_patroni_restapi_scheme == 'https' else omit }}"
+    client_cert: >-
+      {{ pg_patroni_restapi_certfile
+         if pg_patroni_restapi_scheme == 'https'
+         and pg_patroni_restapi_verify_client in ['optional', 'required']
+         else omit }}
+    client_key: >-
+      {{ pg_patroni_restapi_keyfile
+         if pg_patroni_restapi_scheme == 'https'
+         and pg_patroni_restapi_verify_client in ['optional', 'required']
+         else omit }}
+    status_code: [200, 202]
+    return_content: true
+    url_username: "{{ pg_patroni_restapi_username }}"
+    url_password: "{{ pg_patroni_restapi_password }}"
+    force_basic_auth: "{{ pg_patroni_restapi_username | length > 0 }}"
   when: pg_patroni_bootstrap_pending | bool
 
-- name: "Waiting for Patroni after first bootstrap restart"
+- name: "Waiting for Patroni leader after first bootstrap reload"
   ansible.builtin.uri:
     url: "{{ pg_patroni_restapi_scheme }}://{{ pg_patroni_restapi_url_host }}:{{ pg_patroni_restapi_port_effective }}/cluster"
     validate_certs: true

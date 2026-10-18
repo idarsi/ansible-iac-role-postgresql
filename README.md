@@ -3,7 +3,7 @@
 
 ## Maturity assessment
 
-Assessed ref: current worktree based on `db6be4e6cc472e28539fa62122427e84b8b4cd52` (`HEAD`), including the current uncommitted Vagrant scenario worktree changes and the expanded supplemental Vagrant E2E evidence. All nine supplemental scenarios (`vagrant_patroni_failover`, `vagrant_etcd_quorum`, `vagrant_etcd_leader_failure`, `vagrant_hard_patroni_failure`, `vagrant_network_partition`, `vagrant_quorum_primary_failure`, `vagrant_restart_smoke`, `vagrant_tls_rotation`, and `vagrant_etcd_snapshot_restore`) passed where their host-backed coverage was supported. This is an engineering-readiness assessment, not a production approval.
+Assessed ref: current worktree based on `db6be4e6cc472e28539fa62122427e84b8b4cd52` (`HEAD`), including the uncommitted KVM scenario migration. The existing supplemental scenario logic previously passed on Vagrant; the migrated KVM scenarios have not yet had an end-to-end run. This is an engineering-readiness assessment, not a production approval.
 
 | Category / criterion | Score | Evidence / rationale |
 |---|---:|---|
@@ -13,9 +13,9 @@ Assessed ref: current worktree based on `db6be4e6cc472e28539fa62122427e84b8b4cd5
 | Support contract | 3/4 | Rocky/RHEL/Fedora and PG 16–18 support, PGDG sources, and prerequisites are documented and defaulted. |
 | **Functional Completeness** | **19/20** | |
 | Core convergence | 8/8 | Installation, versions, instances, configuration, databases, roles, extensions, replication, Patroni, and managed etcd are implemented. |
-| Applicable lifecycle | 6/6 | Present/absent, start/stop/restart, update, cleanup, replication, membership, failover, and the expanded supplemental Vagrant recovery paths are implemented and exercised; some operational cluster procedures are explicitly excluded. |
+| Applicable lifecycle | 6/6 | Present/absent, start/stop/restart, update, cleanup, replication, membership, failover, and the expanded supplemental scenario logic is implemented and was exercised on Vagrant; some operational cluster procedures are explicitly excluded. |
 | Platform and dependency handling | 3/3 | EL/Fedora repository paths, interpreters, PGDG packages, and Patroni/etcd dependencies are handled. |
-| Failure and rerun behavior | 2/3 | Validation and retry/rejoin paths are present; all supported supplemental Vagrant outage, failure, partition, restart, rotation, and restore scenarios passed, but interruption and rollback coverage is not complete. |
+| Failure and rerun behavior | 2/3 | Validation and retry/rejoin paths are present; the supplemental outage, failure, partition, restart, rotation, and restore scenarios previously passed on Vagrant, but interruption and rollback coverage is not complete. |
 | **Validation and Safety** | **16/20** | |
 | Preflight validation | 5/6 | Types, required fields, references, conflicts, paths, HBA, cluster, replication, and platform checks are implemented before mutation. |
 | Secure behavior | 5/6 | Safe SSL defaults, certificate handling, restrictive permissions, repository checks, and escaped SQL are documented/implemented; external PKI and firewall remain boundaries. |
@@ -24,25 +24,25 @@ Assessed ref: current worktree based on `db6be4e6cc472e28539fa62122427e84b8b4cd5
 | **Convergence and Recovery** | **10/13** | |
 | Idempotent convergence | 4/5 | Idempotence is exercised in normal and Patroni paths; broad state coverage is not evidenced at this ref. |
 | State transitions | 3/4 | Removal, outage, failover, and rejoin scenarios cover important transitions; not all transitions have equivalent evidence. |
-| Operational recovery | 3/4 | Handlers, retries, quorum restoration, member rejoin, serial restart, TLS rotation, and isolated DCS restore are implemented/tested, including all supported supplemental Vagrant scenarios; host suspend/power-loss and rollback evidence is absent. |
+| Operational recovery | 3/4 | Handlers, retries, quorum restoration, member rejoin, serial restart, TLS rotation, and isolated DCS restore are implemented/tested, including supplemental scenarios previously exercised on Vagrant; host suspend/power-loss and rollback evidence is absent. |
 | **Automated Testing and CI** | **22/25** | |
 | Static quality checks | 3/3 | CI defines production-profile ansible-lint and syntax checks; both passed locally for this worktree. |
 | Input validation tests | 4/4 | Validation scenario covers valid/invalid blueprints, ordering, cleanup, and actionable failures without installation. |
-| Functional verification | 6/6 | Molecule and all supported supplemental Vagrant E2E scenarios verify observable package, service, database, replication, Patroni, etcd, TLS, failover, quorum recovery, restart, partition safety, snapshot restore, and rejoin outcomes. |
+| Functional verification | 6/6 | Molecule and supplemental E2E scenarios previously run on Vagrant verify observable package, service, database, replication, Patroni, etcd, TLS, failover, quorum recovery, restart, partition safety, snapshot restore, and rejoin outcomes. |
 | Idempotence tests | 3/4 | Representative normal and Patroni idempotence runs exist; complete state coverage is not shown. |
-| Lifecycle and guardrail tests | 4/4 | Cleanup, bind/HBA guardrails, outages, failover, membership, rejoin, partition safety, restart, TLS rotation, snapshot restore, and all supported supplemental Vagrant recovery paths are covered. |
-| Supported-platform matrix | 2/3 | Automated EL8–10 and Fedora 43–44 matrix is declared; current green evidence and every version path are not independently confirmed here. |
+| Lifecycle and guardrail tests | 4/4 | Cleanup, bind/HBA guardrails, outages, failover, membership, rejoin, partition safety, restart, TLS rotation, snapshot restore, and supplemental recovery paths previously exercised on Vagrant are covered. |
+| Supported-platform matrix | 2/3 | Automated EL9–10 and Fedora 43–44 matrix is declared; current green evidence and every version path are not independently confirmed here. |
 | CI enforcement | 0/1 | Workflow is present, but no successful CI run for this uncommitted worktree/ref was available as assessment evidence. |
 | **Documentation and Release Hygiene** | **8/10** | |
 | Operator documentation | 4/4 | README includes requirements, states, examples, safety behavior, platforms, repositories, and limitations. |
-| Test and limitation documentation | 2/2 | TESTING.md documents the matrix, commands, Vagrant host prerequisites, known gaps, and the passed supplemental Vagrant scenarios; those scenarios remain manual and are excluded from CI. |
+| Test and limitation documentation | 2/2 | TESTING.md documents the matrix, commands, KVM host prerequisites, known gaps, and the supplemental scenarios previously run on Vagrant; the KVM migration still needs an end-to-end run; those scenarios remain manual and are excluded from CI. |
 | Contribution contract | 1/2 | CONTRIBUTING.md covers blueprint validation, examples, tests, and syntax; release-impact guidance is limited. |
 | Repository and release metadata | 1/2 | License, pinned CI dependencies, collections, and history exist; standard role metadata/version compatibility declarations are absent. |
-| **Total RC Readiness** | **85/100** | Rounded down per the assessment method; the passed Vagrant E2E scenarios add current recovery and observable-outcome evidence. |
+| **Total RC Readiness** | **85/100** | Rounded down per the assessment method; the prior Vagrant E2E runs add recovery and observable-outcome evidence; KVM execution is still pending. |
 
-**State decision:** Numeric state is **Beta** (60–99%). The mandatory Beta cap applies because platform/support coverage remains materially unverified at this ref and the expanded Vagrant scenarios are supplemental manual evidence, not CI-gated. No successful CI result for this uncommitted worktree/ref, Stable/Mature production review, or production approval is claimed.
+**State decision:** Numeric state is **Beta** (60–99%). The mandatory Beta cap applies because platform/support coverage remains materially unverified at this ref and the expanded KVM scenarios are supplemental manual evidence, not CI-gated. No successful CI result for this uncommitted worktree/ref, Stable/Mature production review, or production approval is claimed.
 
-**RC blockers and missing evidence:** obtain a green CI result for the assessed change set; expand check-mode, interruption/rollback, and full lifecycle/platform coverage; add standard role metadata and release compatibility declarations. The supplemental Vagrant evidence still requires Vagrant, libvirt/KVM, the pinned provider, a prepared system-libvirt network, guest resources, and host authorization; it cannot substitute for CI or production-like evidence. The smallest readiness gains are CI evidence, focused check-mode and interruption/rollback tests, broader platform evidence, and metadata completion.
+**RC blockers and missing evidence:** obtain a green CI result for the assessed change set; expand check-mode, interruption/rollback, and full lifecycle/platform coverage; add standard role metadata and release compatibility declarations. The supplemental KVM evidence still requires KVM, libvirt/KVM, the shared test environment, a reachable Rocky Linux install tree, guest resources, and host authorization; it cannot substitute for CI or production-like evidence. The smallest readiness gains are CI evidence, focused check-mode and interruption/rollback tests, broader platform evidence, and metadata completion.
 
 ANSIBLE-IAC-ROLE-POSTGRESQL
 ===========================
@@ -93,8 +93,8 @@ Supported operating systems and lifecycle targets:
 
 Operating system                | Supported versions | Upstream lifecycle target
 --------------------------------|--------------------|-------------------------
-Rocky Linux                     | 8, 9, 10           | Rocky 8 until 31 May 2029; Rocky 9 until 31 May 2032; Rocky 10 until 31 May 2035
-Red Hat Enterprise Linux (UBI)  | 8, 9, 10           | RHEL 8, 9 and 10 follow Red Hat's ten-year lifecycle; planned major-release ends are 31 May 2029, 31 May 2032 and 31 May 2035
+Rocky Linux                     | 9, 10              | Rocky 9 until 31 May 2032; Rocky 10 until 31 May 2035
+Red Hat Enterprise Linux (UBI)  | 9, 10              | RHEL 9 and 10 follow Red Hat's ten-year lifecycle; planned major-release ends are 31 May 2032 and 31 May 2035
 Fedora                          | 43, 44             | Approximately 13 months per release; Fedora 43 is maintained until one month after Fedora 45, and Fedora 44 until one month after Fedora 46
 
 The Rocky Linux dates are based on the [Rocky Linux release guide](https://wiki.rockylinux.org/rocky/version/).
