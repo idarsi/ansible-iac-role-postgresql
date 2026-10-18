@@ -186,12 +186,14 @@ Requirements
   in [TESTING.md](TESTING.md).
 
 - Other components
-  - Ansible 2.15 or higher
+  - Ansible Core 2.19.12 is the minimum supported version. Compatibility
+    coverage for newer versions is documented in [TESTING.md](TESTING.md).
 
-The versions used by the automated CI test environment are documented in
-[requirements-ci.txt](requirements-ci.txt) and installed by GitHub Actions.
-Use the same file before running Molecule locally so local and CI tests use the
-same Ansible Core, ansible-lint, Molecule, and molecule-plugins versions.
+GitHub Actions uses the isolated tooling pins in
+[requirements-ci.txt](requirements-ci.txt) and selects an Ansible Core line per
+CI lane. For local role testing, use the pinned environments in
+[`idarsi-ansible-test-environments`](https://github.com/idarsi/idarsi-ansible-test-environments)
+as described in [TESTING.md](TESTING.md).
 
 Usage
 =====

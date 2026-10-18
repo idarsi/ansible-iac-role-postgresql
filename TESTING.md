@@ -21,6 +21,23 @@ Rocky Linux 9/10 UBI            | 17, 18               | `el9-el10-etcd-matrix` 
 The coverage target is PostgreSQL 17 and 18 on Fedora, and PostgreSQL 16, 17,
 and 18 on Rocky Linux and RHEL 9 and 10.
 
+## Ansible Core compatibility lanes
+
+The role's minimum supported line is Ansible Core 2.19.12. The recommended
+development line is 2.20.8. Ansible Core 2.21.3 is a forward-compatibility
+probe until the role explicitly adopts it as a supported line.
+
+| Ansible Core | Purpose | Automated coverage |
+| --- | --- | --- |
+| 2.19.12 (`ansible-min`) | Minimum supported line | Scheduled `validation` and `rocky9-full` compatibility scenarios |
+| 2.20.8 (`ansible-current`) | Recommended development line | Pull-request fast scenarios and the complete scheduled automated Molecule matrix |
+| 2.21.3 (`ansible-next`) | Forward-compatibility probe | Scheduled `validation` and `rocky9-full`; non-blocking until adopted |
+
+The compatibility scenarios check the same validation and baseline paths at
+the version boundaries. They do not run the full feature matrix on every
+Ansible Core line. Update this table and the README support claim together when
+the supported range changes.
+
 The following KVM scenarios are supplemental manual coverage and are not part of
 the automated Molecule matrix or CI. They use the shared Idarsi test environment
 and its `idarsi-test` libvirt network, and install from the official Rocky Linux 9 tree:
@@ -128,22 +145,27 @@ Rocky Linux 9 KVM guests from the configured install ISO | 17 | `kvm_restart_smo
 - `molecule/fedora43-baseline` and `molecule/fedora44-baseline` validate PostgreSQL 17 and 18
   installations from the Fedora-specific PGDG repository workflow.
 
-The GitHub Actions workflow runs syntax and production-profile lint checks in
-the `ansible-lint` job. Molecule jobs are independent and run in parallel by
-scenario; they are not gated by that static-analysis job. Pull requests and
-pushes to `main` run a fast representative matrix;
-the complete automated scenario matrix runs once per day and can also be started with
-`workflow_dispatch`.
+The GitHub Actions workflow runs syntax and production-profile lint checks
+with Ansible Core 2.20.8. Pull requests and pushes to `main` run a fast
+representative Molecule matrix on that line. The complete automated scenario
+matrix runs once per day on 2.20.8. The scheduled workflow also runs the
+minimum-version and forward-compatibility lanes described above. Molecule jobs
+are independent and run in parallel by scenario; static checks do not gate
+individual scenario jobs.
 
-The fast matrix contains `validation`, `rocky9-full`, `all_absent`,
-`patroni_config`, `rocky10-baseline`, `rhel10-baseline`, and
-`fedora44-baseline`. The daily matrix runs
+The pull-request fast matrix contains `validation`, `rocky9-full`,
+`rocky10-baseline`, `rhel10-baseline`, and `fedora44-baseline`. It checks
+validation, the primary EL9 path, and representative EL10, RHEL, and Fedora
+baselines. The daily matrix runs
 all automated scenarios listed in this document, including the older EL and
 Fedora baseline images, replication and guardrail scenarios, both TimescaleDB
 repository variants, and the multi-member Patroni and etcd scenarios. It
 excludes the supplemental manual KVM scenarios.
 
-The workflow cancels an older in-progress run for the same branch or scheduled
+The pull-request matrix is intentionally a fast regression gate, not the full
+coverage promise. Full Molecule coverage is the complete automated scenario
+set documented in this file; the scheduled run exercises that set. The
+workflow cancels an older in-progress run for the same branch or scheduled
 workflow when a newer run starts.
 
 If an interrupted run prevents Molecule's final cleanup, first run
@@ -157,11 +179,11 @@ on the guest. These are best-effort
 operator recovery steps; interrupted verification cannot guarantee automatic
 cleanup.
 
-The CI workflow installs the exact Ansible Core, ansible-lint, Molecule, and
-molecule-plugins versions defined in `requirements-ci.txt` in its isolated
-Python environment. The shared local environment must not be modified to
-match these pins. Check for a version mismatch first and report it instead of
-installing or upgrading packages.
+GitHub Actions creates an isolated Python environment. `requirements-ci.txt`
+pins Ansible Lint and the Molecule tools; each CI lane supplies its explicit
+Ansible Core version. Local runs use the pinned environments from
+`idarsi-ansible-test-environments` instead of installing or upgrading packages
+in the shared environment.
 
 The KVM scenarios are supplemental manual coverage and are not run in CI. They
 require the shared test environment, access to the official Rocky Linux 9 install
@@ -204,42 +226,20 @@ three-guest scenarios at a time on each test host.
 
 ## Running tests
 
-Run the production-profile Ansible Lint check and syntax check using the
-shared local test environment. The commands below do not install packages or
-modify that environment. Set `IDARSI_ANSIBLE_TESTING_VENV` to the path of the
-shared test environment before running them:
+Install or update the shared Podman environment using the
+`idarsi-ansible-test-environments` repository, then activate the desired
+pinned environment before running checks from this role repository:
 
 ```bash
-export IDARSI_ANSIBLE_TESTING_VENV="${IDARSI_ANSIBLE_TESTING_VENV:?Set this to the shared idarsi-ansible-testing environment}"
-PATH="${IDARSI_ANSIBLE_TESTING_VENV}/bin:$PATH" \
-  ANSIBLE_ROLES_PATH=.. ansible-lint --profile production
-PATH="${IDARSI_ANSIBLE_TESTING_VENV}/bin:$PATH" \
-  ANSIBLE_ROLES_PATH=.. ansible-playbook --syntax-check \
+cd /path/to/idarsi-ansible-test-environments
+./install.sh podman ansible-current
+source .venv/ansible-current/bin/activate
+cd /path/to/ansible-iac-role-postgresql
+ANSIBLE_ROLES_PATH=.. ansible-lint --profile production
+ANSIBLE_ROLES_PATH=.. ansible-playbook --syntax-check \
   -i docs/inventory-example.yml docs/playbook-example.yml
+molecule test -s rocky9-full
 ```
-
-Compare the shared environment with the project pins before running tests:
-
-```bash
-PATH="${IDARSI_ANSIBLE_TESTING_VENV}/bin:$PATH" \
-  python - <<'PY'
-from importlib.metadata import version
-
-expected = {
-    "ansible-core": "2.21.3",
-    "ansible-lint": "26.8.0",
-    "molecule": "26.8.0",
-    "molecule-plugins": "26.7.15",
-}
-for package, required in expected.items():
-    installed = version(package)
-    status = "OK" if installed == required else "MISMATCH"
-    print(f"{package}: installed={installed}, required={required} [{status}]")
-PY
-```
-
-If any package is marked `MISMATCH`, use the CI environment or report the
-mismatch; do not change the shared environment.
 
 Molecule's current releases do not provide Ansible Lint as a built-in
 scenario phase, so this is a separate static-analysis gate in the same test
