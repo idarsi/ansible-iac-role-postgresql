@@ -52,6 +52,8 @@
             'certfile': pg_cluster_patroni_restapi.certfile | default('/etc/patroni/pki/server.crt'),
             'keyfile': pg_cluster_patroni_restapi.keyfile | default('/etc/patroni/pki/server.key')
           }, recursive=true)
+        if pg_cluster_patroni_restapi.auto_generate | default(false) | bool
+        else pg_cluster_patroni_restapi
       }}
 
 - name: "Updating effective cluster TLS settings"

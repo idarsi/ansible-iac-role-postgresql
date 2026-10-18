@@ -1,0 +1,101 @@
+---
+- name: "Restore etcd into an isolated disposable identity"
+  hosts: pg01
+  become: true
+  tasks:
+    - name: "Require SELinux enforcing on every guest"
+      ansible.builtin.command: getenforce
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['all'] }}"
+      changed_when: false
+      register: kvm_selinux
+    - name: "Assert SELinux is enforcing on all guests"
+      ansible.builtin.assert:
+        that: kvm_selinux.results | map(attribute='stdout') | map('trim') | select('equalto', 'Enforcing') | list | length == 3
+    - name: "Create a committed snapshot marker"
+      ansible.builtin.command: >-
+        etcdctl --endpoints=https://pg01:2379 --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd.crt
+        --key=/etc/etcd/pki/etcd.key put /molecule/snapshot-marker retained
+      environment: {ETCDCTL_API: "3"}
+      changed_when: true
+    - name: "Discover the current PostgreSQL leader"
+      ansible.builtin.uri:
+        url: "http://pg01:8008/cluster"
+        url_username: patroni
+        url_password: patroni_password
+        force_basic_auth: true
+        return_content: true
+      register: kvm_snapshot_cluster
+      retries: 30
+      delay: 2
+      until:
+        - kvm_snapshot_cluster.status == 200
+        - kvm_snapshot_cluster.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+    - name: "Record the current PostgreSQL leader"
+      ansible.builtin.set_fact:
+        kvm_snapshot_leader: "{{ (kvm_snapshot_cluster.json.members | selectattr('role', 'equalto', 'leader') | list | first).host }}"
+    - name: "Create PostgreSQL continuity marker"
+      ansible.builtin.command: >-
+        runuser -u postgres -- psql -v ON_ERROR_STOP=1 -d postgres -c
+        "CREATE TABLE IF NOT EXISTS molecule_snapshot_restore (id integer primary key, value text); INSERT INTO molecule_snapshot_restore VALUES (1, 'before-snapshot') ON CONFLICT (id) DO UPDATE SET value = EXCLUDED.value;"
+      delegate_to: "{{ kvm_snapshot_leader }}"
+      changed_when: true
+    - name: "Use and clean up isolated snapshot restore resources"
+      block:
+        - name: "Save snapshot without stopping or modifying live etcd"
+          ansible.builtin.command: >-
+            etcdctl --endpoints=https://pg01:2379 --cacert=/etc/etcd/pki/ca.crt --cert=/etc/etcd/pki/etcd.crt
+            --key=/etc/etcd/pki/etcd.key snapshot save /tmp/molecule-etcd.snap
+          environment: {ETCDCTL_API: "3"}
+          changed_when: true
+        - name: "Create a fresh disposable restore directory"
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: molecule-etcd-restore-
+          register: kvm_restore_dir
+        - name: "Restore to a fresh directory and fresh cluster identity"
+          ansible.builtin.command: >-
+            etcdutl snapshot restore /tmp/molecule-etcd.snap --data-dir {{ kvm_restore_dir.path }}
+            --name restore-pg01 --initial-cluster restore-pg01=http://127.0.0.1:32380
+            --initial-advertise-peer-urls http://127.0.0.1:32380 --initial-cluster-token restore-token
+          changed_when: true
+        - name: "Verify isolated restore material exists"
+          ansible.builtin.stat: {path: "{{ kvm_restore_dir.path }}/member"}
+          register: kvm_restore_dir_stat
+        - name: "Assert the disposable restore directory was created"
+          ansible.builtin.assert:
+            that: [kvm_restore_dir_stat.stat.exists, kvm_restore_dir_stat.stat.isdir]
+        - name: "Start the restored etcd with an isolated client endpoint"
+          ansible.builtin.shell: >-
+            setsid etcd --name restore-pg01 --data-dir {{ kvm_restore_dir.path }}
+            --listen-client-urls http://127.0.0.1:32379 --advertise-client-urls http://127.0.0.1:32379
+            --listen-peer-urls http://127.0.0.1:32380 --initial-advertise-peer-urls http://127.0.0.1:32380
+            --initial-cluster restore-pg01=http://127.0.0.1:32380 --initial-cluster-state=new
+            --initial-cluster-token restore-token >/tmp/molecule-restored-etcd.log 2>&1 & echo $! >/tmp/molecule-restored-etcd.pid
+          changed_when: true
+        - name: "Read the restored sentinel key from the isolated endpoint"
+          ansible.builtin.command: etcdctl --endpoints=http://127.0.0.1:32379 get /molecule/snapshot-marker --print-value-only
+          environment: {ETCDCTL_API: "3"}
+          register: kvm_restored_marker
+          changed_when: false
+          retries: 30
+          delay: 1
+          until: kvm_restored_marker.stdout | trim == "retained"
+        - name: "Verify live and restored continuity"
+          ansible.builtin.include_tasks: restore_assertions.yml
+      always:
+        - name: "Stop the disposable restored etcd after success or failure"
+          ansible.builtin.shell: >-
+            if test -s /tmp/molecule-restored-etcd.pid; then kill "$(cat /tmp/molecule-restored-etcd.pid)" 2>/dev/null || true; fi
+          changed_when: true
+          failed_when: false
+        - name: "Remove the disposable restore directory"
+          ansible.builtin.file:
+            path: "{{ kvm_restore_dir.path }}"
+            state: absent
+          when: kvm_restore_dir is defined and kvm_restore_dir.path is defined
+        - name: "Remove disposable restore process artifacts"
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop: [/tmp/molecule-restored-etcd.pid, /tmp/molecule-restored-etcd.log, /tmp/molecule-etcd.snap]

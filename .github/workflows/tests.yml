@@ -113,9 +113,7 @@ jobs:
           - rocky9-etcd-cluster
           - rocky9-etcd-tls-member
           - rocky9-etcd-tls-cluster
-          - el8-el10-etcd-matrix
-          - rocky8-baseline
-          - rhel8-baseline
+          - el9-el10-etcd-matrix
           - rhel9-full
           - rocky10-baseline
           - rhel10-baseline
