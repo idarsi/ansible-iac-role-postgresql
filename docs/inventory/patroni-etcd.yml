@@ -1,0 +1,84 @@
+---
+patroni_members:
+  hosts:
+    pg01.example.net:
+      pg_etcd_bind_address: "192.0.2.10"
+      pg_postgresql_listen_address: "192.0.2.10"
+    pg02.example.net:
+      pg_etcd_bind_address: "192.0.2.11"
+      pg_postgresql_listen_address: "192.0.2.11"
+    pg03.example.net:
+      pg_etcd_bind_address: "192.0.2.12"
+      pg_postgresql_listen_address: "192.0.2.12"
+  vars:
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: "production"
+              provider: "patroni"
+              dcs:
+                provider: "etcd3"
+                endpoints:
+                  - "https://pg01.example.net:2379"
+                  - "https://pg02.example.net:2379"
+                  - "https://pg03.example.net:2379"
+                etcd:
+                  enabled: true
+                  # Example placeholder; replace with a deployment-specific
+                  # token.
+                  initial_cluster_token: "production-postgres-etcd"
+                  members:
+                    - name: "etcd01"
+                      host: "pg01.example.net"
+                      peer_url: "https://pg01.example.net:2380"
+                      client_url: "https://pg01.example.net:2379"
+                    - name: "etcd02"
+                      host: "pg02.example.net"
+                      peer_url: "https://pg02.example.net:2380"
+                      client_url: "https://pg02.example.net:2379"
+                    - name: "etcd03"
+                      host: "pg03.example.net"
+                      peer_url: "https://pg03.example.net:2380"
+                      client_url: "https://pg03.example.net:2379"
+                  tls:
+                    enabled: true
+                    client:
+                      ca_file: "/etc/etcd/pki/ca.crt"
+                      cert_file: "/etc/etcd/pki/client.crt"
+                      key_file: "/etc/etcd/pki/client.key"
+                    peer:
+                      ca_file: "/etc/etcd/pki/ca.crt"
+                      cert_file: "/etc/etcd/pki/peer.crt"
+                      key_file: "/etc/etcd/pki/peer.key"
+              patroni:
+                ttl: 30
+                loop_wait: 10
+                retry_timeout: 10
+                postgresql:
+                  superuser_password: >-
+                    {{ vault_patroni_superuser_password }}
+                  replication_username: "replicator"
+                replication_password: >-
+                  {{ vault_postgresql_replication_password }}
+                restapi:
+                  port: 8008
+                  authentication:
+                    username: "patroni"
+                    password: "{{ vault_patroni_restapi_password }}"
+              members:
+                - host: "pg01.example.net"
+                  instance: "main"
+                  name: "production-pg01"
+                - host: "pg02.example.net"
+                  instance: "main"
+                  name: "production-pg02"
+                - host: "pg03.example.net"
+                  instance: "main"
+                  name: "production-pg03"
+          instances:
+            - name: "main"
+              cluster: "production"
+              configuration:
+                listen_addresses: "{{ pg_postgresql_listen_address }}"
+                port: 5432

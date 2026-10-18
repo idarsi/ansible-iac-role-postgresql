@@ -1,125 +1,39 @@
 ---
-servers:
-  hosts:
-    host.example.org:
-  vars:
-    iac_blueprint:
-      postgresql:
-        - version: 17
-          directories:
-            - path: /var/lib/pgsql/backups
-              owner: postgres
-              group: postgres
-              mode: "0750"
-          files:
-            - path: /etc/pgsql/backup.env
-              content: "PGUSER=postgres\n"
-              owner: root
-              group: root
-              mode: "0640"
-          git:
-            - repo: /srv/git/pg-maintenance
-              dest: /var/lib/pgsql/git/pg-maintenance
-              version: main
-              update: true
-          cron:
-            - name: pg_backup
-              user: postgres
-              minute: "0"
-              hour: "2"
-              job: "/usr/local/bin/pg_backup"
-              cron_file: pg_backup
-          instances:
-            - name: data
-              replication:
-                role: primary
-                replication_user: replicator
-                replication_password: changeme
-                allowed_standby_addresses:
-                  - 10.89.0.2/32
-                slot_name: standby1
-              databases:
-                - name: mydatabase
-                  owner: myadmin
-                  extensions:
-                    - name: pgaudit
-                    - name: citus
-                    - name: postgis35
-                  access:
-                    - name: myuser
-                      address: 10.89.0.1/32
-                      type: host
-                      method: scram-sha-256
-              roles:
-                - name: myuser
-                  password: jepujee!
-                  createdb: true
-                - name: myadmin
-                  encrypted_password: >-
-                    SCRAM-SHA-256$4096:1RVfuKXwkdIH5E6/8Faygg==$W3D8X+mL1u72cgysrW1Es88blE7jsUzxDB9MV1sIHrs=:9c1enL1YEr2tLkdmmtNVydhDf/a7PHPvzsnkWOa4HHw=
-                  createuser: false
-              configuration_profile: balanced
-              autotuning_profile: balanced
-              security_profile: safe
-              configuration:
-                max_connections: 50
-                shared_preload_libraries: citus,pgaudit
-
 postgres_primary:
   hosts:
-    pg-primary.example.org:
+    pg-primary.example.net:
   vars:
     iac_blueprint:
       postgresql:
         - version: 17
           instances:
-            - name: main
-              security_profile: safe
-              configuration:
-                listen_addresses: "*"
-                port: 5432
-              replication:
-                role: primary
-                replication_user: replicator
-                replication_password: changeme
-                allowed_standby_addresses:
-                  - 192.168.1.11/32
-                slot_name: standby1
+            - name: "main"
+              security_profile: "safe"
               roles:
-                - name: app_user
-                  password: changeme
+                - name: "app_user"
+                  password: "{{ vault_postgresql_app_password }}"
                   login: true
               databases:
-                - name: appdb
-                  owner: app_user
-                  access:
-                    - name: app_user
-                      address: 192.168.1.0/24
-                      type: host
-                      method: scram-sha-256
+                - name: "appdb"
+                  owner: "app_user"
 
 postgres_secondary:
   hosts:
-    pg-standby.example.org:
+    pg-standby.example.net:
   vars:
     iac_blueprint:
       postgresql:
         - version: 17
           instances:
-            - name: main
-              security_profile: safe
-              configuration:
-                listen_addresses: "*"
-                port: 5432
+            - name: "main"
               replication:
-                role: standby
-                primary_host: 192.168.1.10
+                role: "standby"
+                primary_host: "192.0.2.10"
                 primary_port: 5432
-                replication_user: replicator
-                replication_password: changeme
-                slot_name: standby1
-                application_name: pg-standby-1
-              databases:
-                - name: appdb
-                  extensions:
-                    - name: plpython3u
+                replication_user: "replicator"
+                replication_password: >-
+                  {{ vault_postgresql_replication_password }}
+                application_name: "pg-standby-1"
+
+# Put the referenced variables in an encrypted Ansible Vault file. See
+# docs/inventory/ for standalone, replication, and Patroni/etcd examples.

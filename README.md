@@ -1,5 +1,5 @@
 > **Maturity State: Beta**<br>
-> **RC Readiness: 85%**
+> **RC Readiness: 85%** ([assessment](docs/maturity-assessment.md))
 
 ANSIBLE-IAC-ROLE-POSTGRESQL
 ===============================
@@ -72,7 +72,8 @@ Supported states
 Quick start
 -----------
 
-See the [Blueprint example](#configuration-examples).
+See the [inventory examples](docs/inventory/), including standalone,
+streaming replication, and Patroni with managed TLS etcd.
 
 Requirements
 ------------
@@ -132,11 +133,9 @@ iac_blueprint:
                   address: 192.168.1.0/24
 ```
 
-Physical replication and Patroni/managed-etcd configuration are supported.
-Their detailed examples, input fields, security requirements, and operational
-limitations are maintained in [TESTING.md](TESTING.md) and the role task
-validation; managed etcd requires TLS/mTLS and a per-host
-`pg_etcd_bind_address`. The `all_absent` and `pg_patroni_reinitialize`
-operations are destructive and should only be used with deliberate intent.
+See [docs/inventory/](docs/inventory/) for practical deployment examples.
+Managed etcd requires TLS and per-host `pg_etcd_bind_address`. The `all_absent`
+and `pg_patroni_reinitialize` operations are destructive and should only be
+used with deliberate intent.
 
 For exact state behavior and test coverage, see [TESTING.md](TESTING.md).

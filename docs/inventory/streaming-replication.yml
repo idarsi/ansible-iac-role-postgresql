@@ -1,0 +1,43 @@
+---
+postgres_primary:
+  hosts:
+    pg-primary.example.net:
+  vars:
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: main
+              configuration:
+                listen_addresses: "192.0.2.10"
+                port: 5432
+              replication:
+                role: primary
+                replication_user: replicator
+                replication_password: >-
+                  {{ vault_postgresql_replication_password }}
+                allowed_standby_addresses:
+                  - "192.0.2.11/32"
+                slot_name: "standby1"
+
+postgres_standby:
+  hosts:
+    pg-standby.example.net:
+  vars:
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: main
+              configuration:
+                listen_addresses: "192.0.2.11"
+                port: 5432
+              replication:
+                role: standby
+                primary_host: "192.0.2.10"
+                primary_port: 5432
+                replication_user: replicator
+                replication_password: >-
+                  {{ vault_postgresql_replication_password }}
+                slot_name: "standby1"
+                application_name: "pg-standby-1"

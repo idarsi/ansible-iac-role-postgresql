@@ -1,0 +1,21 @@
+---
+postgresql_servers:
+  hosts:
+    pg01.example.net:
+  vars:
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: main
+              security_profile: safe
+              configuration:
+                listen_addresses: "127.0.0.1"
+                port: 5432
+              roles:
+                - name: app_user
+                  password: "{{ vault_postgresql_app_password }}"
+                  login: true
+              databases:
+                - name: appdb
+                  owner: app_user
