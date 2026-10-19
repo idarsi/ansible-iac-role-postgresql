@@ -78,6 +78,25 @@ streaming replication, and Patroni with managed TLS etcd.
 Requirements
 ------------
 
+### Source checkout
+
+`tasks/shared` is a Git submodule that provides `log_write.yml`. Initialize it
+before running Ansible or Molecule. For a new clone, use:
+
+```sh
+git clone --recurse-submodules https://github.com/idarsi/ansible-iac-role-postgresql.git
+```
+
+Or initialize it in an existing checkout:
+
+```sh
+git submodule update --init --recursive
+```
+
+An error such as `Could not find ... shared/log_write.yml` means the shared-task
+submodule is missing or uninitialized; it does not indicate a missing Molecule
+scenario file.
+
 Control node
 
 - Ansible Core 2.19.12 or newer
