@@ -1,0 +1,23 @@
+---
+galaxy_info:
+  namespace: idarsi
+  role_name: postgresql
+  author: Arsi Atomi
+  description: Manage PostgreSQL installations, instances, databases, replication, and optional Patroni clusters.
+  company: "^(ida|arsi)$ collective"
+  license: MIT
+  min_ansible_version: "2.19.12"
+  platforms:
+    - name: EL
+      versions:
+        - "9"
+        - "10"
+    - name: Fedora
+      versions:
+        - "43"
+        - "44"
+  galaxy_tags:
+    - database
+    - postgresql
+    - patroni
+dependencies: []

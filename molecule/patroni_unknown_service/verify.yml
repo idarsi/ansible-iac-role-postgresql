@@ -1,0 +1,46 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  tasks:
+    - name: "Checking the expected failure marker"
+      ansible.builtin.stat:
+        path: /tmp/patroni-unknown-service-failed
+      register: patroni_failure_marker
+
+    - name: "Snapshotting complete post-test Patroni data tree"
+      ansible.builtin.command:
+        argv:
+          - /bin/bash
+          - -o
+          - pipefail
+          - -c
+          - "tar --sort=name --format=gnu --numeric-owner -cf - -C /tmp/custom-pgdata/17/main . | sha256sum"
+      register: patroni_data_after
+      changed_when: false
+
+    - name: "Reading original Patroni data checksum"
+      ansible.builtin.slurp:
+        src: /tmp/patroni-data-before.sha256
+      register: patroni_data_before_checksum
+
+    - name: "Checking role did not create Patroni configuration"
+      ansible.builtin.stat:
+        path: /tmp/patroni-config
+      register: patroni_config_after
+
+    - name: "Checking role did not create a systemd unit"
+      ansible.builtin.stat:
+        path: /tmp/systemd/patroni-17-main.service
+      register: patroni_unit_after
+
+    - name: "Verifying exact failure and zero role mutation"
+      ansible.builtin.assert:
+        that:
+          - patroni_failure_marker.stat.exists
+          - patroni_data_after.stdout == (patroni_data_before_checksum.content | b64decode | trim)
+          - not patroni_config_after.stat.exists
+          - not patroni_unit_after.stat.exists
+        fail_msg: >-
+          Patroni guardrail did not fail before mutating pre-existing data or
+          configuration

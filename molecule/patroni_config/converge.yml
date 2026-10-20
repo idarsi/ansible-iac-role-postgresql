@@ -48,3 +48,47 @@
     - name: "Include PostgreSQL role"
       ansible.builtin.include_role:
         name: ansible-iac-role-postgresql
+
+    - name: "Snapshot managed Patroni files before check mode"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        checksum_algorithm: sha256
+      loop:
+        - /tmp/patroni/17-main.yml
+        - /tmp/systemd/patroni-17-main.service
+      register: patroni_files_before_check
+
+    - name: "Predict PostgreSQL role changes in check mode"
+      block:
+        - name: "Run PostgreSQL role in check mode"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+          register: patroni_check_mode
+      check_mode: true
+      diff: true
+
+    - name: "Assert converged Patroni role predicts no changes"
+      ansible.builtin.assert:
+        that:
+          - not (patroni_check_mode.changed | default(false))
+        fail_msg: "Check mode predicted changes after Patroni configuration converged."
+        success_msg: "Check mode predicted no changes after Patroni configuration converged."
+
+    - name: "Snapshot managed Patroni files after check mode"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        checksum_algorithm: sha256
+      loop:
+        - /tmp/patroni/17-main.yml
+        - /tmp/systemd/patroni-17-main.service
+      register: patroni_files_after_check
+
+    - name: "Assert check mode did not mutate managed Patroni files"
+      ansible.builtin.assert:
+        that:
+          - patroni_files_before_check.results | map(attribute='stat.checksum') | list == patroni_files_after_check.results | map(attribute='stat.checksum') | list
+          - patroni_files_before_check.results | map(attribute='stat.mode') | list == patroni_files_after_check.results | map(attribute='stat.mode') | list
+          - patroni_files_before_check.results | map(attribute='stat.uid') | list == patroni_files_after_check.results | map(attribute='stat.uid') | list
+          - patroni_files_before_check.results | map(attribute='stat.gid') | list == patroni_files_after_check.results | map(attribute='stat.gid') | list
+        fail_msg: "Check mode mutated a managed Patroni configuration or service file."
+        success_msg: "Check mode left managed Patroni files unchanged."

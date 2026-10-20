@@ -1,5 +1,5 @@
 > **Maturity State: Beta**<br>
-> **RC Readiness: 85%**
+> **RC Readiness: 80%**
 
 ANSIBLE-IAC-ROLE-POSTGRESQL
 ===============================
@@ -35,14 +35,9 @@ Supported platforms
 
 | Operating system                  | Supported versions                | Automated test coverage                   |
 |-----------------------------------|-----------------------------------|-------------------------------------------|
-| Rocky Linux                       | 8, 9, 10                          | 9, 10 (Molecule; see [TESTING.md](TESTING.md)) |
-| Red Hat Enterprise Linux (UBI)    | 8, 9, 10                          | 9, 10 (Molecule; see [TESTING.md](TESTING.md)) |
+| Rocky Linux                       | 9, 10                             | 9, 10 (Molecule; see [TESTING.md](TESTING.md)) |
+| Red Hat Enterprise Linux (UBI)    | 9, 10                             | 9, 10 (Molecule; see [TESTING.md](TESTING.md)) |
 | Fedora                            | 43, 44                            | 43, 44 (Molecule; see [TESTING.md](TESTING.md)) |
-
-Rocky 8 and Red Hat/UBI 8 are allowed by `defaults/main.yml` and the role's
-platform preflight; EL8 repository handling is implemented in
-`tasks/repo_present_el8.yml`. They are support claims derived from implementation,
-not from automated coverage. See [TESTING.md](TESTING.md) for the tested matrix.
 
 Supported states
 ----------------
@@ -108,7 +103,17 @@ Top-level blueprint variables
 
 | Variable          | Required (yes/no) | Default       | Short description |
 |-------------------|-------------------|---------------|-------------------|
-| `iac_blueprint`   | yes               | None          | Mapping containing the required `postgresql` list of version-level PostgreSQL declarations. |
+| `iac_blueprint`   | yes               | None          | Mapping containing `postgresql`, a list of version records. Each record declares a `version` and optional `instances`; instances may declare cluster, database, role, extension, replication, and post-install resources. |
+
+Each PostgreSQL version record requires a supported version identifier. Instance
+names must be valid and unique within their scope. Resource relationships
+(including cluster references, database owners, replication peers, and
+certificate-authentication mappings) are validated before role-managed changes.
+Consult validation task files for complete field constraints. Frequently
+overridden role defaults include `pg_default_port`, `pg_default_max_connections`,
+`pg_real_dir`, `pg_bind_dir`, `pg_shared_preload_libraries`, replication
+settings, and Patroni/etcd settings. Managed etcd requires `pg_etcd_bind_address`
+per host and TLS/mTLS configuration.
 
 Configuration examples
 ----------------------

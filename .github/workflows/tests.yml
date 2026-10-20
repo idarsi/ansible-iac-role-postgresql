@@ -57,6 +57,7 @@ jobs:
         scenario:
           - rocky9-full
           - validation
+          - patroni_unknown_service
           - rocky10-baseline
           - rhel10-baseline
           - fedora44-baseline
@@ -100,6 +101,7 @@ jobs:
         scenario:
           - rocky9-full
           - validation
+          - patroni_unknown_service
           - all_absent
           - bind_guardrails
           - hba_guardrails

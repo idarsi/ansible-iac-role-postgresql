@@ -9,7 +9,7 @@ may work on.
 
 Platform/image                  | Ansible or application versions | Molecule scenarios | Main coverage
 --------------------------------|---------------------|--------------------|--------------
-Rocky Linux 9 UBI               | 16, 17, 18          | `rocky9-full`, `all_absent`, `bind_guardrails`, `hba_guardrails`, `replication`, `timescaledb`, `validation`, `patroni_config`, `patroni_failover`, `patroni_membership`, `rocky9-etcd-cluster`, `rocky9-etcd-tls-member`, `rocky9-etcd-tls-cluster` | Full baseline, cleanup, guardrails, physical replication, inventory validation, TimescaleDB sources, Patroni membership, failover, and managed etcd
+Rocky Linux 9 UBI               | 16, 17, 18          | `rocky9-full`, `all_absent`, `bind_guardrails`, `hba_guardrails`, `replication`, `timescaledb`, `validation`, `patroni_config`, `patroni_unknown_service`, `patroni_failover`, `patroni_membership`, `rocky9-etcd-cluster`, `rocky9-etcd-tls-member`, `rocky9-etcd-tls-cluster` | Full baseline, cleanup, guardrails, physical replication, inventory validation, TimescaleDB sources, Patroni membership, failover, and managed etcd
 Red Hat Enterprise Linux 9 UBI | 16, 17, 18          | `rhel9-full`             | Full baseline, bind, git, and repository workflow
 Rocky Linux 10 UBI              | 16, 17, 18          | `rocky10-baseline`           | Baseline installation and multi-version coverage
 Red Hat Enterprise Linux 10 UBI| 16, 17, 18          | `rhel10-baseline`            | Baseline installation and multi-version coverage
@@ -77,6 +77,21 @@ Rocky Linux 9 KVM guests from the configured install ISO | 17 | `kvm_restart_smo
   bootstrap with `pg_basebackup` and replicated test data visibility.
 - `molecule/patroni_config` validates Patroni configuration rendering from a
   shared cluster blueprint, including host-local member selection.
+- `molecule/patroni_unknown_service` validates the exact failure when existing
+  PostgreSQL data has no matching Patroni service unit, and confirms that the
+  role runs in normal mode, fails before mutation, and does not alter existing
+  data or create Patroni configuration.
+- `molecule/patroni_config` runs a successful second convergence to verify
+  idempotence, then invokes the role with `check_mode: true` and `diff: true`.
+  It asserts both that the role predicts no changes and that SHA-256 content
+  hashes, modes, owners, and groups of the managed Patroni configuration and
+  service files remain unchanged across that invocation. This verifies
+  observable file non-mutation rather than relying on the include-role result
+  alone.
+- The fast and scheduled CI matrices both run `patroni_unknown_service`. The
+  `patroni_config` scenario provides representative idempotence and check-mode
+  prediction coverage; the expected-failure guardrail is intentionally not
+  used as an idempotence scenario.
 - `molecule/patroni_membership` validates a three-member Patroni cluster,
   removal of one member from the etcd DCS, and rejoining that member as a
   replica.
@@ -312,9 +327,3 @@ molecule syntax -s <scenario>
 The scenarios use Ansible Galaxy collections for their test infrastructure.
 The role itself uses only `ansible.builtin.*` modules and does not require
 those test-driver collections at runtime.
-
-Known limitation: the guardrail that refuses Patroni reinitialization when
-existing data is present but the expected service unit is unknown is not
-covered by a Molecule scenario. It depends on the host's live systemd service
-fact inventory; the implementation guard remains covered by static review and
-the normal Patroni lifecycle scenarios exercise the known-service path.
