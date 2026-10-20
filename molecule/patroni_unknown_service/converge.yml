@@ -1,0 +1,68 @@
+---
+- name: "Refuse Patroni reinitialization when service unit is unknown"
+  hosts: all
+  become: false
+  vars:
+    state: instances_present
+    pg_patroni_reinitialize: true
+    pg_patroni_config_directory: /tmp/patroni-config
+    pg_systemd_service_dir: /tmp/systemd
+    pg_bind_dir: /tmp/custom-pgdata
+    patroni_expected_failure_msg: >-
+      Cannot reinitialize /tmp/custom-pgdata/17/main: existing data requires the
+      expected Patroni service to be known
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: test-cluster
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints:
+                  - "https://etcd.example.org:2379"
+              patroni:
+                restapi:
+                  authentication:
+                    username: patroni
+                    password: test-password
+              members:
+                - host: instance-idarsi-patroni-unknown-service
+                  instance: main
+                  name: test-member
+          instances:
+            - name: main
+              cluster: test-cluster
+  tasks:
+    - name: "Verifying the expected Patroni service is unknown"
+      ansible.builtin.service_facts:
+
+    - name: "Asserting the expected Patroni service is absent"
+      ansible.builtin.assert:
+        that:
+          - >-
+            ansible_facts.services['patroni-17-main.service'] is not defined
+        fail_msg: >-
+          Test precondition failed: Patroni service unit unexpectedly exists
+
+    - name: "Running role and capturing the expected guardrail failure"
+      block:
+        - name: "Applying PostgreSQL role"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+      rescue:
+        - name: "Checking exact Patroni reinitialization failure"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.msg is defined
+              - ansible_failed_result.msg == patroni_expected_failure_msg
+            fail_msg: >-
+              Expected exact unknown Patroni service guardrail failure was
+              not raised
+
+        - name: "Recording that the expected failure was captured"
+          ansible.builtin.copy:
+            content: "failed-as-expected\n"
+            dest: /tmp/patroni-unknown-service-failed
+            mode: "0600"
+          check_mode: false

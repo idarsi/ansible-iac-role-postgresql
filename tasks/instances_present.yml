@@ -42,7 +42,34 @@
 - name: "Setting PostgreSQL cluster provider"
   ansible.builtin.set_fact:
     pg_cluster_provider: "{{ pg_cluster.provider | default('standalone') }}"
+    pg_data_directory: "{{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}"
+    pg_patroni_service_name: "patroni-{{ pg_version }}-{{ pg_instance }}.service"
   when: pg_instance_record is defined
+
+- name: "Checking existing Patroni data before making changes"
+  when:
+    - pg_cluster_provider == 'patroni'
+    - pg_patroni_reinitialize | bool
+    - not (pg_patroni_post_bootstrap | default(false) | bool)
+  block:
+    - name: "Checking if Patroni data directory exists before reinitialization"
+      ansible.builtin.stat:
+        path: "{{ pg_data_directory }}"
+      register: pg_patroni_existing_data_directory
+
+    - name: "Checking for the local Patroni service before reinitialization"
+      ansible.builtin.service_facts:
+      when: pg_patroni_existing_data_directory.stat.exists
+
+    - name: "Refusing Patroni reinitialization when the expected service is unknown"
+      ansible.builtin.assert:
+        that:
+          - >-
+            not pg_patroni_existing_data_directory.stat.exists
+            or ansible_facts.services[pg_patroni_service_name] is defined
+        fail_msg: >-
+          Cannot reinitialize {{ pg_data_directory }}:
+          existing data requires the expected Patroni service to be known
 
 - name: "Setting tuning profile if tuning is defined"
   ansible.builtin.set_fact:
@@ -499,26 +526,6 @@
     group: "{{ pg_os_group }}"
     mode: "0600"
   when: pg_patroni_data_initialized | bool
-
-- name: "Checking for the local Patroni service before reinitialization"
-  ansible.builtin.service_facts:
-  when:
-    - pg_cluster_provider == 'patroni'
-    - pg_patroni_reinitialize | bool
-    - not (pg_patroni_post_bootstrap | default(false) | bool)
-
-- name: "Refusing Patroni reinitialization when the expected service is unknown"
-  ansible.builtin.assert:
-    that:
-      - not postgres_data_directory.stat.exists
-        or ansible_facts.services[pg_patroni_service_name] is defined
-    fail_msg: >-
-      Cannot reinitialize {{ pg_bind_dir }}/{{ pg_version }}/{{ pg_instance }}:
-      existing data requires the expected Patroni service to be known
-  when:
-    - pg_cluster_provider == 'patroni'
-    - pg_patroni_reinitialize | bool
-    - not (pg_patroni_post_bootstrap | default(false) | bool)
 
 - name: "Stopping local Patroni service before reinitialization"
   become: true
