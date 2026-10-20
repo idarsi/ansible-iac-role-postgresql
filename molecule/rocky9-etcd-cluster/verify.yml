@@ -265,7 +265,7 @@
   tasks:
     - name: "Read the current Patroni cluster state"
       ansible.builtin.uri:
-        url: http://etcd02:8008/cluster
+        url: http://127.0.0.1:8008/cluster
         status_code: 200
       register: failover_cluster
 
@@ -276,29 +276,61 @@
              | selectattr('role', 'equalto', 'leader')
              | map(attribute='host') | first }}
 
-    - name: "Stop the current Patroni leader"
-      ansible.builtin.systemd_service:
-        name: patroni-17-main.service
-        state: stopped
-      delegate_to: "{{ patroni_leader_host }}"
+    - name: "Select a surviving Patroni API host from cluster membership"
+      ansible.builtin.set_fact:
+        patroni_survivor_host: >-
+          {{ failover_cluster.json.members
+             | rejectattr('host', 'equalto', patroni_leader_host)
+             | selectattr('host', 'in', groups['all'])
+             | map(attribute='host') | first | default('') }}
 
-    - name: "Wait for Patroni to elect a replacement leader"
-      ansible.builtin.uri:
-        url: http://etcd02:8008/cluster
-        status_code: 200
-        return_content: true
-      register: failover_result
-      retries: 60
-      delay: 2
-      until:
-        - failover_result.json.members | length == 2
-        - failover_result.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+    - name: "Validate the Patroni failover target"
+      ansible.builtin.assert:
+        that:
+          - patroni_survivor_host | length > 0
+          - patroni_survivor_host in groups['all']
+          - patroni_survivor_host != patroni_leader_host
+        fail_msg: >-
+          Cannot test Patroni failover: no surviving cluster member with an
+          API host in the inventory was found.
 
-    - name: "Start the former Patroni leader"
-      ansible.builtin.systemd_service:
-        name: patroni-17-main.service
-        state: started
-      delegate_to: "{{ patroni_leader_host }}"
+    - name: "Test Patroni failover and always recover the former leader"
+      block:
+        - name: "Stop the current Patroni leader"
+          ansible.builtin.systemd_service:
+            name: patroni-17-main.service
+            state: stopped
+          delegate_to: "{{ patroni_leader_host }}"
+
+        - name: "Wait for Patroni to return parseable cluster JSON"
+          ansible.builtin.command:
+            argv:
+              - python3
+              - -c
+              - >-
+                import json, sys, urllib.request;
+                data=json.load(urllib.request.urlopen(sys.argv[1], timeout=5));
+                members=data.get('members', []);
+                raise SystemExit(0 if isinstance(members, list)
+                and len(members) == 2
+                and sum(member.get('role') == 'leader' for member in members) == 1
+                else 1)
+              - "http://{{ patroni_survivor_host }}:8008/cluster"
+          register: failover_result
+          changed_when: false
+          retries: 60
+          delay: 2
+          until: failover_result.rc == 0
+      rescue:
+        - name: "Record the Patroni failover verification failure"
+          ansible.builtin.set_fact:
+            patroni_failover_error: "{{ ansible_failed_result.msg | default('Patroni failover polling failed') }}"
+      always:
+        - name: "Start the former Patroni leader"
+          ansible.builtin.systemd_service:
+            name: patroni-17-main.service
+            state: started
+          delegate_to: "{{ patroni_leader_host }}"
 
     - name: "Wait for all Patroni members after failover recovery"
       ansible.builtin.uri:
@@ -312,3 +344,8 @@
         - recovered_patroni_cluster.json.members | length == 3
         - recovered_patroni_cluster.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
         - recovered_patroni_cluster.json.members | selectattr('role', 'equalto', 'replica') | list | length == 2
+
+    - name: "Report Patroni failover verification failure after recovery"
+      ansible.builtin.fail:
+        msg: "Patroni failover verification failed: {{ patroni_failover_error }}"
+      when: patroni_failover_error is defined
