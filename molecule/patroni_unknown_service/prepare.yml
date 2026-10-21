@@ -3,17 +3,11 @@
   hosts: all
   become: false
   tasks:
-    - name: "Installing sudo for Ansible privilege escalation"
-      ansible.builtin.dnf:
-        name: "sudo"
-        state: "present"
-
     - name: "Creating PostgreSQL system group"
       ansible.builtin.group:
         name: "postgres"
         system: true
         state: "present"
-      become: true
 
     - name: "Creating PostgreSQL system user and home directory"
       ansible.builtin.user:
@@ -24,7 +18,6 @@
         system: true
         shell: "/sbin/nologin"
         state: "present"
-      become: true
 
     - name: "Creating existing Patroni data directory"
       ansible.builtin.file:
@@ -33,7 +26,6 @@
         owner: "postgres"
         group: "postgres"
         mode: "0700"
-      become: true
 
     - name: "Creating existing Patroni data directory and sentinel"
       ansible.builtin.copy:
@@ -42,7 +34,6 @@
         owner: root
         group: root
         mode: "0600"
-      become: true
 
     - name: "Creating existing nested Patroni data directory"
       ansible.builtin.file:
@@ -51,7 +42,6 @@
         owner: "postgres"
         group: "postgres"
         mode: "0700"
-      become: true
 
     - name: "Creating additional pre-existing Patroni data files"
       ansible.builtin.copy:
@@ -63,7 +53,6 @@
       loop:
         - { name: "postgresql.conf", content: "existing configuration", mode: "0600" }
         - { name: "nested/metadata", content: "existing nested metadata", mode: "0640" }
-      become: true
 
     - name: "Snapshotting complete pre-test Patroni data tree"
       ansible.builtin.command:
@@ -75,11 +64,9 @@
           - "tar --sort=name --format=gnu --numeric-owner -cf - -C /tmp/custom-pgdata/17/main . | sha256sum"
       register: patroni_data_before
       changed_when: false
-      become: true
 
     - name: "Saving the pre-test data tree checksum"
       ansible.builtin.copy:
         content: "{{ patroni_data_before.stdout }}\n"
         dest: "/tmp/patroni-data-before.sha256"
         mode: "0600"
-      become: true
