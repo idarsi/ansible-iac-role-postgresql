@@ -1,5 +1,18 @@
 # Testing
 
+## Current validation-test scope
+
+The current automated test suite consists only of the `validation` Molecule
+scenario on Rocky Linux 9 UBI. It is run manually; this repository does not
+currently define a CI cadence for it. The scenario does not cover installation,
+container-image or installer behavior, lifecycle operations, or RHEL platforms.
+Do not interpret this scenario as evidence for those behaviors or platforms.
+
+The scenario uses a shared Podman container name. Do not run concurrent copies
+of `validation` against the same Podman environment; serialize those runs (or
+use separately isolated Podman environments). Repeated sequential runs are
+supported by Molecule's destroy/create sequence.
+
 This role uses Molecule with the Podman driver for automated integration
 testing. The test matrix below describes the environments currently covered by
 the repository. It is not a complete list of operating systems that the role
@@ -26,6 +39,11 @@ and 18 on Rocky Linux and RHEL 9 and 10.
 The role's minimum supported line is Ansible Core 2.19.12. The recommended
 development line is 2.20.8. Ansible Core 2.21.3 is a forward-compatibility
 probe until the role explicitly adopts it as a supported line.
+
+The shared `ansible-min` test environment also provides Ansible Core 2.15 for
+an additional compatibility probe of the affected validation scenarios. This
+probe does not change the role's supported minimum and is not evidence that the
+full role behavior is validated on Core 2.15.
 
 | Ansible Core | Purpose | Automated coverage |
 | --- | --- | --- |
