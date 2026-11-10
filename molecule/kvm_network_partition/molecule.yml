@@ -23,7 +23,6 @@ provisioner:
     destroy: ${IDARSI_TEST_ENVIRONMENT}/molecule/kvm/destroy.yml
 platforms:
 - name: pg01
-  ansible_host: 192.168.250.201
   install_source: "${IDARSI_TEST_KVM_INSTALL_SOURCE}"
   kickstart: ${IDARSI_TEST_ENVIRONMENT}/examples/molecule-kvm/rocky9-10.ks.tmpl
   network: idarsi-test
@@ -34,7 +33,6 @@ platforms:
   install_timeout: 3600
   ssh_user: molecule
 - name: pg02
-  ansible_host: 192.168.250.202
   install_source: "${IDARSI_TEST_KVM_INSTALL_SOURCE}"
   kickstart: ${IDARSI_TEST_ENVIRONMENT}/examples/molecule-kvm/rocky9-10.ks.tmpl
   network: idarsi-test
@@ -45,7 +43,6 @@ platforms:
   install_timeout: 3600
   ssh_user: molecule
 - name: pg03
-  ansible_host: 192.168.250.203
   install_source: "${IDARSI_TEST_KVM_INSTALL_SOURCE}"
   kickstart: ${IDARSI_TEST_ENVIRONMENT}/examples/molecule-kvm/rocky9-10.ks.tmpl
   network: idarsi-test
@@ -57,6 +54,14 @@ platforms:
   ssh_user: molecule
 provisioner:
   name: ansible
+  inventory:
+    host_vars:
+      pg01:
+        ansible_host: "192.168.250.201"
+      pg02:
+        ansible_host: "192.168.250.202"
+      pg03:
+        ansible_host: "192.168.250.203"
   env:
     ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/..
     ANSIBLE_REMOTE_TMP: /tmp
