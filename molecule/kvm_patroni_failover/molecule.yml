@@ -21,6 +21,18 @@ provisioner:
   playbooks:
     create: ${IDARSI_TEST_ENVIRONMENT}/molecule/kvm/create.yml
     destroy: ${IDARSI_TEST_ENVIRONMENT}/molecule/kvm/destroy.yml
+  name: ansible
+  inventory:
+    host_vars:
+      pg01:
+        ansible_host: "192.168.250.201"
+      pg02:
+        ansible_host: "192.168.250.202"
+      pg03:
+        ansible_host: "192.168.250.203"
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/..
+    ANSIBLE_REMOTE_TMP: /tmp
 platforms:
 - name: pg01
   install_source: "${IDARSI_TEST_KVM_INSTALL_SOURCE}"
@@ -52,18 +64,5 @@ platforms:
   disk_size_gb: 30
   install_timeout: 3600
   ssh_user: molecule
-provisioner:
-  name: ansible
-  inventory:
-    host_vars:
-      pg01:
-        ansible_host: "192.168.250.201"
-      pg02:
-        ansible_host: "192.168.250.202"
-      pg03:
-        ansible_host: "192.168.250.203"
-  env:
-    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/..
-    ANSIBLE_REMOTE_TMP: /tmp
 verifier:
   name: ansible
