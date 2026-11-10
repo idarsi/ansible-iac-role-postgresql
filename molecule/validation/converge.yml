@@ -676,7 +676,7 @@
           ansible.builtin.copy:
             dest: "/tmp/postgresql-validation-invalid-root.ok"
             content: "ok\n"
-          mode: "0644"
+            mode: "0644"
 
 - name: "Reject an unsupported PostgreSQL state"
   hosts: all

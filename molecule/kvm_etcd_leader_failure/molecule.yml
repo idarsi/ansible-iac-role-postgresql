@@ -17,7 +17,7 @@ driver:
   name: default
   options:
     managed: true
-ansible:
+provisioner:
   playbooks:
     create: ${IDARSI_TEST_ENVIRONMENT}/molecule/kvm/create.yml
     destroy: ${IDARSI_TEST_ENVIRONMENT}/molecule/kvm/destroy.yml
