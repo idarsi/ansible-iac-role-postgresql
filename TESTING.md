@@ -38,7 +38,9 @@ and 18 on Rocky Linux and RHEL 9 and 10.
 
 The role's minimum supported line is Ansible Core 2.19.12. The recommended
 development line is 2.20.8. Ansible Core 2.21.3 is a forward-compatibility
-probe until the role explicitly adopts it as a supported line.
+probe until the role explicitly adopts it as a supported line. The shared
+`ansible-min` environment provides Core 2.15 as an additional test compatibility
+probe (Python 3.9), not as the role's official minimum.
 
 The shared `ansible-min` test environment also provides Ansible Core 2.15 for
 an additional compatibility probe of the affected validation scenarios. This
@@ -47,7 +49,8 @@ full role behavior is validated on Core 2.15.
 
 | Ansible Core | Purpose | Automated coverage |
 | --- | --- | --- |
-| 2.19.12 (`ansible-min`) | Minimum supported line | Scheduled `validation` and `rocky9-full` compatibility scenarios |
+| 2.15 (`ansible-min`, shared environment) | Additional test compatibility probe | TUI-selected role scenarios, including `hba_guardrails` and `replication` |
+| 2.19.12 (GitHub Actions) | Minimum supported / CI minimum-version lane | Scheduled `validation` and `rocky9-full` compatibility scenarios |
 | 2.20.8 (`ansible-current`) | Recommended development line | Pull-request fast scenarios and the complete scheduled automated Molecule matrix |
 | 2.21.3 (`ansible-next`) | Forward-compatibility probe | Scheduled `validation` and `rocky9-full`; non-blocking until adopted |
 
@@ -55,6 +58,16 @@ The compatibility scenarios check the same validation and baseline paths at
 the version boundaries. They do not run the full feature matrix on every
 Ansible Core line. Update this table and the README support claim together when
 the supported range changes.
+
+The `hba_guardrails` and `replication` scenarios select their collection
+requirements file through Molecule's `dependency.options.requirements-file`
+setting. The shared test-environment activation exports
+`IDARSI_MOLECULE_COLLECTIONS_FILE=collections-ansible-min.yml` for
+`ansible-min` (Python 3.9 / Ansible Core 2.15), and
+`IDARSI_MOLECULE_COLLECTIONS_FILE=collections.yml` for `ansible-current` and
+`ansible-next`. The minimum-specific files pin `community.general` 10.7.3;
+the standard files pin 11.4.0 and are also the default when the variable is
+unset. The role repo does not change the shared environment's activation hook.
 
 The following KVM scenarios are supplemental manual coverage and are not part of
 the automated Molecule matrix or CI. They use the shared Idarsi test environment

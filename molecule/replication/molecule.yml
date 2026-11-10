@@ -1,6 +1,8 @@
 ---
 dependency:
   name: galaxy
+  options:
+    requirements-file: "molecule/replication/${IDARSI_MOLECULE_COLLECTIONS_FILE:-collections.yml}"
 
 driver:
   name: podman
