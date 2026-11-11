@@ -6,6 +6,9 @@
     url_password: "patroni_password"
     force_basic_auth: true
   register: kvm_live_patroni_health
+  retries: 30
+  delay: 2
+  until: kvm_live_patroni_health.status == 200
   no_log: true
 - name: "Read live Patroni cluster and PostgreSQL continuity"
   ansible.builtin.uri:

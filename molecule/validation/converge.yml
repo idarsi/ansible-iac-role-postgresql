@@ -4,6 +4,8 @@
   become: false
   vars:
     state: validate
+    http_proxy: "http://127.0.0.1:1"
+    no_proxy: ""
     pg_etcd_bind_address: "192.0.2.10"
     iac_blueprint:
       postgresql:
@@ -69,6 +71,13 @@
     - name: "Running validation for a valid blueprint"
       ansible.builtin.include_role:
         name: ansible-iac-role-postgresql
+
+    - name: "Checking validate state skipped proxy runtime checks"
+      ansible.builtin.assert:
+        that:
+          - proxy_host is not defined
+          - proxy_port is not defined
+        fail_msg: "Validate state must not derive proxy runtime connection details"
 
     - name: "Writing valid blueprint marker"
       ansible.builtin.copy:
@@ -629,6 +638,7 @@
           ansible.builtin.assert:
             that:
               - ansible_failed_result is defined
+              - ansible_failed_result.msg is not search("A missing PostgreSQL blueprint was accepted")
               - >-
                 (ansible_failed_result | to_nice_json)
                 is search("iac_blueprint or iac_blueprint.postgresql is not defined")
@@ -658,6 +668,7 @@
           ansible.builtin.assert:
             that:
               - ansible_failed_result is defined
+              - ansible_failed_result.msg is not search("An invalid PostgreSQL blueprint root was accepted")
               - >-
                 (ansible_failed_result | to_nice_json)
                 is search("iac_blueprint must be a mapping containing postgresql")
@@ -666,6 +677,31 @@
             dest: "/tmp/postgresql-validation-invalid-root.ok"
             content: "ok\n"
             mode: "0644"
+
+- name: "Reject an unsupported PostgreSQL state"
+  hosts: all
+  become: false
+  vars:
+    state: "not-a-state"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+  tasks:
+    - name: "Running validation expecting unsupported state failure"
+      block:
+        - name: "Applying an unsupported PostgreSQL state"
+          ansible.builtin.include_role:
+            name: "ansible-iac-role-postgresql"
+        - name: "Failing if unsupported state was accepted"
+          ansible.builtin.fail:
+            msg: "Unsupported PostgreSQL state was accepted"
+      rescue:
+        - name: "Checking unsupported state failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - ansible_failed_result.msg is not search("Unsupported PostgreSQL state was accepted")
+              - (ansible_failed_result | to_nice_json) is search("Unsupported PostgreSQL role state: not-a-state")
 
 - name: "Reject Patroni REST API without authentication"
   hosts: all

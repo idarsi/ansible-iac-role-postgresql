@@ -59,9 +59,7 @@
             name: "etcd.service"
             state: "stopped"
           delegate_to: >-
-            {{ (kvm_etcd_status_records
-            | selectattr('Status.header.member_id', 'equalto', kvm_etcd_leader_id)
-            | map(attribute='Endpoint') | first).split('//')[1].split(':')[0] }}
+            {{ kvm_failed_etcd_endpoint.split('//')[1].split(':')[0] }}
         - name: "Wait for a different leader and preserved data"
           ansible.builtin.command: >-
             etcdctl --endpoints={{ kvm_surviving_etcd_endpoints }}
@@ -100,9 +98,7 @@
             name: "etcd.service"
             state: "started"
           delegate_to: >-
-            {{ (kvm_etcd_status_records
-            | selectattr('Status.header.member_id', 'equalto', kvm_etcd_leader_id)
-            | map(attribute='Endpoint') | first).split('//')[1].split(':')[0] }}
+            {{ kvm_failed_etcd_endpoint.split('//')[1].split(':')[0] }}
         - name: "Verify the exact restored etcd member endpoint is healthy"
           ansible.builtin.command:
             argv:
@@ -139,7 +135,9 @@
           until: >-
             kvm_rejoined_members.rc == 0 and
             (kvm_rejoined_members.stdout | from_json).members
-             | selectattr('ID', 'equalto', kvm_etcd_leader_id) | list | length == 1
+             | selectattr('ID', 'equalto', kvm_etcd_leader_id | int)
+             | selectattr('name', 'equalto', kvm_failed_etcd_endpoint.split('//')[1].split(':')[0])
+             | selectattr('peerURLs', 'defined') | list | length == 1
     - name: "Assert the original key remains readable after rejoin"
       ansible.builtin.assert:
         that: "'before' in kvm_after_leader.stdout"

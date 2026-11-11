@@ -7,7 +7,8 @@ driver:
 
 platforms:
   - name: instance-idarsi-rhel10
-    image: registry.access.redhat.com/ubi10-init
+    # PGDG metadata currently supports RHEL 10.2, while latest UBI tracks 10.3.
+    image: registry.access.redhat.com/ubi10-init:10.2
     command: /sbin/init
     privileged: true
     pre_build_image: true
