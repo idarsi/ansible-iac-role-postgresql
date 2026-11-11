@@ -25,7 +25,7 @@ Platform/image                  | Ansible or application versions | Molecule sce
 Rocky Linux 9 UBI               | 16, 17, 18          | `rocky9-full`, `all_absent`, `bind_guardrails`, `hba_guardrails`, `replication`, `timescaledb`, `validation`, `patroni_config`, `patroni_unknown_service`, `patroni_failover`, `patroni_membership`, `rocky9-etcd-cluster`, `rocky9-etcd-tls-member`, `rocky9-etcd-tls-cluster` | Full baseline, cleanup, guardrails, physical replication, inventory validation, TimescaleDB sources, Patroni membership, failover, and managed etcd
 Red Hat Enterprise Linux 9 UBI | 16, 17, 18          | `rhel9-full`             | Full baseline, bind, git, and repository workflow
 Rocky Linux 10 UBI              | 16, 17, 18          | `rocky10-baseline`           | Baseline installation and multi-version coverage
-Red Hat Enterprise Linux 10 UBI| 16, 17, 18          | `rhel10-baseline`            | Baseline installation and multi-version coverage
+Red Hat Enterprise Linux 10.2 UBI| 16, 17, 18          | `rhel10-baseline`            | Baseline installation and multi-version coverage (pinned because PGDG has no 10.3 metadata)
 Fedora 43                       | 17, 18               | `fedora43-baseline`          | PGDG repository and baseline installation
 Fedora 44                       | 17, 18               | `fedora44-baseline`          | PGDG repository and baseline installation
 Rocky Linux 9 UBI               | 17, 18               | `rocky9-etcd-cluster`, `rocky9-etcd-tls-member`, `rocky9-etcd-tls-cluster` | Managed three-member etcd, quorum recovery, Patroni failover, TLS etcd, and PostgreSQL 18 smoke coverage
