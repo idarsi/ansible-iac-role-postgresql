@@ -21,21 +21,6 @@
       - dnf_disable_gpg_check is defined
     fail_msg: "TimescaleDB Community repository configuration is incomplete"
 
-- name: "Ensuring TimescaleDB Community repository GPG key is present"
-  ansible.builtin.rpm_key:
-    key: "{{ pg_timescaledb_repo_gpgkey }}"
-    state: present
-  vars:
-    ansible_python_interpreter: "{{ pg_package_module_interpreter }}"
-  environment:
-    http_proxy: "{{ http_proxy }}"
-    https_proxy: "{{ https_proxy }}"
-    no_proxy: "{{ no_proxy }}"
-  register: pg_timescaledb_repo_gpgkey_result
-  retries: "{{ pg_repo_network_retries | default(1) }}"
-  delay: "{{ pg_repo_network_delay | default(0) }}"
-  until: pg_timescaledb_repo_gpgkey_result is succeeded
-
 - name: "Ensuring TimescaleDB Community repository file is present"
   ansible.builtin.yum_repository:
     name: "{{ pg_timescaledb_repo_id }}"
