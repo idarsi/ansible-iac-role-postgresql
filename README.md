@@ -1,5 +1,5 @@
 > **Maturity State: Beta**<br>
-> **RC Readiness: 85%**
+> **RC Readiness: 86%**
 
 ANSIBLE-IAC-ROLE-POSTGRESQL
 ===============================
