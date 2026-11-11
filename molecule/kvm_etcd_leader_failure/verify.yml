@@ -135,7 +135,9 @@
           until: >-
             kvm_rejoined_members.rc == 0 and
             (kvm_rejoined_members.stdout | from_json).members
-             | selectattr('ID', 'equalto', kvm_etcd_leader_id) | list | length == 1
+             | selectattr('ID', 'equalto', ('%x' | format(kvm_etcd_leader_id | int)))
+             | selectattr('name', 'equalto', kvm_failed_etcd_endpoint.split('//')[1].split(':')[0])
+             | selectattr('peerURLs', 'defined') | list | length == 1
     - name: "Assert the original key remains readable after rejoin"
       ansible.builtin.assert:
         that: "'before' in kvm_after_leader.stdout"
