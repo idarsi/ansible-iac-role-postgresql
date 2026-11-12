@@ -87,7 +87,9 @@ Rocky Linux 9 KVM guests from the configured install ISO | 17 | `kvm_restart_smo
   access configuration on Rocky Linux 9.
 - `molecule/all_absent` validates destructive cleanup of packages,
   repositories, bind mounts, service files, managed resources, and the
-  PostgreSQL operating system user on Rocky Linux 9.
+  PostgreSQL operating system user on Rocky Linux 9. It repeats cleanup during
+  convergence and verification, asserting the later invocation makes no
+  changes before checking that resources remain absent.
 - `molecule/bind_guardrails` validates that bind-mount migration fails safely
   when source and target both contain data or when PostgreSQL services are
   still running against the target directory.
