@@ -65,13 +65,26 @@
   register: pg_cleanup_markers
   when: state in ['all_absent', 'absent']
 
+- name: "Checking PostgreSQL cleanup roots"
+  ansible.builtin.stat:
+    path: "{{ pg_cleanup_root }}"
+  loop: "{{ pg_cleanup_marker_paths }}"
+  loop_control:
+    loop_var: pg_cleanup_root
+    label: "{{ pg_cleanup_root }}"
+  register: pg_cleanup_roots
+  when: state in ['all_absent', 'absent']
+
 - name: "Rejecting unmarked PostgreSQL cleanup roots"
   ansible.builtin.assert:
     that:
-      - item.stat.exists
-      - item.stat.isreg
+      - >-
+        not pg_cleanup_roots.results[pg_cleanup_marker_index].stat.exists
+        or (item.stat.exists and item.stat.isreg)
     fail_msg: "Refusing PostgreSQL cleanup for an unmarked path: {{ item.pg_cleanup_root }}"
   loop: "{{ pg_cleanup_markers.results }}"
+  loop_control:
+    index_var: pg_cleanup_marker_index
   when: state in ['all_absent', 'absent']
 
 - name: "Checking PostgreSQL instance name safety"
