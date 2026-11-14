@@ -75,8 +75,9 @@ all:
 ```
 
 Replace the sample subnet with the narrowly scoped client and member network
-that actually needs PostgreSQL access. The sample uses `hostssl` rules and
-SCRAM authentication; ensure clients are configured for TLS. Patroni's REST
+that contains all Patroni member addresses and intended clients, so replication
+is permitted. The sample uses `hostssl` rules and SCRAM authentication; ensure
+clients are configured for TLS. Patroni's REST
 API defaults to the inventory host address and port 8008, and its generated
 allowlist is restricted to declared cluster members unless you configure an
 explicit allowlist. Restrict that API at the network layer as well.
