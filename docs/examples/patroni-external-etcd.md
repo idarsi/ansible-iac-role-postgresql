@@ -8,11 +8,11 @@ certificate materials on every PostgreSQL host before running this playbook.
 The paths below are under `/etc/etcd/`, as expected by the role.
 
 Store the shared blueprint in group variables so every PostgreSQL member sees
-the identical cluster definition. Each playbook selects its own `state`, so
-multiple playbooks can reuse this inventory with different operations. The
-`members[].host` values must exactly match the corresponding Ansible
-`inventory_hostname`; each `instance` and `name` identifies a local instance
-and unique Patroni member.
+the identical cluster definition. Each playbook sets `state` as a role
+parameter, so multiple playbooks can reuse this inventory while selecting
+different operations. `members[].host` values must exactly match the
+corresponding Ansible `inventory_hostname`; each `instance` and `name`
+identifies a local instance and unique Patroni member.
 
 ## Inventory
 
@@ -104,8 +104,7 @@ network rules with wildcard CIDRs or expose the Patroni API publicly.
 - name: "Install PostgreSQL Patroni members"
   hosts: postgres_patroni
   become: true
-  vars:
-    state: "install"
   roles:
     - role: ansible-iac-role-postgresql
+      state: "install"
 ```
