@@ -71,7 +71,6 @@ all:
                   cluster: production
                   configuration:
                     listen_addresses: "*"
-                    port: 5432
 ```
 
 Replace the sample subnet with the narrowly scoped client and member network
