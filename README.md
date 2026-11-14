@@ -118,6 +118,10 @@ per host and TLS/mTLS configuration.
 Configuration examples
 ----------------------
 
+For a complete [Patroni cluster with external etcd, TLS, and operating and
+security guidance](docs/examples/patroni-external-etcd.md), see the practical
+example. It uses one shared cluster blueprint across all PostgreSQL members.
+
 Minimal deployment with a database and role:
 
 ```yaml
@@ -138,10 +142,9 @@ iac_blueprint:
 ```
 
 Physical replication and Patroni/managed-etcd configuration are supported.
-Their detailed examples, input fields, security requirements, and operational
-limitations are maintained in [TESTING.md](TESTING.md) and the role task
-validation; managed etcd requires TLS/mTLS and a per-host
-`pg_etcd_bind_address`. The `all_absent` and `pg_patroni_reinitialize`
-operations are destructive and should only be used with deliberate intent.
+The linked Patroni example covers an external etcd deployment; managed etcd
+requires TLS/mTLS and a per-host `pg_etcd_bind_address`. The `all_absent` and
+`pg_patroni_reinitialize` operations are destructive and should only be used
+with deliberate intent.
 
 For exact state behavior and test coverage, see [TESTING.md](TESTING.md).
