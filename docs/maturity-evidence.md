@@ -57,9 +57,12 @@ does not rewrite the producing dirty-source qualification. These results are
 not passes at a later documentation/role commit or of the complete 25-scenario
 OS/controller matrix.
 
-Beta and the score remain unchanged after those runtime results. Fedora 43 is
-blocked by missing media; other unexecuted scenarios and compatibility paths,
-remote helper publication and hosted CI enforcement remain unverified.
+Beta and the score remain unchanged after those runtime results and the later
+Fedora 43 test retirement. The historical missing-media capability result stays
+dated evidence, not a current blocker or a newly inferred pass. Fedora 43 remains
+allowed by production OS validation but is no longer covered by active tests.
+Retirement adds no readiness points. Other unexecuted scenarios and compatibility
+paths, remote helper publication and hosted CI enforcement remain unverified.
 Representative changed=0 idempotence does **not** resolve the existing hidden
 replication-password convergence limitation. The uninstall preflight and
 secret-bearing-fact findings above are likewise unchanged and out of scope.

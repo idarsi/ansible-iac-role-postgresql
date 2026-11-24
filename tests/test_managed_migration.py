@@ -104,10 +104,18 @@ class ManagedMigrationTest(unittest.TestCase):
             "kvm-baseline": {
                 "rocky10": "instance-idarsi-rl10",
                 "rhel10": "instance-idarsi-rhel10",
-                "fedora43": "instance-idarsi-fedora43",
                 "fedora44": "instance-idarsi-fedora44",
             },
         }
+        # Fedora 43 test coverage is retired, not production compatibility.
+        # Reject stale runtime files, imports, image variables and metadata.
+        for path in (ROOT / "molecule").rglob("*.yml"):
+            with self.subTest(retired_platform_reference=str(path.relative_to(ROOT))):
+                self.assertNotRegex(path.name.lower(), r"fedora[\s_-]*43")
+                self.assertNotRegex(path.read_text().lower(), r"fedora[\s_-]*43")
+        self.assertNotRegex(
+            (ROOT / "role-test.json").read_text().lower(), r"fedora[\s_-]*43"
+        )
         for scenario, targets in variants.items():
             directory = ROOT / "molecule" / scenario
             for phase in ("converge", "verify"):
@@ -127,7 +135,7 @@ class ManagedMigrationTest(unittest.TestCase):
         metadata = json.loads((ROOT / "role-test.json").read_text())["scenarios"]
         expected = {
             "kvm-full": 2,
-            "kvm-baseline": 4,
+            "kvm-baseline": 3,
             "kvm-replication": 2,
             "kvm-timescaledb": 8,
             "kvm-patroni-membership": 6,

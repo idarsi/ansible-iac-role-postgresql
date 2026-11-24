@@ -25,11 +25,6 @@ platforms:
     ssh_user: "molecule"
     memory_mb: 4096
     vcpus: 2
-  - name: "instance-idarsi-fedora43"
-    image_path: "${IDARSI_TEST_KVM_FEDORA43_IMAGE}"
-    ssh_user: "molecule"
-    memory_mb: 4096
-    vcpus: 2
   - name: "instance-idarsi-fedora44"
     image_path: "${IDARSI_TEST_KVM_FEDORA44_IMAGE}"
     ssh_user: "molecule"

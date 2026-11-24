@@ -17,8 +17,9 @@ owned hard-primary failure/rejoin. These tested dirty role sources, not a later
 documentation commit. The tested helper normalizer fix is now recorded in the
 reviewed local follow-up commit and [pinned](tests/helper-revision.txt), without
 rewriting its dirty-source runtime provenance. The full 25-scenario
-OS/controller matrix remains unverified; Fedora 43 lacks media. Remote helper
-publication and hosted CI acceptance remain unverified.
+OS/controller matrix remains unverified. Fedora 43 tests have been retired
+without changing allowed role compatibility; Fedora 44 remains in the matrix.
+Remote helper publication and hosted CI acceptance remain unverified.
 See the [baseline and final assessment evidence](docs/maturity-evidence.md)
 and [runtime acceptance ledger](TESTING.md#runtime-acceptance-ledger-2026-11-24).
 
@@ -58,7 +59,7 @@ Supported platforms
 |-----------------------------------|-----------------------------------|-------------------------------------------|
 | Rocky Linux                       | 9, 10                             | Representative 9 replication/hard-failure passes; remaining matrix unverified ([TESTING.md](TESTING.md)) |
 | Red Hat Enterprise Linux           | 9, 10                             | Declared KVM matrix; historical UBI tests do not prove full RHEL ([TESTING.md](TESTING.md)) |
-| Fedora                            | 43, 44                            | Declared KVM matrix; runtime acceptance pending ([TESTING.md](TESTING.md)) |
+| Fedora                            | 43, 44                            | 44 declared KVM coverage; 43 remains allowed but tests retired ([TESTING.md](TESTING.md)) |
 
 Supported states
 ----------------

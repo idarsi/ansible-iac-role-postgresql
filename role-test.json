@@ -22,8 +22,8 @@
       "execution": {"backend": "kvm", "min_ansible_core": "2.19"},
       "environments": {
         "ansible-min": {"unsupported_reason": "Core 2.15 is below the role minimum Core 2.19.12."},
-        "ansible-current": {"platforms": ["instance-idarsi-rl10", "instance-idarsi-rhel10", "instance-idarsi-fedora43", "instance-idarsi-fedora44"]},
-        "ansible-next": {"platforms": ["instance-idarsi-rl10", "instance-idarsi-rhel10", "instance-idarsi-fedora43", "instance-idarsi-fedora44"]}
+        "ansible-current": {"platforms": ["instance-idarsi-rl10", "instance-idarsi-rhel10", "instance-idarsi-fedora44"]},
+        "ansible-next": {"platforms": ["instance-idarsi-rl10", "instance-idarsi-rhel10", "instance-idarsi-fedora44"]}
       }
     },
     "kvm-all-absent": {

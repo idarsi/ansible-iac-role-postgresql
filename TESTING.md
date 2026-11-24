@@ -2,8 +2,10 @@
 
 ## Declared scope versus runtime evidence
 
-The repository contains **25 whole-scenario managed declarations**, migrated
-from 29 historical scenarios. This is not a validation-only suite. Scenarios
+The repository contains **25 whole-scenario managed declarations**, originating
+in the migration of 29 historical scenarios. Fedora 43 tests were subsequently
+retired; the current baseline has Rocky 10, RHEL 10 and Fedora 44 guests.
+This is not a validation-only suite. Scenarios
 cover installation, versions, filesystem binds, removal, replication, Patroni,
 etcd, TLS, recovery and negative guardrails. They remain ordinary role-owned
 Molecule scenarios; the TUI is optional.
@@ -16,9 +18,9 @@ Historical privileged-container/shared-network tests do not prove replacements.
 
 The historical source remains available at
 `45f3547681387dda4b0609bc81eda8703b218153`. The mapping below preserves every
-test purpose and OS-specific assertion; consolidation does not remove the
-separate Rocky/RHEL/Fedora playbooks. Unexecuted replacements retain declared
-coverage intent, not acceptance inferred from the historical tests.
+retained test purpose and OS-specific assertion; the later Fedora 43 retirement
+is an explicit exception, not lost coverage hidden by consolidation. Unexecuted
+replacements retain intent, not acceptance inferred from historical tests.
 
 ### Read-only verification evidence (2026-11-24)
 
@@ -31,10 +33,11 @@ logs are intentionally not stored here.
 
 | Check | Observed result |
 | --- | --- |
-| Current controller capabilities + resolve | 24/25 PASS; `kvm-baseline` BLOCKED by missing Fedora 43 image |
+| Historical current controller capabilities + resolve, before retirement | 24/25 PASS; `kvm-baseline` BLOCKED by missing Fedora 43 image |
 | Effective configuration bindings | All 25 PASS |
 | TimescaleDB current-controller recheck | PASS: capabilities, resolve, effective configuration and complete eight-name metadata topology; original source selections preserved |
 | Next controller representative probes | PASS: `podman-validation`, `kvm-replication`, `kvm-hard-patroni-failure` |
+| Revised three-guest baseline current-controller read-only probe, after retirement | PASS: capabilities/resolve exit 0; installed Molecule lifecycle, safe-files/private collections, five dependency arguments and exact Rocky10/RHEL10/Fedora44 whole-topology metadata in both lanes. Role `9693ce5` plus dirty changes, clean helper `aa0e2a7677f66e9b00658ec3d655243634f654a0`; baseline config SHA-256 `0e8a93b18004c14bdc733b20a203c302f73f7deb8c694deeaaaef57ad5803e3b`. Cumulative current readiness is 25/25 by combining the previous unchanged 24 with this probe, not an all-25 rerun or runtime pass. |
 
 These are configuration/capability results only. The separate runtime evidence
 below must not be borrowed to label other scenarios or controller lanes PASS.
@@ -87,11 +90,27 @@ original destroy remains unsealed, not retroactively PASS. None of these cleanup
 claims establishes universal firewall cleanliness.
 
 **Not verified:** the complete 25-scenario suite, full OS/controller matrix,
-hosted GitHub CI/enforcement, or remote helper publication. Fedora 43 baseline
-remains BLOCKED by missing media. Remaining scenarios, including the six-VM
-external-DCS cases, are optional future qualification, not completed acceptance.
+hosted GitHub CI/enforcement, or remote helper publication. Remaining scenarios,
+including the six-VM external-DCS cases, are optional future qualification,
+not completed acceptance.
 The helper follow-up commit is now pinned; publication/CI evidence remains absent.
 Raw logs, private paths and generated credentials are not stored here.
+
+### Fedora 43 test retirement
+
+Fedora 43 platforms, imports, playbooks and image prerequisites are removed
+from active tests. `kvm-baseline` now selects all three remaining guests:
+Rocky 10, RHEL 10 and Fedora 44. The scenario/lane counts remain 25/75.
+The dated 24/25 capability result above remains historical. The revised
+three-guest baseline now has separate read-only acceptance in the row above,
+not runtime verification. Earlier five runtime pilots retain their original
+source qualifications.
+
+Production defaults and OS validation still allow Fedora 43 compatibility,
+but the current matrix no longer covers it. This is test retirement only,
+not a production support removal, an EOL-date assertion or Fedora 45 coverage.
+Maturity remains the qualified independent 66% / Beta; retirement earns no
+additional readiness points.
 
 ## Approved controller and helper prerequisites
 
@@ -146,7 +165,6 @@ Export the image variables needed by the selected whole scenario:
 | `IDARSI_TEST_KVM_ROCKY10_IMAGE` | Rocky Linux 10 |
 | `IDARSI_TEST_KVM_RHEL9_IMAGE` | RHEL 9 with authorized working repositories |
 | `IDARSI_TEST_KVM_RHEL10_IMAGE` | RHEL 10.2 with authorized working repositories |
-| `IDARSI_TEST_KVM_FEDORA43_IMAGE` | Fedora 43 |
 | `IDARSI_TEST_KVM_FEDORA44_IMAGE` | Fedora 44 |
 
 The nine former `kvm_*` combined-cluster scenarios retain their native
@@ -174,10 +192,8 @@ topology; never filter a cluster or platform matrix with `--platform-name`.
 Read-only prerequisite review found prepared readable Rocky 9/10, RHEL 9/10
 and Fedora 44 sources, working local rootless Podman/system-libvirt discovery,
 KVM access and writable test storage, with SELinux enforcing. This is
-prerequisite evidence only, not a create/service pass. **Fedora 43 runtime is
-BLOCKED** because no prepared image or installation medium was found in the
-documented locations; its support declaration is not silently removed. RHEL
-guest repository readiness, media provenance and actual create permissions
+prerequisite evidence only, not a create/service pass. RHEL guest repository
+readiness, media provenance and actual create permissions
 remain runtime-unverified.
 
 The host uses active modular libvirt sockets. A legacy setup check expecting
@@ -197,7 +213,7 @@ existing scenario-specific 17/18 checks for etcd and extensions.
 | --- | --- | --- |
 | `podman-validation` | `validation` | One nonprivileged Rocky 9 container, sleep command; all valid/invalid blueprint and non-mutation assertions |
 | `kvm-full` | `rocky9-full`, `rhel9-full` | Two OS guests, independent OS-specific full installation/binds/git/SQL/security assertions |
-| `kvm-baseline` | `rocky10-baseline`, `rhel10-baseline`, `fedora43-baseline`, `fedora44-baseline` | Four OS guests with their original distinct baseline assertions |
+| `kvm-baseline` | `rocky10-baseline`, `rhel10-baseline`, `fedora44-baseline`; historical `fedora43-baseline` retired | Three OS guests with their retained distinct baseline assertions |
 | `kvm-all-absent` | `all_absent` | One Rocky 9 guest, install fixture then guarded removal, repeated cleanup and preservation assertions |
 | `kvm-bind-guardrails` | `bind_guardrails` | One guest, data conflict and active-service migration failures |
 | `kvm-hba-guardrails` | `hba_guardrails` | One guest, exact address/CA/map validation failures |
@@ -363,7 +379,7 @@ self-hosted runners, both backend discovery permissions, existing pinned
 controllers, exact compatible helper and prepared images. The workflow must not
 pretend that an Ubuntu runner with Podman alone can exercise full KVM tests.
 Configured fast/daily/forward-compatibility intent is not an executed CI pass;
-the remaining workload/platform matrix is unverified and Fedora 43 is blocked.
+the remaining workload/platform matrix is unverified. Fedora 43 tests are retired.
 The `idarsi-managed-tests` GitHub environment must have operator approval and
 appropriate protection before self-hosted execution; fork PRs do not run that
 job. The two controller lanes are serialized. Runner registration, environment
