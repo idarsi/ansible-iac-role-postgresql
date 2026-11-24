@@ -1,0 +1,87 @@
+---
+###############################################################################
+#
+# prepare.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+###############################################################################
+# PREPARING GUEST NETWORKING AND THE EXTERNAL DCS FIXTURE
+###############################################################################
+
+- name: "Prepare generated guest addresses, utilities, and test ports"
+  ansible.builtin.import_playbook: "../../tests/prepare.yml"
+
+- name: "Prepare three external etcd services, separate from PostgreSQL"
+  hosts: etcd01:etcd02:etcd03
+  become: true
+  tasks:
+    - name: "Trust the official PGDG EL signing key"
+      ansible.builtin.rpm_key:
+        key: "https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-RHEL"
+        state: "present"
+
+    - name: "Install the official PGDG EL9 repository definition"
+      ansible.builtin.dnf:
+        name: "https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm"
+        state: "present"
+        disable_gpg_check: false
+
+    - name: "Install the signed PGDG etcd package"
+      ansible.builtin.dnf:
+        name: "etcd"
+        state: "present"
+        enablerepo: "pgdg-rhel9-extras"
+        disable_gpg_check: false
+
+    - name: "Create the external fixture data directory"
+      ansible.builtin.file:
+        path: "/var/lib/etcd"
+        state: "directory"
+        owner: "etcd"
+        group: "etcd"
+        mode: "0700"
+
+    - name: "Configure the isolated external etcd test cluster"
+      ansible.builtin.copy:
+        dest: "/etc/etcd/etcd.conf"
+        owner: "root"
+        group: "root"
+        mode: "0644"
+        content: |
+          ETCD_NAME={{ inventory_hostname }}
+          ETCD_DATA_DIR=/var/lib/etcd
+          ETCD_LISTEN_CLIENT_URLS=http://{{ ansible_host }}:2379,http://127.0.0.1:2379
+          ETCD_ADVERTISE_CLIENT_URLS=http://{{ ansible_host }}:2379
+          ETCD_LISTEN_PEER_URLS=http://{{ ansible_host }}:2380
+          ETCD_INITIAL_ADVERTISE_PEER_URLS=http://{{ ansible_host }}:2380
+          ETCD_INITIAL_CLUSTER={% for member in ['etcd01', 'etcd02', 'etcd03'] %}{{ member }}=http://{{ hostvars[member].ansible_host }}:2380{% if not loop.last %},{% endif %}{% endfor %}{{ '\n' }}
+          ETCD_INITIAL_CLUSTER_TOKEN=molecule-external-dcs
+          ETCD_INITIAL_CLUSTER_STATE=new
+      notify: "Restart external etcd"
+
+    - name: "Start the packaged external etcd service"
+      ansible.builtin.systemd_service:
+        name: "etcd.service"
+        state: "started"
+        enabled: true
+
+    - name: "Apply external fixture configuration"
+      ansible.builtin.meta: flush_handlers
+
+    - name: "Wait for external etcd quorum"
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:2379/health"
+        status_code: 200
+      register: external_etcd_health
+      retries: 30
+      delay: 2
+      until: external_etcd_health.status == 200
+
+  handlers:
+    - name: "Restart external etcd"
+      ansible.builtin.systemd_service:
+        name: "etcd.service"
+        state: "restarted"

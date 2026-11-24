@@ -1,0 +1,9 @@
+---
+###############################################################################
+# prepare.yml
+# @author Arsi Atomi
+###############################################################################
+- name: "Prepare platform-matrix guests"
+  ansible.builtin.import_playbook: "../../tests/prepare.yml"
+- name: "Prepare platform-matrix PKI"
+  ansible.builtin.import_playbook: "fixtures.yml"

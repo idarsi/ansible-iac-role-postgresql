@@ -1,362 +1,379 @@
 # Testing
 
-## Current validation-test scope
+## Declared scope versus runtime evidence
 
-The current automated test suite consists only of the `validation` Molecule
-scenario on Rocky Linux 9 UBI. It is run manually; this repository does not
-currently define a CI cadence for it. The scenario does not cover installation,
-container-image or installer behavior, lifecycle operations, or RHEL platforms.
-Do not interpret this scenario as evidence for those behaviors or platforms.
+The repository contains **25 whole-scenario managed declarations**, migrated
+from 29 historical scenarios. This is not a validation-only suite. Scenarios
+cover installation, versions, filesystem binds, removal, replication, Patroni,
+etcd, TLS, recovery and negative guardrails. They remain ordinary role-owned
+Molecule scenarios; the TUI is optional.
 
-The scenario uses a shared Podman container name. Do not run concurrent copies
-of `validation` against the same Podman environment; serialize those runs (or
-use separately isolated Podman environments). Repeated sequential runs are
-supported by Molecule's destroy/create sequence.
+**Declarations are not runtime proof.** The ledger below records five independent
+tester acceptance selections with source/controller qualifications. It does not
+establish a full 25-scenario or supported OS/controller-matrix pass. No GitHub CI
+pass or required-check enforcement is established by configuring a workflow.
+Historical privileged-container/shared-network tests do not prove replacements.
 
-This role uses Molecule with the Podman driver for automated integration
-testing. The test matrix below describes the environments currently covered by
-the repository. It is not a complete list of operating systems that the role
-may work on.
+The historical source remains available at
+`45f3547681387dda4b0609bc81eda8703b218153`. The mapping below preserves every
+test purpose and OS-specific assertion; consolidation does not remove the
+separate Rocky/RHEL/Fedora playbooks. Unexecuted replacements retain declared
+coverage intent, not acceptance inferred from the historical tests.
 
-## Automated test matrix
+### Read-only verification evidence (2026-11-24)
 
-Platform/image                  | Ansible or application versions | Molecule scenarios | Main coverage
---------------------------------|---------------------|--------------------|--------------
-Rocky Linux 9 UBI               | 16, 17, 18          | `rocky9-full`, `all_absent`, `bind_guardrails`, `hba_guardrails`, `replication`, `timescaledb`, `validation`, `patroni_config`, `patroni_unknown_service`, `patroni_failover`, `patroni_membership`, `rocky9-etcd-cluster`, `rocky9-etcd-tls-member`, `rocky9-etcd-tls-cluster` | Full baseline, cleanup, guardrails, physical replication, inventory validation, TimescaleDB sources, Patroni membership, failover, and managed etcd
-Red Hat Enterprise Linux 9 UBI | 16, 17, 18          | `rhel9-full`             | Full baseline, bind, git, and repository workflow
-Rocky Linux 10 UBI              | 16, 17, 18          | `rocky10-baseline`           | Baseline installation and multi-version coverage
-Red Hat Enterprise Linux 10.2 UBI| 16, 17, 18          | `rhel10-baseline`            | Baseline installation and multi-version coverage (pinned because PGDG has no 10.3 metadata)
-Fedora 43                       | 17, 18               | `fedora43-baseline`          | PGDG repository and baseline installation
-Fedora 44                       | 17, 18               | `fedora44-baseline`          | PGDG repository and baseline installation
-Rocky Linux 9 UBI               | 17, 18               | `rocky9-etcd-cluster`, `rocky9-etcd-tls-member`, `rocky9-etcd-tls-cluster` | Managed three-member etcd, quorum recovery, Patroni failover, TLS etcd, and PostgreSQL 18 smoke coverage
-Rocky Linux 9/10 UBI            | 17, 18               | `el9-el10-etcd-matrix`    | Managed etcd package and service coverage across EL9 and EL10 with PostgreSQL 18 smoke coverage
+Tested source was the current branch at role base `45f3547` **plus dirty
+changes**, with helper base `9c2cabe` **plus dirty changes**. Neither is a
+new committed migration revision. The tester's bounded read-only harness
+(`postgresql-readonly-check.py`) recorded the TimescaleDB recheck in artifact
+`postgresql-current-timescaledb-recheck-readonly-results.json`; local paths and
+logs are intentionally not stored here.
 
-The coverage target is PostgreSQL 17 and 18 on Fedora, and PostgreSQL 16, 17,
-and 18 on Rocky Linux and RHEL 9 and 10.
+| Check | Observed result |
+| --- | --- |
+| Current controller capabilities + resolve | 24/25 PASS; `kvm-baseline` BLOCKED by missing Fedora 43 image |
+| Effective configuration bindings | All 25 PASS |
+| TimescaleDB current-controller recheck | PASS: capabilities, resolve, effective configuration and complete eight-name metadata topology; original source selections preserved |
+| Next controller representative probes | PASS: `podman-validation`, `kvm-replication`, `kvm-hard-patroni-failure` |
 
-## Ansible Core compatibility lanes
+These are configuration/capability results only. The separate runtime evidence
+below must not be borrowed to label other scenarios or controller lanes PASS.
 
-The role's minimum supported line is Ansible Core 2.19.12. The recommended
-development line is 2.20.8. Ansible Core 2.21.3 is a forward-compatibility
-probe until the role explicitly adopts it as a supported line. The shared
-`ansible-min` environment provides Core 2.15 as an additional test compatibility
-probe (Python 3.9), not as the role's official minimum.
+### Runtime acceptance ledger (2026-11-24)
 
-The shared `ansible-min` test environment also provides Ansible Core 2.15 for
-an additional compatibility probe of the affected validation scenarios. This
-probe does not change the role's supported minimum and is not evidence that the
-full role behavior is validated on Core 2.15.
+All five selections used Ansible Core **2.20.8**, Molecule **26.8.0**, and role
+base `45f3547681387dda4b0609bc81eda8703b218153` **plus dirty tested changes**.
+They do not attest a subsequent documentation or role commit. The first four
+used clean local helper `f9f0b7bd1af671035eb5e6fb5959826392acac4f`.
+The hard-failure selection instead used that helper **plus a dirty normalizer
+fix**; it is explicitly not a clean-`f9f0…` hard-failure pass.
 
-| Ansible Core | Purpose | Automated coverage |
+| Selection | Independent tester result |
+| --- | --- |
+| Direct `podman-validation` full test sequence | PASS: 617 tasks, idempotence changed=0, verify and destroy |
+| Direct `kvm-replication` retained phases | PASS: dependency/create/prepare/converge/idempotence/verify/destroy all exit 0; SQL row, slots, streaming, PL/Python and service assertions; changed=0 on both guests |
+| Managed CLI `podman-validation` | PASS: campaign 322, origin `cli`, observed worker exit 0 |
+| Actual GUI whole `kvm-replication` | PASS: unmodified `RoleTestApp` through Textual Pilot, complete two-host selection; campaign 323, origin `tui_gui`, worker exit 0, idempotence/SQL/verify |
+| Native three-ISO-VM supervised `kvm-hard-patroni-failure` | PASS with dirty helper fix: create/prepare/converge, changed=0 idempotence on all three, verify and destroy; pg01 owned poweroff changed=true/shut-off, pg03 promotion, pg01 owned restart changed=true/running with the same UUID, replica rejoin and both before/after SQL markers |
+
+The actual GUI used clean TUI revision
+`2b6e1fd54bb9f3d0be8bc4f148396aa543679416`. All five selections had fresh
+authoritative `cleaned` evidence. The managed CLI/GUI sessions exited and
+admission was clear. For hard failure, create/guest-stop/guest-start/destroy
+operations were sealed, all eight journalled sessions were gone, and cleanup
+needed neither recovery nor sudo.
+
+The successful hard-failure source is additionally bound by these SHA-256 hashes:
+
+| Dirty tested file | SHA-256 |
+| --- | --- |
+| Role `molecule/kvm-hard-patroni-failure/verify.yml` | `13d4bd7ecfb9876f64f388fd7e748ea0c0fef3add55746b1ee57a6bb6547934e` |
+| Role `molecule/kvm-hard-patroni-failure/helper_result.yml` | `96cb8618d148bcdd8b659e7d105a6f6e728d294a856a3bef911d99740d0a9870` |
+| Helper guest-control normalizer | `c948843e33dfb78d6eae6328bbaac65fe91a2e7dffd8ea4f6a081c6720f4c998` |
+
+That tested normalizer code is now recorded unchanged in reviewed local helper
+follow-up commit `aa0e2a7677f66e9b00658ec3d655243634f654a0`, parent `f9f0…`,
+and the role pins that commit. This does not relabel the hard-failure run as
+execution at the later commit SHA; its actual producing source remains the
+dirty helper qualification above. The helper checkout is clean and not pushed.
+
+Earlier environment-binding, private-Galaxy-discovery and typed-YAML assertion
+failures were corrected before these passes; failed role pilots either allocated
+nothing or completed sealed normal cleanup. An earlier hard-failure attempt
+exposed the helper normalizer mismatch before guest-stop mutation and also
+completed sealed cleanup. Separately, the historical retained helper network
+was cleaned by approved rootless, bounded normal-libvirt reconciliation; its
+original destroy remains unsealed, not retroactively PASS. None of these cleanup
+claims establishes universal firewall cleanliness.
+
+**Not verified:** the complete 25-scenario suite, full OS/controller matrix,
+hosted GitHub CI/enforcement, or remote helper publication. Fedora 43 baseline
+remains BLOCKED by missing media. Remaining scenarios, including the six-VM
+external-DCS cases, are optional future qualification, not completed acceptance.
+The helper follow-up commit is now pinned; publication/CI evidence remains absent.
+Raw logs, private paths and generated credentials are not stored here.
+
+## Approved controller and helper prerequisites
+
+Use the existing environments from
+[idarsi-ansible-test-environments](https://github.com/idarsi/idarsi-ansible-test-environments).
+Do not create a role-local `.venv`, install into shared controllers, upgrade
+pins, or reconfigure the host to make a role check pass. Initialize the existing
+`tasks/shared` submodule at the recorded gitlink; do not update it.
+
+The reviewed helper revision in
+[`tests/helper-revision.txt`](tests/helper-revision.txt) is local commit
+`aa0e2a7677f66e9b00658ec3d655243634f654a0`, including the tested normalizer
+fix. Operators need this exact compatible checkout; its remote publication
+remains unverified. Earlier passes retain their actual `f9f0…` clean/dirty
+runtime qualifications above rather than claiming a rerun at the new commit.
+All scenarios require
+`idarsi.scenario-context/v1`, validated effective configuration and both
+`direct` and `supervised` lifecycle modes. The hard-poweroff test additionally
+requires the advertised `guest-stop` and `guest-start` actions.
+
+Both local rootless Podman discovery and local `qemu:///system` libvirt discovery
+must succeed, even for validation. Remote/rootful Podman, guessed guest names,
+host-wide purges, raw virsh substitutions and manufactured handoff variables are
+unsupported. Host package/service/storage/network preparation is an operator
+prerequisite, not a role action. Follow the shared
+[dual-mode lifecycle and recovery contract](https://github.com/idarsi/idarsi-ansible-test-environments/blob/main/docs/isolated-test-runs.md).
+
+| Lane | Current pin / intent | Declaration |
 | --- | --- | --- |
-| 2.15 (`ansible-min`, shared environment) | Additional test compatibility probe | TUI-selected role scenarios, including `hba_guardrails` and `replication` |
-| 2.19.12 (GitHub Actions) | Minimum supported / CI minimum-version lane | Scheduled `validation` and `rocky9-full` compatibility scenarios |
-| 2.20.8 (`ansible-current`) | Recommended development line | Pull-request fast scenarios and the complete scheduled automated Molecule matrix |
-| 2.21.3 (`ansible-next`) | Forward-compatibility probe | Scheduled `validation` and `rocky9-full`; non-blocking until adopted |
+| `ansible-min` | Core 2.15, Python 3.9 | Unsupported: below role minimum Core 2.19.12 |
+| `ansible-current` | Core 2.20.8 | Five representative runtime selections PASS above; remaining matrix unverified |
+| `ansible-next` | Core 2.21.3 | Representative capability probes PASS only; workload matrix unverified, not adopted support |
 
-The compatibility scenarios check the same validation and baseline paths at
-the version boundaries. They do not run the full feature matrix on every
-Ansible Core line. Update this table and the README support claim together when
-the supported range changes.
+`min_ansible_core: "2.19"` is the metadata format's major/minor gate; the actual
+role prerequisite remains **2.19.12**, not 2.19.0. There is no supported
+minimum-controller runtime claim from the shared `ansible-min` lane. Historical
+Core 2.15-specific collection manifests are retained only as historical fixtures,
+not an invitation to bypass the minimum.
 
-The `hba_guardrails` and `replication` scenarios select their collection
-requirements file through Molecule's `dependency.options.requirements-file`
-setting. The shared test-environment activation exports
-`IDARSI_MOLECULE_COLLECTIONS_FILE=collections-ansible-min.yml` for
-`ansible-min` (Python 3.9 / Ansible Core 2.15), and
-`IDARSI_MOLECULE_COLLECTIONS_FILE=collections.yml` for `ansible-current` and
-`ansible-next`. The minimum-specific files pin `community.general` 10.7.3;
-the standard files pin 11.4.0 and are also the default when the variable is
-unset. The role repo does not change the shared environment's activation hook.
+## KVM images and topology
 
-The following KVM scenarios are supplemental manual coverage and are not part of
-the automated Molecule matrix or CI. They use the shared Idarsi test environment
-and its `idarsi-test` libvirt network, and install from the official Rocky Linux 9 tree:
+All full-host/systemd/mount/firewall scenarios use the shared native KVM
+lifecycle, never relabelled privileged containers. Prepare existing qcow2 images
+separately using the shared environment's documented image preparation workflow.
+Managed runs do not build bases, register RHEL subscriptions, or modify bases.
 
-Platform/image                  | Ansible or application versions | Molecule scenarios | Main coverage
---------------------------------|---------------------|--------------------|--------------
-Rocky Linux 9 KVM guests from the configured install ISO | 17 | `kvm_patroni_failover`, `kvm_etcd_quorum` | Three combined systemd VMs, static private endpoints, Patroni failover, and etcd quorum loss/recovery
-Rocky Linux 9 KVM guests from the configured install ISO | 17 | `kvm_etcd_leader_failure`, `kvm_hard_patroni_failure`, `kvm_network_partition`, `kvm_quorum_primary_failure` | Manual leader replacement, guarded hard failure, symmetric partition, and DCS-loss safety/recovery
-Rocky Linux 9 KVM guests from the configured install ISO | 17 | `kvm_restart_smoke`, `kvm_tls_rotation`, `kvm_etcd_snapshot_restore` | Serial restart smoke with membership/data checks, test-only certificate rotation, and isolated etcd restore
+Export the image variables needed by the selected whole scenario:
 
-## Scenario coverage
+| Variable | Required prepared guest |
+| --- | --- |
+| `IDARSI_TEST_KVM_ROCKY9_IMAGE` | Rocky Linux 9 |
+| `IDARSI_TEST_KVM_ROCKY10_IMAGE` | Rocky Linux 10 |
+| `IDARSI_TEST_KVM_RHEL9_IMAGE` | RHEL 9 with authorized working repositories |
+| `IDARSI_TEST_KVM_RHEL10_IMAGE` | RHEL 10.2 with authorized working repositories |
+| `IDARSI_TEST_KVM_FEDORA43_IMAGE` | Fedora 43 |
+| `IDARSI_TEST_KVM_FEDORA44_IMAGE` | Fedora 44 |
 
-- `molecule/rocky9-full` validates package installation, multi-instance startup,
-  version-scoped managed filesystem resources including `binds:`, cron
-  entries, role/database provisioning, extension creation, and generated
-  access configuration on Rocky Linux 9.
-- `molecule/all_absent` validates destructive cleanup of packages,
-  repositories, bind mounts, service files, managed resources, and the
-  PostgreSQL operating system user on Rocky Linux 9. It repeats cleanup during
-  convergence and verification, asserting the later invocation makes no
-  changes before checking that resources remain absent.
-- `molecule/bind_guardrails` validates that bind-mount migration fails safely
-  when source and target both contain data or when PostgreSQL services are
-  still running against the target directory.
-- `molecule/hba_guardrails` validates that pg_hba validation failures report
-  specific root causes for invalid address usage, missing client CA
-  configuration, and undefined certificate-auth map references.
-- `molecule/validation` validates valid and invalid PostgreSQL blueprints
-  without installing PostgreSQL packages, including the missing-blueprint
-  execution-context guardrail, platform-before-blueprint validation ordering,
-  destructive cleanup path validation, and PostgreSQL instance-name validation.
-- `molecule/timescaledb` validates TimescaleDB installation from both PGDG and
-  the Timescale Community repository on Rocky Linux 9 and 10 and Red Hat
-  Enterprise Linux 9 and 10 UBI.
-- `molecule/rhel9-full` validates the default multi-instance, bind, git, and
-  repository workflow on Red Hat Enterprise Linux 9 UBI.
-- `molecule/replication` validates optional physical primary/standby
-  replication between two Rocky Linux 9 containers, including standby
-  bootstrap with `pg_basebackup` and replicated test data visibility.
-- `molecule/patroni_config` validates Patroni configuration rendering from a
-  shared cluster blueprint, including host-local member selection.
-- `molecule/patroni_unknown_service` validates the exact failure when existing
-  PostgreSQL data has no matching Patroni service unit, and confirms that the
-  role runs in normal mode, fails before mutation, and does not alter existing
-  data or create Patroni configuration.
-- `molecule/patroni_config` runs a successful second convergence to verify
-  idempotence, then invokes the role with `check_mode: true` and `diff: true`.
-  It asserts both that the role predicts no changes and that SHA-256 content
-  hashes, modes, owners, and groups of the managed Patroni configuration and
-  service files remain unchanged across that invocation. This verifies
-  observable file non-mutation rather than relying on the include-role result
-  alone.
-- The fast and scheduled CI matrices both run `patroni_unknown_service`. The
-  `patroni_config` scenario provides representative idempotence and check-mode
-  prediction coverage; the expected-failure guardrail is intentionally not
-  used as an idempotence scenario.
-- `molecule/patroni_membership` validates a three-member Patroni cluster,
-  removal of one member from the etcd DCS, and rejoining that member as a
-  replica.
-- `molecule/patroni_failover` validates a three-member Patroni cluster with a
-  real three-member etcd DCS. It covers idempotent role execution, one etcd
-  member outage and quorum continuity, Patroni member removal and rejoin,
-  primary failover, data survival, writes while a replica is offline, and
-  rejoining both the offline replica and the failed primary.
-- `molecule/rocky9-etcd-cluster` validates a role-managed three-member PGDG etcd
-  cluster, etcd key persistence across a member outage, and Patroni failover
-  and recovery on the managed DCS.
-- `molecule/rocky9-etcd-tls-member` validates a TLS-enabled managed etcd member.
-- `molecule/rocky9-etcd-tls-cluster` validates a three-member TLS etcd cluster,
-  client and peer certificate configuration, and TLS quorum recovery.
-- `molecule/kvm_patroni_failover` is supplemental manual KVM/libvirt
-  coverage using three combined Rocky Linux 9 VMs. It stops the actual Patroni
-  primary while retaining etcd quorum, checks the replacement leader and data,
-  and verifies that the failed member rejoins. It checks SELinux enforcing and
-  etcd and Patroni listeners bind to the configured static private addresses.
-  Its KVM-specific `prepare.yml` installs and starts firewalld, assigns the guest test-network
-  interface to a dedicated private-cluster zone, and permanently and immediately allows
-  only source `192.168.250.0/24` to TCP ports 2379, 2380, 5432, and 8008.
-- `molecule/kvm_etcd_quorum` is supplemental manual KVM/libvirt
-  coverage using the same three-VM topology. It stops two etcd services, proves
-  a client write fails without quorum using a separate probe key, restores both
-  members, and verifies the original committed continuity key, membership, and
-  actual Patroni leader. The probe request may commit asynchronously after the
-  client reports failure and is removed after recovery. It also verifies the
-  Patroni private listener. Its KVM-specific `prepare.yml` applies the same
-   dedicated-zone firewalld rules before role convergence.
-- `molecule/kvm_etcd_leader_failure` stops the discovered etcd leader only,
-  then checks leader replacement, key continuity, endpoint health, and rejoin.
-  This is an operational DCS smoke test, not a guarantee for every failure mode.
-- `molecule/kvm_hard_patroni_failure` uses the guarded host helper
-  the shared KVM VM helper to stop exactly the selected guest,
-  then starts it again and checks promotion, continuity, and rejoin.
-- `molecule/kvm_network_partition` adds a temporary priority reject rule to
-  the dedicated `idarsi-private` firewalld zone and always removes it. SSH remains available through the shared test network; a task barrier confirms both host-side rules before disruption
-  assertions. This validates guest firewall behavior, not a switch-level or
-  perfectly simultaneous packet cut; host scheduling and already-in-flight
-  connections remain limitations. Asymmetric packet loss is out of scope. If the
-  verifier is interrupted, manually remove the temporary rule on `pg01` and
-  `pg02` with `firewall-cmd --zone=idarsi-private --remove-rich-rule="rule family=ipv4 source address=<peer-private-address> priority=-100 reject"` and the same command with `--permanent`, then verify with `--query-rich-rule`; never alter the NAT/SSH zone.
-- `molecule/kvm_quorum_primary_failure` combines etcd quorum loss with a
-  Patroni primary stop and asserts no unsafe write or promotion before recovery.
-- `molecule/kvm_restart_smoke` restarts Patroni serially and checks health,
-  three-member membership, one-leader safety, and PostgreSQL data continuity.
-  It is not a PostgreSQL major-upgrade test.
-- `molecule/kvm_tls_rotation` creates a disposable CA and a distinct leaf
-  for each etcd member, with that member's DNS and private IP SANs. It installs
-  an old+new trust bundle, rotates one member at a time, and after every
-  rotation asserts certificate ownership/mode, effective PostgreSQL read
-  access, exactly three Patroni members (one leader and two replicas), and both
-  PostgreSQL and DCS continuity markers. It is test-only coverage and does not
-  exercise role-managed issuance. Old-CA removal or revocation is not
-  implemented or covered; the old CA intentionally remains in the temporary
-  trust bundle for this compatibility smoke test.
-- `molecule/kvm_etcd_snapshot_restore` restores a live etcd snapshot into a
-  fresh disposable directory and cluster identity, never over live data.
-  PostgreSQL data is explicitly not restored.
-- `molecule/el9-el10-etcd-matrix` validates managed PGDG etcd installation and the
-  local etcd and Patroni endpoints on Rocky Linux 9 and 10.
-- `molecule/rocky10-baseline` validates the same baseline behavior on Rocky Linux 10.
-- `molecule/rhel10-baseline` validates the same baseline behavior on Red Hat Enterprise
-  Linux 10 UBI.
-- `molecule/fedora43-baseline` and `molecule/fedora44-baseline` validate PostgreSQL 17 and 18
-  installations from the Fedora-specific PGDG repository workflow.
+The nine former `kvm_*` combined-cluster scenarios retain their native
+installation-source workflow instead of requiring a prepared base image:
+export `IDARSI_TEST_KVM_INSTALL_SOURCE` to an existing compatible Rocky 9
+installation source. Their shared kickstart template is supplied by the pinned
+helper. The managed adapter installs owned guests directly; it does not invoke
+the legacy shared base builder. Do not download or build media during a run.
 
-The GitHub Actions workflow runs syntax and production-profile lint checks
-with Ansible Core 2.20.8. Pull requests and pushes to `main` run a fast
-representative Molecule matrix on that line. The complete automated scenario
-matrix runs once per day on 2.20.8. The scheduled workflow also runs the
-minimum-version and forward-compatibility lanes described above. Molecule jobs
-are independent and run in parallel by scenario; static checks do not gate
-individual scenario jobs.
+Images need NetworkManager, Python, an SSH `molecule` user with passwordless
+sudo, and working distribution repositories. The guest preparation installs
+test-only utilities from those repositories. Fedora images need Python's
+distribution DNF bindings, as the former Dockerfiles did. RHEL content access
+and availability of the selected PGDG release are prerequisites; full RHEL
+VM behavior is not inferred from earlier UBI evidence. RHEL 10.2 preserves the
+historical PGDG metadata constraint; do not silently substitute another release.
 
-The pull-request fast matrix contains `validation`, `rocky9-full`,
-`rocky10-baseline`, `rhel10-baseline`, and `fedora44-baseline`. It checks
-validation, the primary EL9 path, and representative EL10, RHEL, and Fedora
-baselines. The daily matrix runs
-all automated scenarios listed in this document, including the older EL and
-Fedora baseline images, replication and guardrail scenarios, both TimescaleDB
-repository variants, and the multi-member Patroni and etcd scenarios. It
-excludes the supplemental manual KVM scenarios.
+Native helper inventory supplies connection addresses and ownership. Guest
+`/etc/hosts`, etcd endpoints, SANs and firewall fixtures use generated context,
+not a host-shared subnet or static connection overrides. Replication uses the
+primary VM's private address on port 5432, not a host-published Podman port.
+Logical inventory names remain stable. Every metadata lane contains the whole
+topology; never filter a cluster or platform matrix with `--platform-name`.
 
-The pull-request matrix is intentionally a fast regression gate, not the full
-coverage promise. Full Molecule coverage is the complete automated scenario
-set documented in this file; the scheduled run exercises that set. The
-workflow cancels an older in-progress run for the same branch or scheduled
-workflow when a newer run starts.
+Read-only prerequisite review found prepared readable Rocky 9/10, RHEL 9/10
+and Fedora 44 sources, working local rootless Podman/system-libvirt discovery,
+KVM access and writable test storage, with SELinux enforcing. This is
+prerequisite evidence only, not a create/service pass. **Fedora 43 runtime is
+BLOCKED** because no prepared image or installation medium was found in the
+documented locations; its support declaration is not silently removed. RHEL
+guest repository readiness, media provenance and actual create permissions
+remain runtime-unverified.
 
-If an interrupted run prevents Molecule's final cleanup, first run
-`molecule cleanup -s <scenario>` and then `molecule destroy -s <scenario>`.
-For a disruption scenario, manually restore stopped services with
-`systemctl start etcd.service patroni-17-main.service postgresql-17-main.service`
-as applicable, remove temporary firewalld rules using the commands above, and
-remove `/tmp/molecule-etcd.snap`, `/tmp/molecule-restored-etcd.pid`,
-`/tmp/molecule-restored-etcd.log`, and any `molecule-etcd-restore-*` directory
-on the guest. These are best-effort
-operator recovery steps; interrupted verification cannot guarantee automatic
-cleanup.
+The host uses active modular libvirt sockets. A legacy setup check expecting
+monolithic `libvirtd` can report a false failure; do not reconfigure the host
+to satisfy it. Locate existing images using the shared bounded
+`kvm-base-image find` workflow only, without autobuild/download. Serialize
+qualification: external-DCS scenarios declare 18 GiB / 12 vCPUs each and the
+TimescaleDB topology has eight guests. Capacity is not guaranteed by metadata
+or by the helper.
 
-GitHub Actions creates an isolated Python environment. `requirements-ci.txt`
-pins Ansible Lint and the Molecule tools; each CI lane supplies its explicit
-Ansible Core version. Local runs use the pinned environments from
-`idarsi-ansible-test-environments` instead of installing or upgrading packages
-in the shared environment.
+## Complete scenario and migration matrix
 
-The KVM scenarios are supplemental manual coverage and are not run in CI. They
-require the shared test environment, access to the official Rocky Linux 9 install
-tree, libvirt/KVM, and resources for three guests. Static private addresses make
-the topology reproducible, but host networking, SELinux policy packages, and
-firewall defaults can still vary. These scenarios do not
-test host suspend, power loss, split-brain fencing, or a two-node etcd cluster;
-they use disposable, one-day, self-signed test certificates and deliberately
-insecure fake Patroni/PostgreSQL credentials. These fixtures must never be
-used outside disposable test guests. The scenarios assert SELinux enforcing
-and required listeners; their KVM-specific prepare playbooks also configure
-the guest firewalld rules needed by the private cluster network. Firewalld
-remains guest-owned and is not managed or claimed by this role.
+PG coverage remains 16/17/18 for Rocky/RHEL baselines, 17/18 on Fedora, and the
+existing scenario-specific 17/18 checks for etcd and extensions.
 
-The KVM `prepare` playbooks install the signed PGDG repository package and
-enable its Rocky Linux 9 extras repository before installing test `etcd`. They
-reboot each guest after package setup and wait for Ansible connectivity before
-creating certificates or applying role configuration. All guests use the
-shared `idarsi-test` NAT network prepared by the test-environment installer;
-cluster scenarios assign static addresses `.201` through `.203` outside its
-DHCP pool. The playbooks add those addresses to `/etc/hosts` and configure the
-guest firewalld zone needed by the cluster tests.
+| Managed scenario | Historical scenario(s) | Preserved topology and purpose |
+| --- | --- | --- |
+| `podman-validation` | `validation` | One nonprivileged Rocky 9 container, sleep command; all valid/invalid blueprint and non-mutation assertions |
+| `kvm-full` | `rocky9-full`, `rhel9-full` | Two OS guests, independent OS-specific full installation/binds/git/SQL/security assertions |
+| `kvm-baseline` | `rocky10-baseline`, `rhel10-baseline`, `fedora43-baseline`, `fedora44-baseline` | Four OS guests with their original distinct baseline assertions |
+| `kvm-all-absent` | `all_absent` | One Rocky 9 guest, install fixture then guarded removal, repeated cleanup and preservation assertions |
+| `kvm-bind-guardrails` | `bind_guardrails` | One guest, data conflict and active-service migration failures |
+| `kvm-hba-guardrails` | `hba_guardrails` | One guest, exact address/CA/map validation failures |
+| `kvm-replication` | `replication` | Two guests, real primary/standby bootstrap and data visibility |
+| `kvm-timescaledb` | `timescaledb` | Eight guests: PGDG/community sources on Rocky/RHEL 9/10 |
+| `kvm-patroni-config` | `patroni_config` | One guest, rendering, repeated convergence and check/diff file non-mutation |
+| `kvm-patroni-unknown-service` | `patroni_unknown_service` | One guest, exact pre-existing-data service guardrail and non-mutation |
+| `kvm-patroni-membership` | `patroni_membership` | Three external-DCS guests plus three PG guests; member removal/rejoin and finalization |
+| `kvm-patroni-failover` | `patroni_failover` | Three external-DCS guests plus three PG guests; quorum, leader replacement, rejoin and continuity |
+| `kvm-etcd-cluster` | `rocky9-etcd-cluster` | Three combined etcd/PG guests, TLS, quorum, Patroni failover and PG18 smoke |
+| `kvm-etcd-tls-member` | `rocky9-etcd-tls-member` | One combined guest, auto-generated etcd TLS and PG18 smoke |
+| `kvm-etcd-tls-cluster` | `rocky9-etcd-tls-cluster` | Three combined guests, shared TLS and quorum recovery |
+| `kvm-etcd-platform-matrix` | `el9-el10-etcd-matrix` | Two Rocky 9/10 guests, PGDG etcd/service and PG18 coverage |
+| `kvm-combined-patroni-failover` | `kvm_patroni_failover` | Three combined Rocky 9 guests, Patroni failover |
+| `kvm-etcd-quorum` | `kvm_etcd_quorum` | Three combined guests, quorum loss/recovery |
+| `kvm-etcd-leader-failure` | `kvm_etcd_leader_failure` | Three combined guests, live etcd leader replacement |
+| `kvm-hard-patroni-failure` | `kvm_hard_patroni_failure` | Three combined guests, ownership-checked abrupt live-primary poweroff/start, SSH/rejoin and both continuity markers |
+| `kvm-network-partition` | `kvm_network_partition` | Three combined guests, symmetric guest firewall partition/recovery |
+| `kvm-quorum-primary-failure` | `kvm_quorum_primary_failure` | Three combined guests, DCS-loss primary safety/recovery |
+| `kvm-restart-smoke` | `kvm_restart_smoke` | Three combined guests, serial restart, membership and data |
+| `kvm-tls-rotation` | `kvm_tls_rotation` | Three combined guests, certificate rotation and continuity |
+| `kvm-etcd-snapshot-restore` | `kvm_etcd_snapshot_restore` | Three combined guests, isolated snapshot restore and data assertions |
 
-Each KVM scenario uses the Rocky Linux 9 Minimal ISO selected by `install.sh`,
-over the shared NAT network. If no ISO is already selected or present in
-`/var/lib/libvirt/boot`, the installer asks before downloading the current image
-(about 2.76 GB) and verifies its SHA256. No Vagrant installation or
-scenario-specific libvirt network setup is needed. Install the test environment
-with its KVM profile, activate its Ansible environment, and run a scenario by
-name:
+Guardrail failure exercises are in verify rather than being repeated as
+convergence. Their validation-only converge is not claimed as mutating
+idempotence evidence. Removal fixtures are installed during prepare; normal
+converge remains repeatable. Stateful disruptions and transient membership
+selection belong to verify, not an idempotence rerun.
 
-```bash
-/path/to/idarsi-ansible-test-environments/install.sh kvm ansible-current
-source /path/to/idarsi-ansible-test-environments/.venv/ansible-current/bin/activate
-molecule test -s kvm_patroni_failover
+## Private dependencies and failure-closed context
+
+Every scenario calls [`tests/dependency.py`](tests/dependency.py) through
+Molecule's shell dependency plugin with these explicit effective-config arguments:
+
+```text
+python3 "${MOLECULE_PROJECT_DIRECTORY}/tests/dependency.py"
+  --scenario-directory "${MOLECULE_SCENARIO_DIRECTORY}"
+  --ephemeral-directory "${MOLECULE_EPHEMERAL_DIRECTORY}"
+  --molecule-file "${MOLECULE_FILE}"
+  --env-file "${MOLECULE_ENV_FILE}"
+  --helper-directory "${IDARSI_TEST_ENVIRONMENT}"
 ```
 
-The KVM scenarios use static addresses in a shared subnet, so run one of these
-three-guest scenarios at a time on each test host.
+The YAML folded command is one invocation. The installed shell plugin does not
+export Molecule's computed environment to its subprocess; the bootstrap must
+not assume those keys are already exported. It validates scenario ownership and
+canonical metadata, rejects conflicting inherited bindings, and passes only the
+explicit matching Molecule/helper bindings to the resolver. Genuine
+`IDARSI_RUN_ID`/`IDARSI_HANDOFF*` values are inherited unchanged, never manufactured.
+The returned ephemeral directory must match the explicit effective directory.
+This also preserves nondefault `--env-file` and retained-phase contexts without
+a wrapper or a guessed cache path.
 
-## Running tests
+Allocation-free regression tests exercise the installed Molecule dependency
+subprocess under the existing current and next controllers, using a fake
+resolve-only helper and fake Galaxy installer in an isolated scaffold. They
+cover missing computed environment, retained/custom env-file bindings and
+partial-handoff rejection. This is subprocess-contract evidence, not a native
+backend, collection-installation or PostgreSQL lifecycle pass.
 
-Install or update the shared Podman environment using the
-`idarsi-ansible-test-environments` repository, then activate the desired
-pinned environment before running checks from this role repository:
+It calls `scenario-context resolve` (not
+`init`) before installation, validates the returned contract and destination,
+and installs role-owned manifests under the resolved private collections
+directory with an installation lock. Common pins are in
+[`tests/collections.yml`](tests/collections.yml); scenario-specific manifests
+remain in their scenario directories. Nothing is installed into a shared venv.
+Galaxy's child environment sets `ANSIBLE_COLLECTIONS_PATH` to **only** the
+resolved private destination and `ANSIBLE_COLLECTIONS_SCAN_SYS_PATH=false`;
+the obsolete plural path alias is removed. It never appends shared search
+roots. Role-owned manifests use exact FQCN/version pins. While retaining the
+installation lock, bootstrap verifies regular, non-symlink `MANIFEST.json` and
+`FILES.json` beneath the physical private collection directory and checks its
+namespace, name and version. A successful Galaxy no-op is not installation proof.
 
-```bash
-cd /path/to/idarsi-ansible-test-environments
-./install.sh podman ansible-current
-source .venv/ansible-current/bin/activate
-cd /path/to/ansible-iac-role-postgresql
-ANSIBLE_ROLES_PATH=.. ansible-lint --profile production
-ANSIBLE_ROLES_PATH=.. ansible-playbook --syntax-check \
-  -i docs/inventory-example.yml docs/playbook-example.yml
-molecule test -s rocky9-full
+An offline real-Galaxy regression builds a tiny local fixture archive entirely
+in temporary storage. An exact version already installed in a separate external
+search root reproduces the old `-p`-only no-op; the isolated child environment
+must physically install it privately, and a repeat must retain that installation.
+No role dependencies are fetched and no shared controller is modified.
+
+Keep the exact effective safe-files glob
+`${MOLECULE_EPHEMERAL_DIRECTORY}/collections/*`. It prevents Molecule's
+post-destroy pruning from deleting private dependencies. Partial/invalid
+`IDARSI_RUN_ID` or `IDARSI_HANDOFF*` context must reject before mutation; never
+fall back to direct mode. The execution context is not public `iac_blueprint`.
+
+## Direct operation without the TUI
+
+From the role root, with portable checkout paths and already prepared images:
+
+```sh
+export IDARSI_TEST_ENVIRONMENT="/path/to/idarsi-ansible-test-environments"
+source "$IDARSI_TEST_ENVIRONMENT/.venv/ansible-current/bin/activate"
+git submodule update --init --recursive
+
+# Read-only effective-configuration checks; not backend lifecycle acceptance.
+"$IDARSI_TEST_ENVIRONMENT/scripts/scenario-context" capabilities \
+  --backend kvm --scenario kvm-replication --role "$PWD"
+"$IDARSI_TEST_ENVIRONMENT/scripts/scenario-context" resolve \
+  --backend kvm --scenario kvm-replication --role "$PWD"
+
+molecule test -s kvm-replication
+# Or retain guests between ordinary separate commands, stopping on failure:
+molecule create -s kvm-replication &&
+molecule prepare -s kvm-replication &&
+molecule converge -s kvm-replication &&
+molecule verify -s kvm-replication &&
+molecule destroy -s kvm-replication
 ```
 
-Molecule's current releases do not provide Ansible Lint as a built-in
-scenario phase, so this is a separate static-analysis gate in the same test
-workflow. The repository's `.ansible-lint` file keeps the profile and shared
-exclusions in version control.
+Use any scenario above with its image prerequisites. Direct create/converge/
+verify/destroy do not require the TUI or supervisor wrapper. Direct context
+identity includes the canonical role checkout, scenario, backend and effective
+ephemeral directory. Same-context direct concurrency is unsupported.
+Standalone `create` does not imply the `prepare` phase has run: for fixture-heavy
+scenarios, explicitly run `molecule prepare -s SCENARIO` between create and
+converge, as Molecule's ordinary phase model requires. `molecule test` runs it
+automatically. Separate-phase acceptance must include that prerequisite rather
+than weakening or skipping fixture assertions.
 
-Run all automated scenarios from the role directory. This excludes the
-resource-intensive manual KVM scenarios:
+## Optional supervised CLI and TUI
 
-```bash
-for scenario in molecule/*; do
-    case "${scenario##*/}" in
-        kvm_*) continue ;;
-    esac
-    molecule test -s "${scenario##*/}" || exit 1
-done
+```sh
+"$IDARSI_TEST_ENVIRONMENT/scripts/test-run" run \
+  --backend kvm --scenario kvm-replication "$PWD"
 ```
 
-Run the supplemental manual KVM scenarios separately after installing the shared
-test environment:
+Use the existing TUI environment for explicit matrix selection:
 
-```bash
-for scenario in molecule/kvm_*; do
-    molecule test -s "${scenario##*/}" || exit 1
-done
+```sh
+idarsi-tests-run list --role postgresql --roles-dir "$ROLES_DIR" \
+  --environment-repository "$IDARSI_TEST_ENVIRONMENT"
+idarsi-tests-run plan --role postgresql --roles-dir "$ROLES_DIR" \
+  --environment-repository "$IDARSI_TEST_ENVIRONMENT" \
+  --cell kvm-replication whole_scenario 'whole scenario' ansible-current
+idarsi-tests-run run --role postgresql --roles-dir "$ROLES_DIR" \
+  --environment-repository "$IDARSI_TEST_ENVIRONMENT" \
+  --cell kvm-replication whole_scenario 'whole scenario' ansible-current \
+  --expect-sha FULL_APPROVED_COMMIT_SHA --yes
 ```
 
-Run an individual scenario:
+In the GUI, Space selects the exact scenario/lane, `r` previews, `y` confirms.
+Planning, lack of a lock icon, or an apparent worker exit is not execution or
+cleanup proof. Record actual GUI-origin campaign/cell evidence separately from
+CLI-origin results. The supervisor executes the whole scenario once.
 
-```bash
-molecule test -s <scenario>
-```
+## Verification ownership, CI and recovery
 
-Useful scenarios include:
+Developers run only cheap YAML/JSON parsing, focused unit/contract/syntax checks
+and `git diff --check` using existing tools. The tester owns infrastructure,
+full tests, separate phases, negative handoff probes, idempotence, supported
+controller/OS coverage, cancellation/concurrency, supervised CLI and actual GUI
+acceptance. Report exact commands and results and do not repeat passing developer
+checks unless code changed or independent reproduction is needed.
 
-```bash
-molecule test -s rocky9-full
-molecule test -s validation
-molecule test -s timescaledb
-molecule test -s replication
-molecule test -s patroni_config
-molecule test -s patroni_membership
-molecule test -s patroni_failover
-molecule test -s rocky9-etcd-cluster
-molecule test -s rocky9-etcd-tls-member
-molecule test -s rocky9-etcd-tls-cluster
-molecule test -s kvm_patroni_failover
-molecule test -s kvm_etcd_quorum
-molecule test -s kvm_etcd_leader_failure
-molecule test -s kvm_hard_patroni_failure
-molecule test -s kvm_network_partition
-molecule test -s kvm_quorum_primary_failure
-molecule test -s kvm_restart_smoke
-molecule test -s kvm_tls_rotation
-molecule test -s kvm_etcd_snapshot_restore
-molecule test -s el9-el10-etcd-matrix
-molecule test -s rhel9-full
-molecule test -s rocky10-baseline
-molecule test -s rhel10-baseline
-molecule test -s fedora43-baseline
-molecule test -s fedora44-baseline
-```
+Python static typing and dedicated Python security analysis of
+`tests/dependency.py` remain **unverified**. Focused unit, syntax and formatting
+checks do not establish complete Python acceptance; no missing tools were
+installed to perform these checks.
 
-Run only syntax checks when working on task or scenario structure:
+CI static checks run on proposed changes. Managed runtime jobs require prepared
+self-hosted runners, both backend discovery permissions, existing pinned
+controllers, exact compatible helper and prepared images. The workflow must not
+pretend that an Ubuntu runner with Podman alone can exercise full KVM tests.
+Configured fast/daily/forward-compatibility intent is not an executed CI pass;
+the remaining workload/platform matrix is unverified and Fedora 43 is blocked.
+The `idarsi-managed-tests` GitHub environment must have operator approval and
+appropriate protection before self-hosted execution; fork PRs do not run that
+job. The two controller lanes are serialized. Runner registration, environment
+protection and required-check enforcement are operator configuration, not
+established evidence from this source change.
 
-```bash
-molecule syntax -s <scenario>
-```
-
-The scenarios use Ansible Galaxy collections for their test infrastructure.
-The role itself uses only `ansible.builtin.*` modules and does not require
-those test-driver collections at runtime.
+Only fresh original-context authoritative `cleaned` inspection establishes
+cleanup. Preserve journals and leases after incomplete mutations, including
+failed guest control; do not use raw virsh, guessed physical names, force-unlock,
+delete state, or purge host resources. Recovery can legitimately be inspection
+only. Consult the shared contract and escalate instead of inventing a workaround.
+The known production limitations in the
+[maturity evidence note](docs/maturity-evidence.md) are outside this migration.

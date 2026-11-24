@@ -1,0 +1,38 @@
+---
+dependency:
+  name: "shell"
+  command: >-
+    python3 "${MOLECULE_PROJECT_DIRECTORY}/tests/dependency.py"
+    --scenario-directory "${MOLECULE_SCENARIO_DIRECTORY}"
+    --ephemeral-directory "${MOLECULE_EPHEMERAL_DIRECTORY}"
+    --molecule-file "${MOLECULE_FILE}"
+    --env-file "${MOLECULE_ENV_FILE}"
+    --helper-directory "${IDARSI_TEST_ENVIRONMENT}"
+driver:
+  name: "default"
+  safe_files:
+    - "${MOLECULE_EPHEMERAL_DIRECTORY}/collections/*"
+  options:
+    managed: true
+platforms:
+  - name: "etcd-el9"
+    image_path: "${IDARSI_TEST_KVM_ROCKY9_IMAGE}"
+    ssh_user: "molecule"
+    memory_mb: 2048
+    vcpus: 2
+  - name: "etcd-el10"
+    image_path: "${IDARSI_TEST_KVM_ROCKY10_IMAGE}"
+    ssh_user: "molecule"
+    memory_mb: 2048
+    vcpus: 2
+provisioner:
+  name: "ansible"
+  env:
+    ANSIBLE_COLLECTIONS_PATH: "${MOLECULE_EPHEMERAL_DIRECTORY}/collections"
+    IDARSI_MOLECULE_BACKEND: "kvm"
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/.."
+  playbooks:
+    create: "${IDARSI_TEST_ENVIRONMENT}/molecule/managed/create.yml"
+    destroy: "${IDARSI_TEST_ENVIRONMENT}/molecule/managed/destroy.yml"
+verifier:
+  name: "ansible"

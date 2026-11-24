@@ -1,0 +1,57 @@
+---
+###############################################################################
+# fixtures.yml
+# @author Arsi Atomi
+###############################################################################
+- name: "Prepare bind guardrail fixture"
+  hosts: "all"
+  become: true
+  tasks:
+    - name: "Check existing fixture mount"
+      ansible.builtin.command: "findmnt -n -M /var/lib/pgsql -o SOURCE"
+      register: pg_molecule_existing_bind_mount
+      changed_when: false
+      failed_when: false
+    - name: "Unmount previous fixture mount"
+      ansible.builtin.command: "umount /var/lib/pgsql"
+      register: pg_molecule_umount_result
+      failed_when: false
+      changed_when: pg_molecule_umount_result.rc == 0
+      when: pg_molecule_existing_bind_mount.rc == 0
+    - name: "Lazy-unmount busy previous fixture mount"
+      ansible.builtin.command: "umount -l /var/lib/pgsql"
+      when:
+        - pg_molecule_existing_bind_mount.rc == 0
+        - pg_molecule_umount_result.rc is defined
+        - pg_molecule_umount_result.rc != 0
+    - name: "Remove old test fstab entry"
+      ansible.builtin.lineinfile:
+        path: "/etc/fstab"
+        regexp: "^/srv/data/pgsql\\s+/var/lib/pgsql\\s+none\\s+bind\\s+0\\s+0$"
+        state: "absent"
+      failed_when: false
+    - name: "Remove previous fixture directories"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: "absent"
+      loop:
+        - "/srv/data/pgsql"
+        - "/var/lib/pgsql"
+        - "/var/log/pgsql"
+        - "/tmp/pgsql17"
+        - "/tmp/bind-guardrails"
+    - name: "Create marker directory"
+      ansible.builtin.file:
+        path: "/tmp/bind-guardrails"
+        state: "directory"
+        owner: "root"
+        group: "root"
+        mode: "0755"
+    - name: "Ensure test fstab exists"
+      ansible.builtin.copy:
+        dest: "/etc/fstab"
+        owner: "root"
+        group: "root"
+        mode: "0644"
+        force: false
+        content: ""

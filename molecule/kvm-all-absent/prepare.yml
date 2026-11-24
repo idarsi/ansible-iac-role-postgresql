@@ -1,0 +1,9 @@
+---
+###############################################################################
+# prepare.yml
+# @author Arsi Atomi
+###############################################################################
+- name: "Prepare cleanup guest"
+  ansible.builtin.import_playbook: "../../tests/prepare.yml"
+- name: "Install cleanup fixture"
+  ansible.builtin.import_playbook: "fixtures.yml"

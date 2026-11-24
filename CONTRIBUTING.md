@@ -23,7 +23,9 @@ in the preflight validation. Checks that depend on the current host,
 installed packages, services, files, or database state remain in the
 state-specific tasks.
 
-All role states run inventory validation before their state-specific work. The
+Inventory validation is intended before state-specific work; the known uninstall
+cleanup bypass is an out-of-scope limitation documented in
+[the evidence note](docs/maturity-evidence.md). The
 validation-only state can be used for fast checks without applying PostgreSQL
 changes:
 
@@ -34,24 +36,29 @@ changes:
 
 ## Tests
 
+Use the existing approved controller and prerequisites in [TESTING.md](TESTING.md).
+The runtime commands below are tester/operator checks. Developers run cheap
+targeted parsing, contract/unit, syntax and diff checks unless explicitly assigned
+runtime verification; they must not install or upgrade shared tooling.
+
 Run the validation scenario while working on blueprint validation:
 
 ```bash
-molecule test -s validation
+molecule test -s podman-validation
 ```
 
 Run the TimescaleDB package-source scenario when changing TimescaleDB package,
 repository, or preload behavior:
 
 ```bash
-molecule test -s timescaledb
+molecule test -s kvm-timescaledb
 ```
 
-Run the `rocky9-full` scenario after changes that affect normal installation or
+Run the `kvm-full` scenario after changes that affect normal installation or
 configuration behavior:
 
 ```bash
-molecule test -s rocky9-full
+molecule test -s kvm-full
 ```
 
 New validation scenarios should cover both successful input and the expected

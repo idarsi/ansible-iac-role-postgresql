@@ -1,6 +1,27 @@
 > **Maturity State: Beta**<br>
 > **RC Readiness: 86%**
 
+The Beta/86% summary is retained historical project metadata; its original
+scorecard is not tracked. It is not a new assessment or a managed-runtime pass.
+An independent read-only reconstruction produced 65% under the current rubric,
+not an accepted replacement score or evidence of regression. See the
+[assessment evidence note](docs/maturity-evidence.md) for methodology and
+limitations, and [TESTING.md](TESTING.md) for declared versus verified coverage.
+
+Post-implementation review of `45f3547` plus dirty migration changes reconstructed
+**66% / Beta**, up from the separate pre-migration 65% solely because test and
+limitation documentation improved from 1/2 to 2/2; all other criteria are
+unchanged. This is not a replacement for historical 86%. Representative direct,
+managed CLI and actual GUI tests now pass, including PostgreSQL replication and
+owned hard-primary failure/rejoin. These tested dirty role sources, not a later
+documentation commit. The tested helper normalizer fix is now recorded in the
+reviewed local follow-up commit and [pinned](tests/helper-revision.txt), without
+rewriting its dirty-source runtime provenance. The full 25-scenario
+OS/controller matrix remains unverified; Fedora 43 lacks media. Remote helper
+publication and hosted CI acceptance remain unverified.
+See the [baseline and final assessment evidence](docs/maturity-evidence.md)
+and [runtime acceptance ledger](TESTING.md#runtime-acceptance-ledger-2026-11-24).
+
 ANSIBLE-IAC-ROLE-POSTGRESQL
 ===============================
 **COPYRIGHT** 2026 ^(ida|arsi)$ collective
@@ -35,9 +56,9 @@ Supported platforms
 
 | Operating system                  | Supported versions                | Automated test coverage                   |
 |-----------------------------------|-----------------------------------|-------------------------------------------|
-| Rocky Linux                       | 9, 10                             | 9, 10 (Molecule; see [TESTING.md](TESTING.md)) |
-| Red Hat Enterprise Linux (UBI)    | 9, 10                             | 9, 10 (Molecule; see [TESTING.md](TESTING.md)) |
-| Fedora                            | 43, 44                            | 43, 44 (Molecule; see [TESTING.md](TESTING.md)) |
+| Rocky Linux                       | 9, 10                             | Representative 9 replication/hard-failure passes; remaining matrix unverified ([TESTING.md](TESTING.md)) |
+| Red Hat Enterprise Linux           | 9, 10                             | Declared KVM matrix; historical UBI tests do not prove full RHEL ([TESTING.md](TESTING.md)) |
+| Fedora                            | 43, 44                            | Declared KVM matrix; runtime acceptance pending ([TESTING.md](TESTING.md)) |
 
 Supported states
 ----------------

@@ -1,0 +1,9 @@
+---
+###############################################################################
+# prepare.yml
+# @author Arsi Atomi
+###############################################################################
+- name: "Prepare bind-test guest"
+  ansible.builtin.import_playbook: "../../tests/prepare.yml"
+- name: "Prepare bind conflict fixtures"
+  ansible.builtin.import_playbook: "fixtures.yml"

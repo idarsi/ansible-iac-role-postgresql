@@ -1,0 +1,998 @@
+---
+- name: "Validate a valid PostgreSQL blueprint"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    http_proxy: "http://127.0.0.1:1"
+    no_proxy: ""
+    pg_etcd_bind_address: "192.0.2.10"
+    iac_blueprint:
+      postgresql:
+        - version: 16
+          instances:
+            - name: apache
+              databases:
+                - name: metrics
+                  extensions:
+                    - name: timescaledb
+        - version: 17
+          post_install:
+            jobs:
+              - database: metrics
+                sql: "CREATE TABLE IF NOT EXISTS validation_marker (id integer);"
+          clusters:
+            - name: validation-cluster
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints:
+                  - https://etcd01.example.org:2379
+                  - https://etcd02.example.org:2379
+                etcd:
+                  enabled: true
+                  initial_cluster_token: validation-dcs
+                  members:
+                    - name: etcd01
+                      host: etcd01.example.org
+                      peer_url: https://etcd01.example.org:2380
+                      client_url: https://etcd01.example.org:2379
+                    - name: etcd02
+                      host: etcd02.example.org
+                      peer_url: https://etcd02.example.org:2380
+                      client_url: https://etcd02.example.org:2379
+                  tls:
+                    enabled: true
+                    auto_generate: true
+              patroni:
+                ttl: 30
+                loop_wait: 10
+                retry_timeout: 10
+                restapi:
+                  listen: "[2001:db8::1]:8008"
+                  auto_generate: true
+                  authentication:
+                    username: patroni
+                    password: patroni_password
+              members:
+                - host: instance-idarsi-validation
+                  instance: community
+                  name: validation-member
+          instances:
+            - name: community
+              cluster: validation-cluster
+              databases:
+                - name: metrics
+                  extensions:
+                    - name: timescaledb
+                      source: community
+                    - name: pgcrypto
+  tasks:
+    - name: "Running validation for a valid blueprint"
+      ansible.builtin.include_role:
+        name: ansible-iac-role-postgresql
+
+    - name: "Checking validate state skipped proxy runtime checks"
+      ansible.builtin.assert:
+        that:
+          - proxy_host is not defined
+          - proxy_port is not defined
+        fail_msg: "Validate state must not derive proxy runtime connection details"
+
+    - name: "Writing valid blueprint marker"
+      ansible.builtin.copy:
+        dest: /tmp/postgresql-validation-valid.ok
+        content: "ok\n"
+        mode: "0644"
+
+- name: "Reject a bracketed wildcard Patroni REST API listen address"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: bracketed-wildcard-listen
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints:
+                  - https://etcd01.example.org:2379
+              patroni:
+                restapi:
+                  listen: "[::]:8008"
+                  authentication: {username: patroni, password: patroni_password}
+              members:
+                - host: instance-idarsi-validation
+                  instance: main
+                  name: bracketed-wildcard-listen-member
+          instances:
+            - name: main
+              cluster: bracketed-wildcard-listen
+  tasks:
+    - name: "Running validation expecting bracketed wildcard listen failure"
+      block:
+        - name: "Applying a bracketed wildcard Patroni REST API listen address"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if bracketed wildcard listen was accepted"
+          ansible.builtin.fail:
+            msg: "Bracketed wildcard Patroni REST API listen address was accepted"
+      rescue:
+        - name: "Checking bracketed wildcard listen failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("Patroni REST API must not listen on a wildcard address")
+        - name: "Writing bracketed wildcard listen marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-bracketed-wildcard-listen.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject duplicate managed etcd member names"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    pg_etcd_bind_address: "192.0.2.10"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: duplicate-etcd-members
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints:
+                  - https://etcd01.example.org:2379
+                etcd:
+                  enabled: true
+                  initial_cluster_token: duplicate-dcs
+                  members:
+                    - name: duplicate
+                      host: etcd01.example.org
+                      peer_url: https://etcd01.example.org:2380
+                      client_url: https://etcd01.example.org:2379
+                    - name: duplicate
+                      host: etcd02.example.org
+                      peer_url: https://etcd02.example.org:2380
+                      client_url: https://etcd02.example.org:2379
+                  tls:
+                    enabled: true
+                    client:
+                      ca_file: /etc/etcd/pki/ca.crt
+                      cert_file: /etc/etcd/pki/etcd-client.crt
+                      key_file: /etc/etcd/pki/etcd-client.key
+                    peer:
+                      ca_file: /etc/etcd/pki/ca.crt
+                      cert_file: /etc/etcd/pki/etcd-peer.crt
+                      key_file: /etc/etcd/pki/etcd-peer.key
+              patroni:
+                restapi:
+                  authentication: {username: patroni, password: patroni_password}
+              members:
+                - host: instance-idarsi-validation
+                  instance: main
+                  name: duplicate-etcd-member-test
+          instances:
+            - name: main
+              cluster: duplicate-etcd-members
+  tasks:
+    - name: "Running validation expecting duplicate managed etcd member failure"
+      block:
+        - name: "Applying duplicate managed etcd member names"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if duplicate managed etcd names were accepted"
+          ansible.builtin.fail:
+            msg: "Duplicate managed etcd member names were accepted"
+      rescue:
+        - name: "Checking duplicate managed etcd member failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("Managed etcd member names must be unique")
+        - name: "Writing duplicate managed etcd marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-duplicate-etcd-member.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject incomplete managed etcd TLS configuration"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    pg_etcd_bind_address: "192.0.2.10"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: incomplete-etcd-tls
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints:
+                  - https://etcd01.example.org:2379
+                etcd:
+                  enabled: true
+                  initial_cluster_token: incomplete-tls
+                  members:
+                    - name: etcd01
+                      host: etcd01.example.org
+                      peer_url: https://etcd01.example.org:2380
+                      client_url: https://etcd01.example.org:2379
+                  tls:
+                    enabled: true
+                    client:
+                      ca_file: /etc/etcd/pki/ca.crt
+              patroni:
+                restapi:
+                  authentication: {username: patroni, password: patroni_password}
+              members:
+                - host: instance-idarsi-validation
+                  instance: main
+                  name: incomplete-etcd-tls-member
+          instances:
+            - name: main
+              cluster: incomplete-etcd-tls
+  tasks:
+    - name: "Running validation expecting incomplete TLS failure"
+      block:
+        - name: "Applying incomplete managed etcd TLS configuration"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if incomplete TLS was accepted"
+          ansible.builtin.fail:
+            msg: "Incomplete managed etcd TLS configuration was accepted"
+      rescue:
+        - name: "Checking incomplete TLS failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("Managed etcd TLS requires client and peer CA")
+        - name: "Writing incomplete TLS marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-incomplete-etcd-tls.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject an unsupported TimescaleDB source"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: main
+              databases:
+                - name: metrics
+                  extensions:
+                    - name: timescaledb
+                      source: unsupported
+  tasks:
+    - name: "Running validation expecting an invalid source failure"
+      block:
+        - name: "Applying invalid TimescaleDB source"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if invalid source was accepted"
+          ansible.builtin.fail:
+            msg: "Unsupported TimescaleDB source was accepted"
+      rescue:
+        - name: "Checking invalid source failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("TimescaleDB source must be either 'pgdg' or 'community'")
+        - name: "Writing invalid source marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-invalid-source.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject invalid Patroni timeout values"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: invalid-timeouts
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints:
+                  - https://etcd01.example.org:2379
+              patroni:
+                ttl: 20
+                loop_wait: 10
+                retry_timeout: 10
+                restapi:
+                  authentication: {username: patroni, password: patroni_password}
+              members:
+                - host: instance-idarsi-validation
+                  instance: main
+                  name: invalid-timeout-member
+          instances:
+            - name: main
+              cluster: invalid-timeouts
+  tasks:
+    - name: "Running validation expecting invalid Patroni timeout failure"
+      block:
+        - name: "Applying invalid Patroni timeout configuration"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if invalid Patroni timeouts were accepted"
+          ansible.builtin.fail:
+            msg: "Invalid Patroni timeout values were accepted"
+      rescue:
+        - name: "Checking invalid Patroni timeout failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search('Patroni requires loop_wait')
+        - name: "Writing invalid Patroni timeout marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-patroni-timeout.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject a Patroni instance without a local cluster member"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: missing-member
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints:
+                  - https://etcd01.example.org:2379
+              patroni:
+                restapi:
+                  authentication: {username: patroni, password: patroni_password}
+              members:
+                - host: another-host.example.org
+                  instance: main
+                  name: another-member
+          instances:
+            - name: main
+              cluster: missing-member
+  tasks:
+    - name: "Running validation expecting missing local member failure"
+      block:
+        - name: "Applying Patroni configuration without a local member"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if missing local member was accepted"
+          ansible.builtin.fail:
+            msg: "A Patroni instance without a local member was accepted"
+      rescue:
+        - name: "Checking missing local member failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("must reference an existing cluster and have exactly one member")
+        - name: "Writing missing local member marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-patroni-member.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject conflicting TimescaleDB sources for one PostgreSQL version"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: pgdg
+              databases:
+                - name: metrics
+                  extensions:
+                    - name: timescaledb
+            - name: community
+              databases:
+                - name: metrics
+                  extensions:
+                    - name: timescaledb
+                      source: community
+  tasks:
+    - name: "Running validation expecting a source conflict failure"
+      block:
+        - name: "Applying conflicting TimescaleDB sources"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if conflicting sources were accepted"
+          ansible.builtin.fail:
+            msg: "Conflicting TimescaleDB sources were accepted"
+      rescue:
+        - name: "Checking source conflict failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("requests multiple TimescaleDB sources")
+        - name: "Writing source conflict marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-source-conflict.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject duplicate PostgreSQL instance names"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: duplicate
+            - name: duplicate
+  tasks:
+    - name: "Running validation expecting duplicate instance failure"
+      block:
+        - name: "Applying duplicate PostgreSQL instance names"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if duplicate instance names were accepted"
+          ansible.builtin.fail:
+            msg: "Duplicate PostgreSQL instance names were accepted"
+      rescue:
+        - name: "Checking duplicate instance failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("PostgreSQL instance names must be unique")
+        - name: "Writing duplicate instance marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-duplicate-instance.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject a Patroni cluster without DCS endpoints"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: missing-dcs-endpoints
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints: []
+              patroni:
+                restapi:
+                  authentication: {username: patroni, password: patroni_password}
+              members:
+                - host: instance-idarsi-validation
+                  instance: main
+                  name: missing-dcs-endpoints-member
+          instances:
+            - name: main
+              cluster: missing-dcs-endpoints
+  tasks:
+    - name: "Running validation expecting missing DCS endpoints failure"
+      block:
+        - name: "Applying Patroni configuration without DCS endpoints"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if missing DCS endpoints were accepted"
+          ansible.builtin.fail:
+            msg: "A Patroni cluster without DCS endpoints was accepted"
+      rescue:
+        - name: "Checking missing DCS endpoints failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("require a DCS provider, a list of DCS endpoints")
+        - name: "Writing missing DCS endpoints marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-missing-dcs-endpoints.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject duplicate Patroni cluster member names"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: duplicate-patroni-members
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints:
+                  - https://etcd01.example.org:2379
+              patroni:
+                restapi:
+                  authentication: {username: patroni, password: patroni_password}
+              members:
+                - host: instance-idarsi-validation
+                  instance: main
+                  name: duplicate-member
+                - host: another-host.example.org
+                  instance: main
+                  name: duplicate-member
+          instances:
+            - name: main
+              cluster: duplicate-patroni-members
+  tasks:
+    - name: "Running validation expecting duplicate Patroni member failure"
+      block:
+        - name: "Applying duplicate Patroni member names"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if duplicate Patroni member names were accepted"
+          ansible.builtin.fail:
+            msg: "Duplicate Patroni cluster member names were accepted"
+      rescue:
+        - name: "Checking duplicate Patroni member failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("PostgreSQL cluster member names must be unique")
+        - name: "Writing duplicate Patroni member marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-duplicate-patroni-member.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject a standby that preloads TimescaleDB without package metadata"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: standby
+              replication:
+                role: standby
+                primary_host: primary.example.org
+                primary_port: 5432
+                replication_user: replicator
+                replication_password: changeme
+              configuration:
+                shared_preload_libraries: "timescaledb"
+  tasks:
+    - name: "Running validation expecting missing TimescaleDB metadata failure"
+      block:
+        - name: "Applying invalid standby TimescaleDB configuration"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if missing TimescaleDB metadata was accepted"
+          ansible.builtin.fail:
+            msg: "Standby TimescaleDB metadata omission was accepted"
+      rescue:
+        - name: "Checking missing TimescaleDB metadata failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("Standby instances that preload TimescaleDB")
+        - name: "Writing missing TimescaleDB metadata marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-standby-timescaledb.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject a missing PostgreSQL blueprint"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+  tasks:
+    - name: "Running validation expecting a missing blueprint failure"
+      block:
+        - name: "Applying a role invocation without a blueprint"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if a missing blueprint was accepted"
+          ansible.builtin.fail:
+            msg: "A missing PostgreSQL blueprint was accepted"
+      rescue:
+        - name: "Checking missing blueprint failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - ansible_failed_result.msg is not search("A missing PostgreSQL blueprint was accepted")
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("iac_blueprint or iac_blueprint.postgresql is not defined")
+        - name: "Writing missing blueprint marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-missing-blueprint.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject a PostgreSQL blueprint with an invalid root type"
+  hosts: all
+  become: false
+  vars:
+    state: "validate"
+    iac_blueprint: "invalid-root"
+  tasks:
+    - name: "Running validation expecting an invalid blueprint root failure"
+      block:
+        - name: "Applying an invalid PostgreSQL blueprint root"
+          ansible.builtin.include_role:
+            name: "ansible-iac-role-postgresql"
+        - name: "Failing if an invalid blueprint root was accepted"
+          ansible.builtin.fail:
+            msg: "An invalid PostgreSQL blueprint root was accepted"
+      rescue:
+        - name: "Checking invalid blueprint root failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - ansible_failed_result.msg is not search("An invalid PostgreSQL blueprint root was accepted")
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("iac_blueprint must be a mapping containing postgresql")
+        - name: "Writing invalid blueprint root marker"
+          ansible.builtin.copy:
+            dest: "/tmp/postgresql-validation-invalid-root.ok"
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject an unsupported PostgreSQL state"
+  hosts: all
+  become: false
+  vars:
+    state: "not-a-state"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+  tasks:
+    - name: "Running validation expecting unsupported state failure"
+      block:
+        - name: "Applying an unsupported PostgreSQL state"
+          ansible.builtin.include_role:
+            name: "ansible-iac-role-postgresql"
+        - name: "Failing if unsupported state was accepted"
+          ansible.builtin.fail:
+            msg: "Unsupported PostgreSQL state was accepted"
+      rescue:
+        - name: "Checking unsupported state failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - ansible_failed_result.msg is not search("Unsupported PostgreSQL state was accepted")
+              - '(ansible_failed_result | to_nice_json) is search("Unsupported PostgreSQL role state: not-a-state")'
+
+- name: "Reject Patroni REST API without authentication"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          clusters:
+            - name: missing-restapi-authentication
+              provider: patroni
+              dcs:
+                provider: etcd3
+                endpoints:
+                  - https://etcd01.example.org:2379
+              patroni:
+                restapi: {}
+              members:
+                - host: instance-idarsi-validation
+                  instance: main
+                  name: missing-restapi-authentication-member
+          instances:
+            - name: main
+              cluster: missing-restapi-authentication
+  tasks:
+    - name: "Running validation expecting missing REST API authentication failure"
+      block:
+        - name: "Applying Patroni configuration without REST API authentication"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if missing REST API authentication was accepted"
+          ansible.builtin.fail:
+            msg: "Patroni REST API without authentication was accepted"
+      rescue:
+        - name: "Checking missing REST API authentication failure message"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("REST API authentication credentials")
+        - name: "Writing missing REST API authentication marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-missing-restapi-authentication.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject PostgreSQL post-install shell commands"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          post_install:
+            jobs:
+              - command: "id"
+                run_as: root
+          instances:
+            - name: main
+  tasks:
+    - name: "Running validation expecting post-install shell rejection"
+      block:
+        - name: "Applying a shell post-install job"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if shell post-install was accepted"
+          ansible.builtin.fail:
+            msg: "Shell post-install job was accepted"
+      rescue:
+        - name: "Checking post-install shell rejection"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("post-install jobs must use a non-empty sql field")
+        - name: "Writing post-install validation marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-post-install.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject PostgreSQL root cron jobs"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          cron:
+            - name: unsafe
+              user: root
+              job: "/bin/true"
+          instances:
+            - name: main
+  tasks:
+    - name: "Running validation expecting root cron rejection"
+      block:
+        - name: "Applying a root cron job"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if root cron was accepted"
+          ansible.builtin.fail:
+            msg: "Root cron job was accepted"
+      rescue:
+        - name: "Checking root cron rejection"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("must define a non-empty job and run as the postgres user")
+        - name: "Writing cron validation marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-cron.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject PostgreSQL protected filesystem paths"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          files:
+            - path: /etc/patroni/unsafe.yml
+              content: "unsafe\n"
+          instances:
+            - name: main
+  tasks:
+    - name: "Running validation expecting protected path rejection"
+      block:
+        - name: "Applying a protected filesystem path"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if protected path was accepted"
+          ansible.builtin.fail:
+            msg: "Protected filesystem path was accepted"
+      rescue:
+        - name: "Checking protected path rejection"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("filesystem paths must be safe")
+        - name: "Writing filesystem validation marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-filesystem.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject unsafe all_absent cleanup paths"
+  hosts: all
+  become: false
+  vars:
+    state: all_absent
+    pg_bind_dir: /
+    pg_default_dir: /var
+    pg_log_directory: /var/log/../log
+    pg_real_dir: /srv/data/pgsql/../../etc
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: main
+  tasks:
+    - name: "Running validation expecting unsafe cleanup path failure"
+      block:
+        - name: "Applying unsafe all_absent cleanup paths"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if unsafe cleanup paths were accepted"
+          ansible.builtin.fail:
+            msg: "Unsafe all_absent cleanup paths were accepted"
+      rescue:
+        - name: "Checking unsafe cleanup path failure"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("PostgreSQL cleanup paths must be absolute")
+        - name: "Writing cleanup path validation marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-cleanup-path.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject unsafe PostgreSQL instance names"
+  hosts: all
+  become: false
+  vars:
+    state: instances_absent
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: "../unsafe"
+  tasks:
+    - name: "Running validation expecting unsafe instance name failure"
+      block:
+        - name: "Applying an unsafe PostgreSQL instance name"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if unsafe instance name was accepted"
+          ansible.builtin.fail:
+            msg: "Unsafe PostgreSQL instance name was accepted"
+      rescue:
+        - name: "Checking unsafe instance name failure"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("PostgreSQL instance names may contain only")
+        - name: "Writing instance name validation marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-instance-name.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject unsafe absent cleanup paths"
+  hosts: all
+  become: false
+  vars:
+    state: absent
+    pg_real_dir: /etc
+    pg_bind_dir: /var/lib/pgsql
+    iac_blueprint:
+      postgresql:
+        - version: 17
+  tasks:
+    - name: "Running validation expecting unsafe absent cleanup path failure"
+      block:
+        - name: "Applying unsafe absent cleanup paths"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if unsafe absent cleanup paths were accepted"
+          ansible.builtin.fail:
+            msg: "Unsafe absent cleanup paths were accepted"
+      rescue:
+        - name: "Checking unsafe absent cleanup path failure"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("PostgreSQL cleanup paths must be absolute")
+        - name: "Writing absent cleanup path validation marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-absent-cleanup-path.ok
+            content: "ok\n"
+            mode: "0644"
+
+- name: "Reject unsafe version-scoped bind paths"
+  hosts: all
+  become: false
+  vars:
+    state: validate
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          binds:
+            - source: /etc
+              target: /tmp/pgsql-unsafe-bind
+  tasks:
+    - name: "Running validation expecting unsafe version-scoped bind failure"
+      block:
+        - name: "Applying unsafe version-scoped bind paths"
+          ansible.builtin.include_role:
+            name: ansible-iac-role-postgresql
+        - name: "Failing if unsafe version-scoped bind paths were accepted"
+          ansible.builtin.fail:
+            msg: "Unsafe version-scoped bind paths were accepted"
+      rescue:
+        - name: "Checking unsafe version-scoped bind path failure"
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - >-
+                (ansible_failed_result | to_nice_json)
+                is search("version-scoped bind paths must be absolute")
+        - name: "Writing version-scoped bind validation marker"
+          ansible.builtin.copy:
+            dest: /tmp/postgresql-validation-version-bind.ok
+            content: "ok\n"
+            mode: "0644"

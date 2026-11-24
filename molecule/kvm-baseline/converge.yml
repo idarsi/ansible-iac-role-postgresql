@@ -1,0 +1,13 @@
+---
+###############################################################################
+# converge.yml
+# @author Arsi Atomi
+###############################################################################
+- name: "Converge Rocky Linux 10 baseline"
+  ansible.builtin.import_playbook: "rocky10-converge.yml"
+- name: "Converge RHEL 10 baseline"
+  ansible.builtin.import_playbook: "rhel10-converge.yml"
+- name: "Converge Fedora 43 baseline"
+  ansible.builtin.import_playbook: "fedora43-converge.yml"
+- name: "Converge Fedora 44 baseline"
+  ansible.builtin.import_playbook: "fedora44-converge.yml"

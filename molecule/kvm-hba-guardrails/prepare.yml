@@ -1,0 +1,9 @@
+---
+###############################################################################
+# prepare.yml
+# @author Arsi Atomi
+###############################################################################
+- name: "Prepare HBA-test guest"
+  ansible.builtin.import_playbook: "../../tests/prepare.yml"
+- name: "Prepare HBA failure markers"
+  ansible.builtin.import_playbook: "fixtures.yml"

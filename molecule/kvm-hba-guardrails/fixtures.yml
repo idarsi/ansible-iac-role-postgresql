@@ -1,0 +1,20 @@
+---
+###############################################################################
+# fixtures.yml
+# @author Arsi Atomi
+###############################################################################
+- name: "Prepare HBA guardrail markers"
+  hosts: "all"
+  become: true
+  tasks:
+    - name: "Remove stale test markers"
+      ansible.builtin.file:
+        path: "/tmp/hba-guardrails"
+        state: "absent"
+    - name: "Create marker directory"
+      ansible.builtin.file:
+        path: "/tmp/hba-guardrails"
+        state: "directory"
+        owner: "root"
+        group: "root"
+        mode: "0755"

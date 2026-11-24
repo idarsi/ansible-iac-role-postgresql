@@ -4,191 +4,98 @@ on:
   workflow_dispatch:
   pull_request:
   push:
-    branches:
-      - main
+    branches: ["main"]
   schedule:
     - cron: "0 2 * * *"
 
 permissions:
   contents: read
 
+# Do not cancel a supervisor during authoritative cleanup.
 concurrency:
   group: postgresql-role-tests-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
-  ansible-lint:
-    name: Ansible Lint (Ansible Core 2.20.8)
+  static:
+    name: Static contracts (Ansible Core 2.20.8)
     runs-on: ubuntu-latest
     steps:
-      - name: Check out repository
+      - name: Check out role and recorded shared tasks
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
-
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
-
-      - name: Install Ansible Lint
+      - name: Install isolated CI static tools
         run: python -m pip install -r requirements-ci.txt "ansible-core==2.20.8"
-
-      - name: Run production-profile Ansible Lint
+      - name: Run focused contract tests
+        run: python -m unittest discover -s tests -p 'test_*.py'
+      - name: Check whitespace
+        run: git diff --check
+      - name: Run production-profile lint
         env:
           ANSIBLE_ROLES_PATH: ..
         run: ansible-lint --profile production
-
-      - name: Run Ansible syntax check
+      - name: Check documented playbook syntax
         env:
           ANSIBLE_ROLES_PATH: ..
-        run: >-
-          ansible-playbook --syntax-check
-          -i docs/inventory-example.yml
-          docs/playbook-example.yml
+        run: ansible-playbook --syntax-check -i docs/inventory-example.yml docs/playbook-example.yml
 
-  molecule-fast:
-    name: Molecule fast (${{ matrix.scenario }}, Ansible Core 2.20.8)
-    if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
-    runs-on: ubuntu-latest
+  managed:
+    name: Managed whole scenarios (${{ matrix.lane }})
+    # This label is an operator-provisioned capability, not hosted Ubuntu.
+    # Repository code must not mutate shared host/controller configuration.
+    runs-on: [self-hosted, linux, idarsi-ansible-managed-kvm]
+    environment: idarsi-managed-tests
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
-        scenario:
-          - rocky9-full
-          - validation
-          - patroni_unknown_service
-          - rocky10-baseline
-          - rhel10-baseline
-          - fedora44-baseline
-
+        lane: ["ansible-current", "ansible-next"]
+    continue-on-error: ${{ matrix.lane == 'ansible-next' }}
     steps:
-      - name: Check out repository
+      - name: Check out role and recorded shared tasks
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
-
-      - name: Install Podman
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes podman
-
-      - name: Configure Podman storage for GitHub runner
-        run: |
-          mkdir -p "$HOME/.config/containers"
-          printf '%s\n' '[storage]' 'driver = "vfs"' > "$HOME/.config/containers/storage.conf"
-
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.12"
-
-      - name: Install Molecule and Ansible
-        run: python -m pip install -r requirements-ci.txt "ansible-core==2.20.8"
-
-      - name: Run Molecule scenario
+          path: ansible-iac-role-postgresql
+      - name: Validate existing prepared controller and exact helper pin
+        working-directory: ansible-iac-role-postgresql
         env:
-          ANSIBLE_ROLES_PATH: ..
-        run: molecule test -s "${{ matrix.scenario }}"
-
-  molecule-daily:
-    name: Molecule daily (${{ matrix.scenario }}, Ansible Core 2.20.8)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        scenario:
-          - rocky9-full
-          - validation
-          - patroni_unknown_service
-          - all_absent
-          - bind_guardrails
-          - hba_guardrails
-          - replication
-          - timescaledb
-          - patroni_config
-          - patroni_membership
-          - patroni_failover
-          - rocky9-etcd-cluster
-          - rocky9-etcd-tls-member
-          - rocky9-etcd-tls-cluster
-          - el9-el10-etcd-matrix
-          - rhel9-full
-          - rocky10-baseline
-          - rhel10-baseline
-          - fedora43-baseline
-          - fedora44-baseline
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          submodules: recursive
-
-      - name: Install Podman
+          LANE: ${{ matrix.lane }}
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes podman
-
-      - name: Configure Podman storage for GitHub runner
-        run: |
-          mkdir -p "$HOME/.config/containers"
-          printf '%s\n' '[storage]' 'driver = "vfs"' > "$HOME/.config/containers/storage.conf"
-
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.12"
-
-      - name: Install Molecule and Ansible
-        run: python -m pip install -r requirements-ci.txt "ansible-core==2.20.8"
-
-      - name: Run Molecule scenario
+          set -euo pipefail
+          : "${IDARSI_TEST_ENVIRONMENT:?Prepared canonical helper checkout required}"
+          expected="$(cat tests/helper-revision.txt)"
+          [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "Reviewed guest-control helper commit is not yet pinned" >&2; exit 1;
+          }
+          test "$(git -C "$IDARSI_TEST_ENVIRONMENT" rev-parse HEAD)" = "$expected"
+          test -z "$(git -C "$IDARSI_TEST_ENVIRONMENT" status --porcelain)"
+          test -x "$IDARSI_TEST_ENVIRONMENT/.venv/$LANE/bin/molecule"
+          podman info --format json >/dev/null
+          virsh --connect qemu:///system list --all --uuid >/dev/null
+      - name: Run selected complete scenarios under the native supervisor
+        working-directory: ansible-iac-role-postgresql
         env:
-          ANSIBLE_ROLES_PATH: ..
-        run: molecule test -s "${{ matrix.scenario }}"
-
-  molecule-compatibility:
-    name: Compatibility (${{ matrix.scenario }}, Ansible Core ${{ matrix.ansible_core }})
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    continue-on-error: ${{ matrix.ansible_core == '2.21.3' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        ansible_core:
-          - "2.19.12"
-          - "2.21.3"
-        scenario:
-          - validation
-          - rocky9-full
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          submodules: recursive
-
-      - name: Install Podman
+          LANE: ${{ matrix.lane }}
+          EVENT: ${{ github.event_name }}
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes podman
-
-      - name: Configure Podman storage for GitHub runner
-        run: |
-          mkdir -p "$HOME/.config/containers"
-          printf '%s\n' '[storage]' 'driver = "vfs"' > "$HOME/.config/containers/storage.conf"
-
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.12"
-
-      - name: Install compatibility environment
-        run: python -m pip install -r requirements-ci.txt "ansible-core==${{ matrix.ansible_core }}"
-
-      - name: Run compatibility scenario
-        env:
-          ANSIBLE_ROLES_PATH: ..
-        run: molecule test -s "${{ matrix.scenario }}"
+          set -euo pipefail
+          source "$IDARSI_TEST_ENVIRONMENT/.venv/$LANE/bin/activate"
+          export ANSIBLE_ROLES_PATH="$PWD/.."
+          if [[ "$EVENT" == schedule || "$EVENT" == workflow_dispatch ]]; then
+            mapfile -t scenarios < <(python -c 'import json; print("\n".join(json.load(open("role-test.json"))["scenarios"]))')
+          else
+            scenarios=(podman-validation kvm-full kvm-patroni-unknown-service kvm-baseline)
+          fi
+          for scenario in "${scenarios[@]}"; do
+            backend=kvm
+            [[ "$scenario" != podman-validation ]] || backend=podman
+            "$IDARSI_TEST_ENVIRONMENT/scripts/test-run" run \
+              --backend "$backend" --scenario "$scenario" "$PWD"
+          done

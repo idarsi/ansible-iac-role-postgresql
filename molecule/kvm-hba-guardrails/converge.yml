@@ -1,0 +1,17 @@
+---
+###############################################################################
+# converge.yml
+# @author Arsi Atomi
+###############################################################################
+- name: "Validate a normal blueprint before negative HBA tests"
+  hosts: "all"
+  become: true
+  vars:
+    state: "validate"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: "main"
+  roles:
+    - role: "ansible-iac-role-postgresql"
