@@ -89,11 +89,13 @@ was cleaned by approved rootless, bounded normal-libvirt reconciliation; its
 original destroy remains unsealed, not retroactively PASS. None of these cleanup
 claims establishes universal firewall cleanliness.
 
-**Not verified:** the complete 25-scenario suite, full OS/controller matrix,
+**At the 2026-11-24 ledger date, not verified:** the complete 25-scenario suite,
+full OS/controller matrix,
 hosted GitHub CI/enforcement, or remote helper publication. Remaining scenarios,
 including the six-VM external-DCS cases, are optional future qualification,
 not completed acceptance.
-The helper follow-up commit is now pinned; publication/CI evidence remains absent.
+At that point, the helper follow-up commit was pinned but publication/CI evidence
+was absent.
 Raw logs, private paths and generated credentials are not stored here.
 
 ### Fedora 43 test retirement
@@ -123,8 +125,9 @@ pins, or reconfigure the host to make a role check pass. Initialize the existing
 The reviewed helper revision in
 [`tests/helper-revision.txt`](tests/helper-revision.txt) is local commit
 `aa0e2a7677f66e9b00658ec3d655243634f654a0`, including the tested normalizer
-fix. Operators need this exact compatible checkout; its remote publication
-remains unverified. Earlier passes retain their actual `f9f0…` clean/dirty
+fix. Operators need this exact compatible checkout for local direct/TUI runs;
+the hosted static workflow does not need a helper checkout or native backends.
+Earlier passes retain their actual `f9f0…` clean/dirty
 runtime qualifications above rather than claiming a rerun at the new commit.
 All scenarios require
 `idarsi.scenario-context/v1`, validated effective configuration and both
@@ -374,17 +377,34 @@ Python static typing and dedicated Python security analysis of
 checks do not establish complete Python acceptance; no missing tools were
 installed to perform these checks.
 
-CI static checks run on proposed changes. Managed runtime jobs require prepared
-self-hosted runners, both backend discovery permissions, existing pinned
-controllers, exact compatible helper and prepared images. The workflow must not
-pretend that an Ubuntu runner with Podman alone can exercise full KVM tests.
-Configured fast/daily/forward-compatibility intent is not an executed CI pass;
-the remaining workload/platform matrix is unverified. Fedora 43 tests are retired.
-The `idarsi-managed-tests` GitHub environment must have operator approval and
-appropriate protection before self-hosted execution; fork PRs do not run that
-job. The two controller lanes are serialized. Runner registration, environment
-protection and required-check enforcement are operator configuration, not
-established evidence from this source change.
+CI static checks run on proposed changes. Before lint and documented-playbook
+syntax checking, the hosted static job installs the existing exact pins from
+`tests/collections.yml` into a job-private directory under `runner.temp`.
+Galaxy, lint and syntax share that private-only `ANSIBLE_COLLECTIONS_PATH` with
+`ANSIBLE_COLLECTIONS_SCAN_SYS_PATH=false`; the bootstrap verifies physical
+collection metadata and pinned versions using the existing dependency helpers.
+It does not resolve a Molecule context, allocate resources or install collections
+into controller packages. The `ansible.posix.acl` and `ansible.posix.firewalld`
+checks remain enabled; no lint exclusions or unknown-module suppression are used.
+This configuration addresses the missing-collection failure in PR 76's static
+job; a new hosted CI pass still requires publication and execution.
+
+The workflow runs **hosted static checks only**, automatically on pull requests
+and pushes to `main`, or through manual dispatch. It has no scheduled full suite,
+managed VM jobs, self-hosted runner requirement, GitHub deployment environment,
+backend preflight or full Molecule lifecycle invocation. Its backend-free unit
+tests may exercise installed Molecule's dependency subprocess with a fake
+helper/installer and real Galaxy with offline temporary local artifacts; they
+do not allocate Podman/libvirt resources.
+
+Direct Molecule and optional TUI execution remain unchanged local workflows,
+with their existing controllers, helper pin and image/backend prerequisites.
+The five runtime acceptance selections above are historical local evidence,
+not GitHub CI results. Full 25-scenario functional CI is intentionally
+unconfigured; remaining scenario/OS/controller qualification is unverified.
+Fedora 43 tests are retired. No self-hosted runner registration or special
+GitHub environment is required by the current workflow, and hosted CI success
+or required-check enforcement is not claimed until independently verified.
 
 Only fresh original-context authoritative `cleaned` inspection establishes
 cleanup. Preserve journals and leases after incomplete mutations, including

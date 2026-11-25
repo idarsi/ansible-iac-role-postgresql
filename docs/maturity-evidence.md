@@ -62,7 +62,9 @@ Fedora 43 test retirement. The historical missing-media capability result stays
 dated evidence, not a current blocker or a newly inferred pass. Fedora 43 remains
 allowed by production OS validation but is no longer covered by active tests.
 Retirement adds no readiness points. Other unexecuted scenarios and compatibility
-paths, remote helper publication and hosted CI enforcement remain unverified.
+paths remain unverified. GitHub CI is deliberately hosted static-only; full
+functional CI is unconfigured, and this change has no established hosted green
+run or enforcement evidence. This policy decision earns no readiness points.
 Representative changed=0 idempotence does **not** resolve the existing hidden
 replication-password convergence limitation. The uninstall preflight and
 secret-bearing-fact findings above are likewise unchanged and out of scope.

@@ -19,7 +19,9 @@ reviewed local follow-up commit and [pinned](tests/helper-revision.txt), without
 rewriting its dirty-source runtime provenance. The full 25-scenario
 OS/controller matrix remains unverified. Fedora 43 tests have been retired
 without changing allowed role compatibility; Fedora 44 remains in the matrix.
-Remote helper publication and hosted CI acceptance remain unverified.
+GitHub Actions is configured for hosted static/unit/lint/syntax checks only;
+full Molecule and TUI execution remains local. This CI change still needs a
+hosted run and is not a green-run or enforcement claim.
 See the [baseline and final assessment evidence](docs/maturity-evidence.md)
 and [runtime acceptance ledger](TESTING.md#runtime-acceptance-ledger-2026-11-24).
 
