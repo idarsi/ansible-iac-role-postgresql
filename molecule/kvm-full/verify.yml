@@ -1,0 +1,9 @@
+---
+###############################################################################
+# verify.yml
+# @author Arsi Atomi
+###############################################################################
+- name: "Verify Rocky Linux 9 full workflow"
+  ansible.builtin.import_playbook: "rocky9-verify.yml"
+- name: "Verify RHEL 9 full workflow"
+  ansible.builtin.import_playbook: "rhel9-verify.yml"

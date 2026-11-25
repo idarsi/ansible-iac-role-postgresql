@@ -1,0 +1,206 @@
+{
+  "schema_version": 1,
+  "scenarios": {
+    "podman-validation": {
+      "description": "Nonprivileged blueprint validation; declarations are not runtime proof.",
+      "execution": {"backend": "podman", "min_ansible_core": "2.19"},
+      "environments": {
+        "ansible-min": {"unsupported_reason": "Core 2.15 is below the role minimum Core 2.19.12."},
+        "ansible-current": {"platforms": ["instance-idarsi-validation"]},
+        "ansible-next": {"platforms": ["instance-idarsi-validation"]}
+      }
+    },
+    "kvm-full": {
+      "execution": {"backend": "kvm", "min_ansible_core": "2.19"},
+      "environments": {
+        "ansible-min": {"unsupported_reason": "Core 2.15 is below the role minimum Core 2.19.12."},
+        "ansible-current": {"platforms": ["instance-idarsi-rl9", "instance-idarsi-rhel9"]},
+        "ansible-next": {"platforms": ["instance-idarsi-rl9", "instance-idarsi-rhel9"]}
+      }
+    },
+    "kvm-baseline": {
+      "execution": {"backend": "kvm", "min_ansible_core": "2.19"},
+      "environments": {
+        "ansible-min": {"unsupported_reason": "Core 2.15 is below the role minimum Core 2.19.12."},
+        "ansible-current": {"platforms": ["instance-idarsi-rl10", "instance-idarsi-rhel10", "instance-idarsi-fedora44"]},
+        "ansible-next": {"platforms": ["instance-idarsi-rl10", "instance-idarsi-rhel10", "instance-idarsi-fedora44"]}
+      }
+    },
+    "kvm-all-absent": {
+      "execution": {"backend": "kvm", "min_ansible_core": "2.19"},
+      "environments": {
+        "ansible-min": {"unsupported_reason": "Core 2.15 is below the role minimum Core 2.19.12."},
+        "ansible-current": {"platforms": ["instance-idarsi-rl9-all-absent"]},
+        "ansible-next": {"platforms": ["instance-idarsi-rl9-all-absent"]}
+      }
+    },
+    "kvm-bind-guardrails": {
+      "execution": {"backend": "kvm", "min_ansible_core": "2.19"},
+      "environments": {
+        "ansible-min": {"unsupported_reason": "Core 2.15 is below the role minimum Core 2.19.12."},
+        "ansible-current": {"platforms": ["instance-idarsi-rl9-bind-guardrails"]},
+        "ansible-next": {"platforms": ["instance-idarsi-rl9-bind-guardrails"]}
+      }
+    },
+    "kvm-hba-guardrails": {
+      "execution": {"backend": "kvm", "min_ansible_core": "2.19"},
+      "environments": {
+        "ansible-min": {"unsupported_reason": "Core 2.15 is below the role minimum Core 2.19.12."},
+        "ansible-current": {"platforms": ["instance-idarsi-rl9-hba-guardrails"]},
+        "ansible-next": {"platforms": ["instance-idarsi-rl9-hba-guardrails"]}
+      }
+    },
+    "kvm-replication": {
+      "execution": {"backend": "kvm", "min_ansible_core": "2.19"},
+      "environments": {
+        "ansible-min": {"unsupported_reason": "Core 2.15 is below the role minimum Core 2.19.12."},
+        "ansible-current": {"platforms": ["instance-idarsi-rl9-primary", "instance-idarsi-rl9-standby"]},
+        "ansible-next": {"platforms": ["instance-idarsi-rl9-primary", "instance-idarsi-rl9-standby"]}
+      }
+    },
+    "kvm-timescaledb": {
+      "execution": {"backend": "kvm", "min_ansible_core": "2.19"},
+      "environments": {
+        "ansible-min": {"unsupported_reason": "Core 2.15 is below the role minimum Core 2.19.12."},
+        "ansible-current": {"platforms": ["instance-idarsi-timescaledb-pgdg", "instance-idarsi-timescaledb-community", "instance-idarsi-timescaledb-pgdg-rocky10", "postgresql-tsdb-community-rocky10", "instance-idarsi-timescaledb-pgdg-rhel9", "postgresql-tsdb-community-rhel9", "instance-idarsi-timescaledb-pgdg-rhel10", "postgresql-tsdb-community-rhel10"]},
+        "ansible-next": {"platforms": ["instance-idarsi-timescaledb-pgdg", "instance-idarsi-timescaledb-community", "instance-idarsi-timescaledb-pgdg-rocky10", "postgresql-tsdb-community-rocky10", "instance-idarsi-timescaledb-pgdg-rhel9", "postgresql-tsdb-community-rhel9", "instance-idarsi-timescaledb-pgdg-rhel10", "postgresql-tsdb-community-rhel10"]}
+      }
+    },
+    "kvm-patroni-config": {
+      "execution": {"backend": "kvm", "min_ansible_core": "2.19"},
+      "environments": {
+        "ansible-min": {"unsupported_reason": "Core 2.15 is below the role minimum Core 2.19.12."},
+        "ansible-current": {"platforms": ["instance-idarsi-patroni"]},
+        "ansible-next": {"platforms": ["instance-idarsi-patroni"]}
+      }
+    },
+    "kvm-patroni-unknown-service": {
+      "execution": {"backend": "kvm", "min_ansible_core": "2.19"},
+      "environments": {
+        "ansible-min": {"unsupported_reason": "Core 2.15 is below the role minimum Core 2.19.12."},
+        "ansible-current": {"platforms": ["instance-idarsi-patroni-unknown-service"]},
+        "ansible-next": {"platforms": ["instance-idarsi-patroni-unknown-service"]}
+      }
+    },
+    "kvm-patroni-membership": {
+      "execution": {"backend": "kvm", "min_ansible_core": "2.19"},
+      "environments": {
+        "ansible-min": {"unsupported_reason": "Core 2.15 is below the role minimum Core 2.19.12."},
+        "ansible-current": {"platforms": ["etcd01", "etcd02", "etcd03", "pg01", "pg02", "pg03"]},
+        "ansible-next": {"platforms": ["etcd01", "etcd02", "etcd03", "pg01", "pg02", "pg03"]}
+      }
+    },
+    "kvm-patroni-failover": {
+      "execution": {"backend": "kvm", "min_ansible_core": "2.19"},
+      "environments": {
+        "ansible-min": {"unsupported_reason": "Core 2.15 is below the role minimum Core 2.19.12."},
+        "ansible-current": {"platforms": ["etcd01", "etcd02", "etcd03", "pg01", "pg02", "pg03"]},
+        "ansible-next": {"platforms": ["etcd01", "etcd02", "etcd03", "pg01", "pg02", "pg03"]}
+      }
+    },
+    "kvm-etcd-cluster": {
+      "execution": {"backend": "kvm", "min_ansible_core": "2.19"},
+      "environments": {
+        "ansible-min": {"unsupported_reason": "Core 2.15 is below the role minimum Core 2.19.12."},
+        "ansible-current": {"platforms": ["etcd01", "etcd02", "etcd03"]},
+        "ansible-next": {"platforms": ["etcd01", "etcd02", "etcd03"]}
+      }
+    },
+    "kvm-etcd-tls-member": {
+      "execution": {"backend": "kvm", "min_ansible_core": "2.19"},
+      "environments": {
+        "ansible-min": {"unsupported_reason": "Core 2.15 is below the role minimum Core 2.19.12."},
+        "ansible-current": {"platforms": ["etcd01"]},
+        "ansible-next": {"platforms": ["etcd01"]}
+      }
+    },
+    "kvm-etcd-tls-cluster": {
+      "execution": {"backend": "kvm", "min_ansible_core": "2.19"},
+      "environments": {
+        "ansible-min": {"unsupported_reason": "Core 2.15 is below the role minimum Core 2.19.12."},
+        "ansible-current": {"platforms": ["etcd01", "etcd02", "etcd03"]},
+        "ansible-next": {"platforms": ["etcd01", "etcd02", "etcd03"]}
+      }
+    },
+    "kvm-etcd-platform-matrix": {
+      "execution": {"backend": "kvm", "min_ansible_core": "2.19"},
+      "environments": {
+        "ansible-min": {"unsupported_reason": "Core 2.15 is below the role minimum Core 2.19.12."},
+        "ansible-current": {"platforms": ["etcd-el9", "etcd-el10"]},
+        "ansible-next": {"platforms": ["etcd-el9", "etcd-el10"]}
+      }
+    },
+    "kvm-combined-patroni-failover": {
+      "execution": {"backend": "kvm", "min_ansible_core": "2.19"},
+      "environments": {
+        "ansible-min": {"unsupported_reason": "Core 2.15 is below the role minimum Core 2.19.12."},
+        "ansible-current": {"platforms": ["pg01", "pg02", "pg03"]},
+        "ansible-next": {"platforms": ["pg01", "pg02", "pg03"]}
+      }
+    },
+    "kvm-etcd-quorum": {
+      "execution": {"backend": "kvm", "min_ansible_core": "2.19"},
+      "environments": {
+        "ansible-min": {"unsupported_reason": "Core 2.15 is below the role minimum Core 2.19.12."},
+        "ansible-current": {"platforms": ["pg01", "pg02", "pg03"]},
+        "ansible-next": {"platforms": ["pg01", "pg02", "pg03"]}
+      }
+    },
+    "kvm-etcd-leader-failure": {
+      "execution": {"backend": "kvm", "min_ansible_core": "2.19"},
+      "environments": {
+        "ansible-min": {"unsupported_reason": "Core 2.15 is below the role minimum Core 2.19.12."},
+        "ansible-current": {"platforms": ["pg01", "pg02", "pg03"]},
+        "ansible-next": {"platforms": ["pg01", "pg02", "pg03"]}
+      }
+    },
+    "kvm-hard-patroni-failure": {
+      "execution": {"backend": "kvm", "min_ansible_core": "2.19"},
+      "environments": {
+        "ansible-min": {"unsupported_reason": "Core 2.15 is below the role minimum Core 2.19.12."},
+        "ansible-current": {"platforms": ["pg01", "pg02", "pg03"]},
+        "ansible-next": {"platforms": ["pg01", "pg02", "pg03"]}
+      }
+    },
+    "kvm-network-partition": {
+      "execution": {"backend": "kvm", "min_ansible_core": "2.19"},
+      "environments": {
+        "ansible-min": {"unsupported_reason": "Core 2.15 is below the role minimum Core 2.19.12."},
+        "ansible-current": {"platforms": ["pg01", "pg02", "pg03"]},
+        "ansible-next": {"platforms": ["pg01", "pg02", "pg03"]}
+      }
+    },
+    "kvm-quorum-primary-failure": {
+      "execution": {"backend": "kvm", "min_ansible_core": "2.19"},
+      "environments": {
+        "ansible-min": {"unsupported_reason": "Core 2.15 is below the role minimum Core 2.19.12."},
+        "ansible-current": {"platforms": ["pg01", "pg02", "pg03"]},
+        "ansible-next": {"platforms": ["pg01", "pg02", "pg03"]}
+      }
+    },
+    "kvm-restart-smoke": {
+      "execution": {"backend": "kvm", "min_ansible_core": "2.19"},
+      "environments": {
+        "ansible-min": {"unsupported_reason": "Core 2.15 is below the role minimum Core 2.19.12."},
+        "ansible-current": {"platforms": ["pg01", "pg02", "pg03"]},
+        "ansible-next": {"platforms": ["pg01", "pg02", "pg03"]}
+      }
+    },
+    "kvm-tls-rotation": {
+      "execution": {"backend": "kvm", "min_ansible_core": "2.19"},
+      "environments": {
+        "ansible-min": {"unsupported_reason": "Core 2.15 is below the role minimum Core 2.19.12."},
+        "ansible-current": {"platforms": ["pg01", "pg02", "pg03"]},
+        "ansible-next": {"platforms": ["pg01", "pg02", "pg03"]}
+      }
+    },
+    "kvm-etcd-snapshot-restore": {
+      "execution": {"backend": "kvm", "min_ansible_core": "2.19"},
+      "environments": {
+        "ansible-min": {"unsupported_reason": "Core 2.15 is below the role minimum Core 2.19.12."},
+        "ansible-current": {"platforms": ["pg01", "pg02", "pg03"]},
+        "ansible-next": {"platforms": ["pg01", "pg02", "pg03"]}
+      }
+    }
+  }
+}

@@ -1,0 +1,40 @@
+---
+###############################################################################
+#
+# helper_result.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+- name: "Require successful helper execution and nonempty JSON stdout"
+  ansible.builtin.assert:
+    that:
+      - kvm_helper_result.rc | default(-1) == 0
+      - kvm_helper_result.stdout | default('') is string
+      - kvm_helper_result.stdout | default('') | trim | length > 0
+    fail_msg: >-
+      Owned guest-control helper {{ kvm_helper_action }} failed or returned empty stdout
+      (rc={{ kvm_helper_result.rc | default('missing') }}):
+      {{ kvm_helper_result.stderr | default(kvm_helper_result.msg | default('No stderr supplied'), true) }}
+
+- name: "Decode only a successful nonempty helper response"
+  block:
+    - name: "Decode the helper JSON envelope"
+      ansible.builtin.set_fact:
+        kvm_helper_payload: "{{ kvm_helper_result.stdout | from_json }}"
+  rescue:
+    - name: "Report invalid JSON without masking helper diagnostics"
+      ansible.builtin.fail:
+        msg: >-
+          Owned guest-control helper {{ kvm_helper_action }} returned invalid JSON
+          (rc={{ kvm_helper_result.rc }}):
+          {{ kvm_helper_result.stderr | default(kvm_helper_result.msg | default('No stderr supplied'), true) }}
+
+- name: "Require the versioned owned helper response envelope"
+  ansible.builtin.assert:
+    that:
+      - kvm_helper_payload is mapping
+      - kvm_helper_payload.schema | default('') == 'idarsi.scenario-context/v1'
+    fail_msg: >-
+      Owned guest-control helper {{ kvm_helper_action }} returned an invalid response envelope:
+      {{ kvm_helper_result.stderr | default(kvm_helper_result.msg | default('No stderr supplied'), true) }}

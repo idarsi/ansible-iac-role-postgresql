@@ -1,0 +1,9 @@
+---
+###############################################################################
+# prepare.yml
+# @author Arsi Atomi
+###############################################################################
+- name: "Prepare cluster guests"
+  ansible.builtin.import_playbook: "../../tests/prepare.yml"
+- name: "Prepare cluster PKI"
+  ansible.builtin.import_playbook: "fixtures.yml"

@@ -1,0 +1,41 @@
+---
+###############################################################################
+# prepare.yml
+# @author Arsi Atomi
+###############################################################################
+- name: "Prepare owned KVM guests for PostgreSQL tests"
+  hosts: "all"
+  become: true
+  tasks:
+    - name: "Install test fixture utilities from configured guest repositories"
+      ansible.builtin.package:
+        name:
+          - "openssl"
+          - "iproute"
+          - "util-linux"
+          - "procps-ng"
+          - "acl"
+        state: "present"
+    - name: "Resolve logical topology using generated inventory addresses"
+      ansible.builtin.blockinfile:
+        path: "/etc/hosts"
+        marker: "# {mark} POSTGRESQL MOLECULE TOPOLOGY"
+        block: |
+          {% for member in groups['all'] %}
+          {{ hostvars[member].ansible_host }} {{ member }}
+          {% endfor %}
+    - name: "Discover guest services without changing their lifecycle"
+      ansible.builtin.service_facts:
+    - name: "Permit test service ports from this generated private subnet"
+      ansible.posix.firewalld:
+        rich_rule: >-
+          rule family="ipv4"
+          source address="{{ ansible_host.rsplit('.', 1)[0] }}.0/24"
+          port port="{{ item }}" protocol="tcp" accept
+        permanent: true
+        immediate: true
+        state: "enabled"
+      loop: ["2379", "2380", "5432", "5433", "8008"]
+      when:
+        - "'firewalld.service' in ansible_facts.services"
+        - "ansible_facts.services['firewalld.service'].state == 'running'"

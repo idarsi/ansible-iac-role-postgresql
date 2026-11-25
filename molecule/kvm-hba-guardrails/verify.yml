@@ -1,0 +1,9 @@
+---
+###############################################################################
+# verify.yml
+# @author Arsi Atomi
+###############################################################################
+- name: "Exercise exact HBA validation failures"
+  ansible.builtin.import_playbook: "exercise.yml"
+- name: "Verify failure markers"
+  ansible.builtin.import_playbook: "assertions.yml"

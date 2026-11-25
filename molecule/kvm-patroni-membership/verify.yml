@@ -1,0 +1,125 @@
+---
+###############################################################################
+#
+# verify.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+- name: "Wait for the real etcd membership DCS"
+  hosts: pg01:pg02:pg03
+  become: true
+  tasks:
+    - name: "Wait for all etcd members"
+      ansible.builtin.uri:
+        url: "http://{{ hostvars[item].ansible_host }}:2379/health"
+        status_code: 200
+      loop:
+        - etcd01
+        - etcd02
+        - etcd03
+      register: etcd_health
+      retries: 30
+      delay: 2
+      until: etcd_health is succeeded
+
+- name: "Wait for all Patroni members"
+  hosts: pg01:pg02:pg03
+  become: true
+  tasks:
+    - name: "Wait for local Patroni API"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/patroni
+        status_code: 200
+      register: patroni_health
+      retries: 90
+      delay: 2
+      until: patroni_health.status == 200
+
+- name: "Remove one member and verify a two-member cluster"
+  hosts: pg01
+  become: true
+  tasks:
+    - name: "Read the cluster before selecting a removable replica"
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:8008/cluster"
+        return_content: true
+      register: membership_initial_cluster
+      retries: 60
+      delay: 2
+      until:
+        - membership_initial_cluster.json.members | length == 3
+        - membership_initial_cluster.json.members | selectattr('role', 'equalto', 'replica') | list | length == 2
+
+    - name: "Select a replica without assuming which guest became leader"
+      ansible.builtin.set_fact:
+        membership_removed_name: >-
+          {{ (membership_initial_cluster.json.members
+              | selectattr('role', 'equalto', 'replica')
+              | rejectattr('name', 'equalto', 'molecule-patroni-membership-pg01')
+              | first).name }}
+        membership_removed_host: >-
+          {{ (membership_initial_cluster.json.members
+              | selectattr('role', 'equalto', 'replica')
+              | rejectattr('name', 'equalto', 'molecule-patroni-membership-pg01')
+              | first).name | regex_replace('^molecule-patroni-membership-', '') }}
+
+    - name: "Stop the removable Patroni replica"
+      ansible.builtin.systemd_service:
+        name: patroni-17-main.service
+        state: stopped
+      delegate_to: "{{ membership_removed_host }}"
+
+    - name: "Remove pg03 member key from the real etcd DCS"
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/etcdctl
+          - --endpoints=http://127.0.0.1:2379
+          - del
+          - "/service/molecule-patroni-membership/members/{{ membership_removed_name }}"
+      delegate_to: etcd01
+      changed_when: true
+
+    - name: "Wait for the removed member to disappear"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/cluster
+        return_content: true
+      register: cluster_without_member
+      retries: 30
+      delay: 2
+      until:
+        - cluster_without_member.json.members | length == 2
+        - cluster_without_member.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+        - cluster_without_member.json.members | selectattr('role', 'equalto', 'replica') | list | length == 1
+
+    - name: "Start the removed Patroni replica again"
+      ansible.builtin.systemd_service:
+        name: patroni-17-main.service
+        state: started
+      delegate_to: "{{ membership_removed_host }}"
+
+    - name: "Wait for the removed member to rejoin as a replica"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/replica
+        status_code: 200
+      register: rejoined_member
+      delegate_to: "{{ membership_removed_host }}"
+      retries: 90
+      delay: 2
+      until: rejoined_member.status == 200
+
+    - name: "Verify the member was added back"
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8008/cluster
+        return_content: true
+      register: cluster_with_member
+      retries: 30
+      delay: 2
+      until:
+        - cluster_with_member.json.members | length == 3
+        - cluster_with_member.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+        - cluster_with_member.json.members | selectattr('role', 'equalto', 'replica') | list | length == 2
+
+- name: "Verify post-bootstrap finalization and final membership"
+  ansible.builtin.import_playbook: final.yml

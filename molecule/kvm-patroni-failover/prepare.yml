@@ -1,0 +1,11 @@
+---
+###############################################################################
+#
+# prepare.yml
+#
+# @author Arsi Atomi
+#
+###############################################################################
+
+- name: "Prepare the same separate three-member external etcd fixture"
+  ansible.builtin.import_playbook: "../kvm-patroni-membership/prepare.yml"

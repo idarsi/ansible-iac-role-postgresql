@@ -1,2 +1,0 @@
----
-- import_playbook: "../kvm_patroni_failover/converge.yml"

@@ -1,0 +1,70 @@
+---
+iac_blueprint:
+  postgresql:
+    - version: 17
+      clusters:
+        - name: "molecule-patroni"
+          provider: "patroni"
+          dcs:
+            provider: "etcd3"
+            endpoints:
+              - "http://{{ hostvars['etcd01'].ansible_host }}:2379"
+              - "http://{{ hostvars['etcd02'].ansible_host }}:2379"
+              - "http://{{ hostvars['etcd03'].ansible_host }}:2379"
+            proxy: "http://{{ hostvars['etcd01'].ansible_host }}:2379"
+          patroni:
+            ttl: 30
+            loop_wait: 5
+            retry_timeout: 5
+            maximum_lag_on_failover: 1048576
+            use_pg_rewind: true
+            use_slots: true
+            postgresql:
+              connect_address: "{{ hostvars[inventory_hostname].ansible_host }}:5432"
+              superuser_password: "postgres_password"
+              replication_username: "replicator"
+            replication_password: "replication_password"
+            pg_hba:
+              - "local all all trust"
+              - "host all postgres 0.0.0.0/0 scram-sha-256"
+              - "host replication replicator 0.0.0.0/0 scram-sha-256"
+            restapi:
+              port: 8008
+              connect_address: "{{ hostvars[inventory_hostname].ansible_host }}:8008"
+              authentication:
+                username: "patroni"
+                password: "patroni_password"
+          members:
+            - host: "pg01"
+              instance: "main"
+              name: "molecule-patroni-pg01"
+            - host: "pg02"
+              instance: "main"
+              name: "molecule-patroni-pg02"
+            - host: "pg03"
+              instance: "main"
+              name: "molecule-patroni-pg03"
+      instances:
+        - name: "main"
+          cluster: "molecule-patroni"
+          certificate_subject_alt_names:
+            - "localhost"
+            - "{{ inventory_hostname }}"
+            - "{{ hostvars[inventory_hostname].ansible_host }}"
+          global_access:
+            - name: "postgres"
+              address: "127.0.0.1/32"
+              method: "scram-sha-256"
+            - name: "replicator"
+              address: "127.0.0.1/32"
+              method: "scram-sha-256"
+            - name: "postgres"
+              address: "0.0.0.0/0"
+              method: "scram-sha-256"
+            - name: "replicator"
+              address: "0.0.0.0/0"
+              method: "scram-sha-256"
+          configuration:
+            listen_addresses: "*"
+            port: 5432
+            max_connections: 50

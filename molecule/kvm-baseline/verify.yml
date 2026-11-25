@@ -1,0 +1,11 @@
+---
+###############################################################################
+# verify.yml
+# @author Arsi Atomi
+###############################################################################
+- name: "Verify Rocky Linux 10 baseline"
+  ansible.builtin.import_playbook: "rocky10-verify.yml"
+- name: "Verify RHEL 10 baseline"
+  ansible.builtin.import_playbook: "rhel10-verify.yml"
+- name: "Verify Fedora 44 baseline"
+  ansible.builtin.import_playbook: "fedora44-verify.yml"

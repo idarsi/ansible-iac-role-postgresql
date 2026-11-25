@@ -1,0 +1,7 @@
+---
+###############################################################################
+# prepare.yml
+# @author Arsi Atomi
+###############################################################################
+- name: "Prepare TLS-member guest"
+  ansible.builtin.import_playbook: "../../tests/prepare.yml"

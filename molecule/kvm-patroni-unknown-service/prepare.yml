@@ -1,0 +1,9 @@
+---
+###############################################################################
+# prepare.yml
+# @author Arsi Atomi
+###############################################################################
+- name: "Prepare unknown-service guest"
+  ansible.builtin.import_playbook: "../../tests/prepare.yml"
+- name: "Prepare existing data fixture"
+  ansible.builtin.import_playbook: "fixtures.yml"

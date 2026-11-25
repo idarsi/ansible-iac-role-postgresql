@@ -1,0 +1,9 @@
+---
+###############################################################################
+# converge.yml
+# @author Arsi Atomi
+###############################################################################
+- name: "Converge Rocky Linux 9 full workflow"
+  ansible.builtin.import_playbook: "rocky9-converge.yml"
+- name: "Converge RHEL 9 full workflow"
+  ansible.builtin.import_playbook: "rhel9-converge.yml"

@@ -1,0 +1,28 @@
+---
+###############################################################################
+# converge.yml
+# @author Arsi Atomi
+###############################################################################
+- name: "Install TimescaleDB"
+  hosts: all
+  become: true
+  vars:
+    state: install
+    pg_lang: "en"
+    pg_locale: "US"
+    pg_disable_postgresql_module: true
+    ansible_become_method: "sudo"
+    iac_blueprint:
+      postgresql:
+        - version: 17
+          instances:
+            - name: main
+              databases:
+                - name: metrics
+                  extensions:
+                    - name: timescaledb
+                      source: "{{ timescaledb_source }}"
+              configuration:
+                port: 5417
+  roles:
+    - ansible-iac-role-postgresql
